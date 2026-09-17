@@ -1,52 +1,101 @@
 # 05. Security Architecture Document: Blue Team Cyber Range & SOC/DFIR Platform
 
 **Profile ID**: `PRF-05-SECARC`  
-**Status**: `COMPLETED`  
-**Input**: `docs/it-company/00-requirements-contract.md` & `docs/it-company/04-solution-architect.md`
+**Status**: `FROZEN (Approved at Human Gate 2 on 2026-09-17)`  
+**Baseline**: Human Gate 2 Architecture & Contract Gate
 
 ---
 
-## 1. Threat Modeling (STRIDE Analysis)
+## 1. Privilege Boundaries & Capability Model
 
-| Threat Category | Potential Vector | Mitigation in Architecture | Verification Method |
-|---|---|---|---|
-| **Spoofing** | Unauthorized client issuing commands to Local Broker. | OS-level IPC access control lists (ACLs): Windows named pipes restricted to current user SID + admin; Unix sockets set to `0600`. | Integration test verifying IPC rejection from other accounts. |
-| **Tampering** | Modification of evidence or forensic case files on disk. | Content-Addressed Storage (CAS) with BLAKE3/SHA-256 immutable hashes and append-only audit trail in SQLite WAL. | Cryptographic verification job (`verify_case_integrity`). |
-| **Repudiation** | Analyst or CTF participant disputes action or finding. | Complete Chain of Custody logging with monotonic timestamps and actor ID. | Audit log validation tests. |
-| **Information Disclosure** | Memory dump or PCAP containing sensitive credentials read by unprivileged process. | File permissions enforced at OS layer; ephemeral working files wiped securely upon case closure. | Security integration tests for file permissions. |
-| **Denial of Service** | Maliciously crafted PCAP (decompression bomb / circular reference) causing OOM or CPU freeze. | Parser execution limits (time budget, memory limit) inside Workflow DAG semaphores; streaming parser architecture. | Fuzzing tests with malformed PCAP/EVTX. |
-| **Elevation of Privilege** | Command injection via tool parameters in Broker. | Static command allowlist (only approved binaries); `argv[]` execution without shell expansion; regex parameter validation. | Static and dynamic injection audit. |
+### Architectural Invariants:
+1. **UI cannot execute commands.**
+2. **Core cannot execute privileged commands directly.**
+3. **Only Broker executes predefined `PrivilegedOperation` items.**
+4. **Zero execution of shell evaluators** (`sh -c`, `cmd.exe /c`, `powershell -Command <arbitrary>`). UI never passes raw `argv[]`.
 
----
-
-## 2. Privilege Boundary & Broker Security Contract
-
-```mermaid
-sequenceDiagram
-    participant UI as Unprivileged Desktop UI
-    participant IPC as Local IPC Channel (Named Pipe / Domain Socket)
-    participant Broker as Privileged Local Broker Daemon
-    participant OS as OS Kernel (ETW/WFP/Sockets)
-
-    UI->>IPC: CommandRequest(command_id, validated_args)
-    IPC->>Broker: Check caller credentials (User SID/UID)
-    alt Caller is unauthorized
-        Broker-->>UI: Error(E_ACCESS_DENIED)
-    else Command not in Static Whitelist
-        Broker-->>UI: Error(E_COMMAND_NOT_ALLOWLISTED)
-    else Regex validation fails for any arg
-        Broker-->>UI: Error(E_INVALID_ARGUMENT_FORMAT)
-    else Safe execution
-        Broker->>OS: Execute allowlisted probe binary (argv array, no shell)
-        OS-->>Broker: Binary stdout/stderr stream
-        Broker-->>UI: Sanitized Stream / Output Events
-    end
+### Broker Capability Hierarchy:
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BrokerCapability {
+    ReadProcesses,
+    ReadFirewall,
+    CapturePcap,
+    AcquireMemory,
+    ReadRegistry,
+    NetworkScan,
+}
 ```
 
+### Typed Privileged Operations:
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum PrivilegedOperation {
+    CapturePcap {
+        interface_id: String,
+        duration_secs: u32,
+        max_bytes: u64,
+        bpf_filter: Option<String>,
+    },
+    ReadFirewallRules {
+        direction: Option<RuleDirection>,
+    },
+    CollectProcessMetadata {
+        pid: u32,
+    },
+    AcquireMemorySample {
+        target: MemoryTarget,
+        chunk_size_mb: u32,
+    },
+    CollectRegistryKeys {
+        hive: RegistryHive,
+        subpath: String,
+    },
+    RunTargetedScan {
+        target_ip: String,
+        ports: Vec<u16>,
+        rate_limit: u32,
+    },
+}
+```
+The Broker validates the requesting client's identity (OS SID/UID), checks task `required_capabilities`, sanitizes parameters against strict type definitions, and executes the predefined internal binary using fixed parameter templates (no dynamic shell).
+
 ---
 
-## 3. Sandboxing & Ingestion Safety
-- **No Shell Execution**: `Command::new(binary).args(args)` exclusively; never invoke `sh -c` or `cmd.exe /c`.
-- **Memory Safety**: Parsers written in pure Rust with `#![deny(unsafe_code)]` in all parsing crates (`tool-adapters`, `core-domain`).
-- **Path Traversal Defense**: All artifact paths stored in CAS are computed strictly from content hash (`cas/ab/cd/abcdef...`); external file names are never used directly as filesystem paths.
-- **Resource Quotas**: Ingestion processes run with explicit memory limits (e.g. 2 GB max per task) and watchdog timeouts.
+## 2. Ground Truth Isolation & Anti-Cheating Boundary
+
+In CTF / Cyber Range mode, player collusion or inspection of local state must be prevented:
+- **Sealed Ground Truth**: Scenario packages are distributed with an asymmetric cryptographic signature and an encrypted Ground Truth envelope.
+- **Access Isolation**: The `scenario-verifier` operates within an isolated boundary; Ground Truth facts, attack trees, and expected findings are NEVER written to the player's accessible SQLite database or exposed over client IPC queries.
+- **Integrity Verification**: Corrupted or modified scenario bundles fail HMAC/signature checks and are rejected prior to mounting.
+
+---
+
+## 3. Append-Only Chain of Custody & Audit Log
+
+The audit trail is cryptographically chained and strictly append-only. The API explicitly omits any `audit.delete` or `audit.update` operations.
+
+### Custody Events:
+- `ArtifactAcquired`
+- `ArtifactStored`
+- `ArtifactHashed`
+- `ArtifactParsed`
+- `ArtifactAccessed`
+- `ArtifactExported`
+
+Each event records:
+- `timestamp`: UTC (ISO-8601 monotonic)
+- `actor`: User or system service ID
+- `operation`: Exact typed action
+- `artifact_hash`: BLAKE3 and SHA-256
+- `previous_state_hash`: Cryptographic back-link to the prior audit block (Merkle chain).
+
+---
+
+## 4. Unsafe Code Isolation Policy
+- `#![forbid(unsafe_code)]` is strictly set in crate roots for: `core-domain`, `storage-cas`, `storage-sqlite`, `workflow-dag`, `normalization-engine`, `correlation-engine`, `evidence-engine`, `graph-engine`, `taxonomy-projection`, `scenario-engine`, `scenario-verifier`, and `scoring-engine`.
+- Unsafe blocks are permitted solely in `platform-windows` and `platform-linux` under the following conditions:
+  1. Isolated in dedicated low-level submodules.
+  2. Wrapped in zero-cost safe Rust abstractions.
+  3. Every block accompanied by an explicit `// SAFETY:` rationale.
+  4. Covered by integration tests and fuzzers.
