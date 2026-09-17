@@ -74,18 +74,22 @@ class CyberRangeCockpitApp {
   }
 
   navigateToView(targetView) {
+    let targetEl = document.getElementById(targetView);
+    if (!targetEl) {
+      targetView = 'casesView';
+      targetEl = document.getElementById('casesView');
+    }
+    if (!targetEl) return;
+
     document.querySelectorAll('#mainSidebar .nav-item').forEach(i => {
       i.classList.toggle('active', i.getAttribute('data-view') === targetView);
     });
     document.querySelectorAll('#centerWorkspace .tab-content').forEach(v => {
       v.style.display = 'none';
     });
-    const targetEl = document.getElementById(targetView);
-    if (targetEl) {
-      targetEl.style.display = targetView === 'infraDiscoveryView' || targetView === 'investigationGraphView' ? 'flex' : 'block';
-      this.currentView = targetView;
-      if (targetView === 'investigationGraphView') this.drawAttackGraph();
-    }
+    targetEl.style.display = targetView === 'infraDiscoveryView' || targetView === 'investigationGraphView' ? 'flex' : 'block';
+    this.currentView = targetView;
+    if (targetView === 'investigationGraphView') this.drawAttackGraph();
   }
 
   selectAndOpenHost(hostId, tab = 'tabOverview') {

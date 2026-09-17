@@ -254,12 +254,53 @@
 
         <!-- View 2: Cases Overview -->
         <div id="casesView" class="tab-content" style="display: none; padding: 14px; overflow-y: auto;">
-          <h3 style="font-size: 13px; margin-bottom: 10px;">Реестр инцидентов расследования</h3>
-          <table class="data-table">
+          <h3 style="font-size: 13px; margin-bottom: 8px;">Реестр инцидентов расследования</h3>
+          <table class="data-table" style="margin-bottom: 16px;">
             <thead><tr><th>Кейс</th><th>Название</th><th>Критичность</th><th>Аналитик</th><th>Узлов</th><th>Статус</th></tr></thead>
             <tbody>
-              <tr><td><strong>INC-2026-001</strong></td><td>Компрометация Active Directory и кража креденшалов</td><td><span class="badge badge-attack">ВЫСОКИЙ</span></td><td>SOC Tier-2</td><td>3</td><td><span class="badge badge-net">В РАБОТЕ</span></td></tr>
-              <tr><td>INC-2026-002</td><td>Подозрение на сканирование периметра DMZ</td><td><span class="badge badge-proc">НИЗКИЙ</span></td><td>AutoTriage</td><td>1</td><td><span class="badge badge-host">ЗАКРЫТ</span></td></tr>
+              <tr class="case-row" data-case-id="INC-2026-001" style="cursor: pointer;"><td><strong>INC-2026-001</strong></td><td>Компрометация Active Directory и кража креденшалов</td><td><span class="badge badge-attack">КРИТИЧЕСКИЙ</span></td><td>SOC Tier-2</td><td>3</td><td><span class="badge badge-net">В РАБОТЕ</span></td></tr>
+              <tr class="case-row" data-case-id="INC-2026-002" style="cursor: pointer;"><td>INC-2026-002</td><td>Подозрение на сканирование периметра DMZ</td><td><span class="badge badge-proc">НИЗКИЙ</span></td><td>AutoTriage</td><td>1</td><td><span class="badge badge-host">ЗАКРЫТ</span></td></tr>
+            </tbody>
+          </table>
+
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+            <h3 style="font-size: 13px; margin: 0;">Реестр выявленных находок и алертов</h3>
+            <div id="findingsFilterBar" style="display: flex; gap: 6px;">
+              <button class="btn btn-sm btn-filter-findings active" data-filter="all">Все (8)</button>
+              <button class="btn btn-sm btn-filter-findings" data-filter="critical" style="color: var(--accent-critical); font-weight: 700;">Критичные (2)</button>
+              <button class="btn btn-sm btn-filter-findings" data-filter="high" style="color: var(--accent-warning);">Высокие (2)</button>
+              <button class="btn btn-sm btn-filter-findings" data-filter="other">Прочие (4)</button>
+            </div>
+          </div>
+          <table class="data-table" id="findingsDataTable">
+            <thead>
+              <tr><th>Находка / Аномалия</th><th>Узел</th><th>Критичность</th><th>TTP</th><th>Источник</th><th>Статус</th></tr>
+            </thead>
+            <tbody id="findingsTableBody">
+              <tr class="finding-row" data-severity="critical" data-finding-id="f1" style="cursor: pointer;">
+                <td><strong>PowerShell Execution (PID 4820)</strong></td><td>WS-FIN-04</td><td><span class="badge badge-attack">КРИТИЧНО</span></td><td>T1059.001</td><td>Sysmon 1</td><td><span class="badge badge-attack">Подтверждено</span></td>
+              </tr>
+              <tr class="finding-row" data-severity="critical" data-finding-id="f2" style="cursor: pointer;">
+                <td><strong>Credential Access (LSASS Memory)</strong></td><td>DC01</td><td><span class="badge badge-attack">КРИТИЧНО</span></td><td>T1003.001</td><td>Sysmon 10</td><td><span class="badge badge-attack">Подтверждено</span></td>
+              </tr>
+              <tr class="finding-row" data-severity="high" data-finding-id="f3" style="cursor: pointer;">
+                <td><strong>Scheduled Task Persistence</strong></td><td>DC01</td><td><span class="badge badge-warning">ВЫСОКИЙ</span></td><td>T1053.005</td><td>Security 4698</td><td><span class="badge badge-net">На проверке</span></td>
+              </tr>
+              <tr class="finding-row" data-severity="high" data-finding-id="f4" style="cursor: pointer;">
+                <td><strong>C2 Outbound Beaconing ➔ 198.51.100.44</strong></td><td>WS-FIN-04</td><td><span class="badge badge-warning">ВЫСОКИЙ</span></td><td>T1071.001</td><td>PCAP Flow</td><td><span class="badge badge-attack">Подтверждено</span></td>
+              </tr>
+              <tr class="finding-row" data-severity="other" data-finding-id="f5" style="cursor: pointer;">
+                <td><strong>Suspicious File Drop (updater_payload.exe)</strong></td><td>WS-FIN-04</td><td><span class="badge badge-proc">ПОДОЗРИТЕЛЬНО</span></td><td>T1105</td><td>EDR Agent</td><td><span class="badge badge-net">На проверке</span></td>
+              </tr>
+              <tr class="finding-row" data-severity="other" data-finding-id="f6" style="cursor: pointer;">
+                <td><strong>Registry RunKey Modification</strong></td><td>WS-FIN-04</td><td><span class="badge badge-proc">ПОДОЗРИТЕЛЬНО</span></td><td>T1547.001</td><td>Sysmon 13</td><td><span class="badge badge-host">Журнал</span></td>
+              </tr>
+              <tr class="finding-row" data-severity="other" data-finding-id="f7" style="cursor: pointer;">
+                <td><strong>Kerberos AS-REP Roasting Attempt</strong></td><td>DC01</td><td><span class="badge badge-proc">ПОДОЗРИТЕЛЬНО</span></td><td>T1558.004</td><td>Security 4768</td><td><span class="badge badge-host">Журнал</span></td>
+              </tr>
+              <tr class="finding-row" data-severity="other" data-finding-id="f8" style="cursor: pointer;">
+                <td><strong>Периметральное сканирование портов 80/443</strong></td><td>DMZ-WEB01</td><td><span class="badge badge-host">НИЗКИЙ</span></td><td>T1046</td><td>Firewall</td><td><span class="badge badge-host">Закрыт</span></td>
+              </tr>
             </tbody>
           </table>
         </div>
