@@ -7,6 +7,7 @@ export function setupDrilldowns(app) {
   setupTimelineDrilldowns(app);
   setupMitreDrilldowns(app);
   setupEvidenceDrilldowns(app);
+  setupPyramidDrilldowns(app);
   setupHeaderDrilldowns(app);
   setupHostListDrilldowns(app);
 }
@@ -134,10 +135,8 @@ function setupCasesDrilldowns(app) {
 function getFindingItem(app, fid) {
   const findingsMap = {
     f1: {
-      name: 'PowerShell Execution (PID 4820)',
-      type: 'Находка: Обфусцированный запуск',
-      assertion: 'T1059.001 (PowerShell)',
-      verification: 'Sysmon 1 & EVTX 4688',
+      name: 'PowerShell Execution (PID 4820)', type: 'Находка: Обфусцированный запуск',
+      assertion: 'T1059.001 (PowerShell)', verification: 'Sysmon 1 & EVTX 4688',
       details: 'Хост: WS-FIN-04.CORP.LOCAL (192.168.1.105)\nКоманда: powershell.exe -NoP -enc SQBFAFgA...\nРодительский процесс: WINWORD.EXE (PID 824)',
       actions: [
         { label: '🖥️ Телеметрия хоста WS-FIN-04', primary: true, onClick: () => app.selectAndOpenHost('h2') },
@@ -146,10 +145,8 @@ function getFindingItem(app, fid) {
       ]
     },
     f2: {
-      name: 'Credential Access (LSASS Memory)',
-      type: 'Находка: Сбор учетных данных',
-      assertion: 'T1003.001 (LSASS Memory)',
-      verification: 'Sysmon Event 10',
+      name: 'Credential Access (LSASS Memory)', type: 'Находка: Сбор учетных данных',
+      assertion: 'T1003.001 (LSASS Memory)', verification: 'Sysmon Event 10',
       details: 'Хост: DC01.CORP.LOCAL (192.168.1.10)\nИсточник: powershell.exe (PID 4820)\nЦель: lsass.exe (PID 612)\nДескриптор: 0x1010 (VM_READ | QUERY_LIMITED_INFORMATION)',
       actions: [
         { label: '🛡️ Сверить в Киберполигоне CTF', primary: true, onClick: () => app.navigateToView('cyberRangeView') },
@@ -158,10 +155,8 @@ function getFindingItem(app, fid) {
       ]
     },
     f3: {
-      name: 'Scheduled Task Persistence (SecurityAuditCollector)',
-      type: 'Находка: Механизм закрепления',
-      assertion: 'T1053.005 (Scheduled Task)',
-      verification: 'Security Event 4698',
+      name: 'Scheduled Task Persistence', type: 'Находка: Механизм закрепления',
+      assertion: 'T1053.005 (Scheduled Task)', verification: 'Security Event 4698',
       details: 'Хост: DC01.CORP.LOCAL (192.168.1.10)\nЗадача: SecurityAuditCollector (автозапуск каждые 60 мин)',
       actions: [
         { label: '🖥️ Вкладка «Закрепление» DC01', primary: true, onClick: () => app.selectAndOpenHost('h1', 'tabPersistence') },
@@ -169,10 +164,8 @@ function getFindingItem(app, fid) {
       ]
     },
     f4: {
-      name: 'C2 Outbound Beaconing ➔ 198.51.100.44:443',
-      type: 'Находка: Канал управления C2',
-      assertion: 'T1071.001 (Web Protocols)',
-      verification: 'PCAP Flow Analysis',
+      name: 'C2 Outbound Beaconing ➔ 198.51.100.44', type: 'Находка: Канал управления C2',
+      assertion: 'T1071.001 (Web Protocols)', verification: 'PCAP Flow Analysis',
       details: 'Хост: WS-FIN-04 (192.168.1.105:49821)\nНазначение: 198.51.100.44:443 (TCP SYN/ACK)\nОбъем: 128.5 КБ',
       actions: [
         { label: '⏱️ Показать поток на Таймлайне', primary: true, onClick: () => app.navigateToView('timelineView') },
@@ -180,44 +173,28 @@ function getFindingItem(app, fid) {
       ]
     },
     f5: {
-      name: 'Suspicious File Drop (updater_payload.exe)',
-      type: 'Находка: Внедрение вредоносного файла',
-      assertion: 'T1105 (Ingress Tool Transfer)',
-      verification: 'EDR Agent SHA-256',
+      name: 'Suspicious File Drop (updater_payload.exe)', type: 'Находка: Внедрение файла',
+      assertion: 'T1105 (Tool Transfer)', verification: 'EDR Agent SHA-256',
       details: 'Хост: WS-FIN-04 (192.168.1.105)\nПуть: C:\\Users\\Administrator\\AppData\\Local\\Temp\\updater_payload.exe',
-      actions: [
-        { label: '🖥️ Файлы хоста WS-FIN-04', primary: true, onClick: () => app.selectAndOpenHost('h2', 'tabFilesystem') }
-      ]
+      actions: [{ label: '🖥️ Файлы хоста WS-FIN-04', primary: true, onClick: () => app.selectAndOpenHost('h2', 'tabFilesystem') }]
     },
     f6: {
-      name: 'Registry RunKey Modification',
-      type: 'Находка: Закрепление в реестре',
-      assertion: 'T1547.001 (Registry Run Keys)',
-      verification: 'Sysmon Event 13',
+      name: 'Registry RunKey Modification', type: 'Находка: Закрепление в реестре',
+      assertion: 'T1547.001 (Registry Run)', verification: 'Sysmon Event 13',
       details: 'Хост: WS-FIN-04 (192.168.1.105)\nКлюч: HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\Run\\Updater.exe',
-      actions: [
-        { label: '🖥️ Закрепление хоста WS-FIN-04', primary: true, onClick: () => app.selectAndOpenHost('h2', 'tabPersistence') }
-      ]
+      actions: [{ label: '🖥️ Закрепление хоста WS-FIN-04', primary: true, onClick: () => app.selectAndOpenHost('h2', 'tabPersistence') }]
     },
     f7: {
-      name: 'Kerberos AS-REP Roasting Attempt',
-      type: 'Находка: Атака на Kerberos',
-      assertion: 'T1558.004 (AS-REP Roasting)',
-      verification: 'Security Event 4768',
+      name: 'Kerberos AS-REP Roasting Attempt', type: 'Находка: Атака на Kerberos',
+      assertion: 'T1558.004 (AS-REP Roasting)', verification: 'Security Event 4768',
       details: 'Хост: DC01.CORP.LOCAL (192.168.1.10)\nЗапрошен TGT для аккаунта без pre-authentication.',
-      actions: [
-        { label: '🖥️ Учетные записи DC01', primary: true, onClick: () => app.selectAndOpenHost('h1', 'tabAccounts') }
-      ]
+      actions: [{ label: '🖥️ Учетные записи DC01', primary: true, onClick: () => app.selectAndOpenHost('h1', 'tabAccounts') }]
     },
     f8: {
-      name: 'Периметральное сканирование портов 80/443',
-      type: 'Находка: Разведка периметра',
-      assertion: 'T1046 (Network Service Discovery)',
-      verification: 'Firewall Drop Logs',
+      name: 'Периметральное сканирование портов', type: 'Находка: Разведка периметра',
+      assertion: 'T1046 (Network Discovery)', verification: 'Firewall Drop Logs',
       details: 'Хост: DMZ-WEB01 (172.16.0.15)\nПодсеть: 172.16.0.0/20. Внешний IP: 203.0.113.19.',
-      actions: [
-        { label: '🖥️ Сеть DMZ-WEB01', primary: true, onClick: () => app.selectAndOpenHost('h3', 'tabNetwork') }
-      ]
+      actions: [{ label: '🖥️ Сеть DMZ-WEB01', primary: true, onClick: () => app.selectAndOpenHost('h3', 'tabNetwork') }]
     }
   };
   return findingsMap[fid];
@@ -302,20 +279,17 @@ function selectCase(app, caseId) {
 function setupTimelineDrilldowns(app) {
   const lanesEl = document.getElementById('timelineLanes');
   if (!lanesEl) return;
-
   const eventCards = lanesEl.querySelectorAll('.card');
   if (eventCards.length >= 2) {
     eventCards[0].style.cursor = 'pointer';
-    eventCards[0].title = 'Нажмите для детальной форензик-инспекции события';
     eventCards[0].addEventListener('click', () => {
       app.inspectEntity({
         name: 'Событие Sysmon 10: Подозрительный доступ к памяти LSASS',
         type: 'Событие безопасности Windows (Sysmon)',
-        assertion: 'Достоверность: 0.98 (Факт)',
-        verification: 'Подтверждено в EVTX',
-        details: 'Время: 2026-09-17 14:02:18.104 UTC\nИсточник: powershell.exe (PID: 4820)\nЦелевой процесс: C:\\Windows\\System32\\lsass.exe (PID: 612)\nМаска доступа: 0x1010 (PROCESS_VM_READ | PROCESS_QUERY_LIMITED_INFORMATION)\nCall Trace: C:\\Windows\\SYSTEM32\\ntdll.dll+0x9fc24 | KERNELBASE.dll+0x2c140\nХэш источника SHA-256: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+        assertion: 'Достоверность: 0.98 (Факт)', verification: 'Подтверждено в EVTX',
+        details: 'Время: 2026-09-17 14:02:18.104 UTC\nИсточник: powershell.exe (PID: 4820) ➔ C:\\Windows\\System32\\lsass.exe (PID: 612)\nМаска доступа: 0x1010 (VM_READ | QUERY_LIMITED_INFORMATION)',
         actions: [
-          { label: '🖥️ Открыть процессы хоста DC01', primary: true, onClick: () => app.selectAndOpenHost('h1', 'tabProcesses') },
+          { label: '🖥️ Процессы хоста DC01', primary: true, onClick: () => app.selectAndOpenHost('h1', 'tabProcesses') },
           { label: '📊 Найти узел в Графе Атаки', onClick: () => app.navigateToView('investigationGraphView') },
           { label: '🛡️ Проверить гипотезу T1003.001', onClick: () => app.navigateToView('cyberRangeView') }
         ]
@@ -323,17 +297,15 @@ function setupTimelineDrilldowns(app) {
     });
 
     eventCards[1].style.cursor = 'pointer';
-    eventCards[1].title = 'Нажмите для детальной форензик-инспекции сетевого маяка';
     eventCards[1].addEventListener('click', () => {
       app.inspectEntity({
         name: 'Поток PCAP: Исходящий маяк на 198.51.100.44:443',
         type: 'Сетевой поток (PCAP Telemetry)',
-        assertion: 'Достоверность: 0.92 (Подтверждено)',
-        verification: 'PCAP Flow Analyzer',
-        details: 'Время: 2026-09-17 14:01:55.002 UTC\nИсточник: 192.168.1.105:49821 (WS-FIN-04)\nНазначение: 198.51.100.44:443 (Внешний C2 сервер)\nПротокол: TCP / TLS v1.3 (SNI: api.cloud-telemetry-sync.com)\nРазмер полезной нагрузки: 128.5 КБ\nПериодичность: 45 сек (джиттер ±4.5 сек)',
+        assertion: 'Достоверность: 0.92 (Подтверждено)', verification: 'PCAP Flow Analyzer',
+        details: 'Время: 2026-09-17 14:01:55.002 UTC\n192.168.1.105:49821 (WS-FIN-04) ➔ 198.51.100.44:443 (C2)\nTLS v1.3 (SNI: api.cloud-telemetry-sync.com), 128.5 КБ, джиттер 10%',
         actions: [
           { label: '📦 Открыть дамп в хранилище улик', primary: true, onClick: () => app.navigateToView('evidenceView') },
-          { label: '🖥️ Открыть сеть хоста WS-FIN-04', onClick: () => app.selectAndOpenHost('h2', 'tabNetwork') }
+          { label: '🖥️ Сеть хоста WS-FIN-04', onClick: () => app.selectAndOpenHost('h2', 'tabNetwork') }
         ]
       });
     });
@@ -343,10 +315,8 @@ function setupTimelineDrilldowns(app) {
 function setupMitreDrilldowns(app) {
   const grid = document.getElementById('mitreGrid');
   if (!grid) return;
-
   grid.querySelectorAll('.card').forEach(card => {
     card.style.cursor = 'pointer';
-    card.title = 'Нажмите для инспекции техники ATT&CK и улик';
     card.addEventListener('mouseenter', () => card.style.borderColor = 'var(--accent-info)');
     card.addEventListener('mouseleave', () => card.style.borderColor = 'var(--border-muted)');
     card.addEventListener('click', () => {
@@ -354,10 +324,9 @@ function setupMitreDrilldowns(app) {
       if (text.includes('T1003.001')) {
         app.inspectEntity({
           name: 'MITRE ATT&CK T1003.001: OS Credential Dumping (LSASS Memory)',
-          type: 'Таксономия: Сбор учетных данных',
-          assertion: 'Верифицировано по эталону',
+          type: 'Таксономия: Сбор учетных данных', assertion: 'Верифицировано по эталону',
           verification: 'Corroborated (2+ улики)',
-          details: 'Тактика: TA0006 Credential Access\nЗатронутый хост: DC01.CORP.LOCAL (192.168.1.10)\nПодтверждающие улики: Sysmon Event 10 (AccessMask 0x1010), память LSASS\nРекомендация: Включить Windows Defender Credential Guard (LSA Protection).',
+          details: 'Тактика: TA0006 Credential Access | Затронут: DC01.CORP.LOCAL\nУлики: Sysmon Event 10 (AccessMask 0x1010), память LSASS',
           actions: [
             { label: '🛡️ Сверить в Киберполигоне CTF', primary: true, onClick: () => app.navigateToView('cyberRangeView') },
             { label: '📊 Показать в Графе Атаки', onClick: () => app.navigateToView('investigationGraphView') }
@@ -366,10 +335,8 @@ function setupMitreDrilldowns(app) {
       } else if (text.includes('T1059.001')) {
         app.inspectEntity({
           name: 'MITRE ATT&CK T1059.001: PowerShell Execution',
-          type: 'Таксономия: Выполнение',
-          assertion: 'Зафиксировано',
-          verification: 'Sysmon Event 1',
-          details: 'Тактика: TA0002 Execution\nЗатронутый хост: WS-FIN-04.CORP.LOCAL (192.168.1.105)\nКомандная строка: powershell.exe -NoP -enc SQBFAFgA...\nОбфускация: Base64 кодированный скрипт.',
+          type: 'Таксономия: Выполнение', assertion: 'Зафиксировано', verification: 'Sysmon Event 1',
+          details: 'Тактика: TA0002 Execution | Затронут: WS-FIN-04.CORP.LOCAL\nКоманда: powershell.exe -NoP -enc SQBFAFgA...',
           actions: [
             { label: '🖥️ Открыть хост WS-FIN-04', primary: true, onClick: () => app.selectAndOpenHost('h2') },
             { label: '📊 Показать в Графе Атаки', onClick: () => app.navigateToView('investigationGraphView') }
@@ -378,14 +345,10 @@ function setupMitreDrilldowns(app) {
       } else {
         const title = card.querySelector('div')?.textContent || 'Техника ATT&CK';
         app.inspectEntity({
-          name: title,
-          type: 'Тактика ATT&CK Enterprise',
-          assertion: 'Индикатор TTP',
+          name: title, type: 'Тактика ATT&CK Enterprise', assertion: 'Индикатор TTP',
           verification: 'Статус: Анализируется',
-          details: `Категория матрицы MITRE: ${title}.\nВ текущей сессии прямых артефактов эксплуатации на активных хостах не выявлено.`,
-          actions: [
-            { label: '📊 Перейти к Графу Атак', primary: true, onClick: () => app.navigateToView('investigationGraphView') }
-          ]
+          details: `Категория матрицы MITRE: ${title}.\nПрямых артефактов эксплуатации на активных хостах не выявлено.`,
+          actions: [{ label: '📊 Перейти к Графу Атак', primary: true, onClick: () => app.navigateToView('investigationGraphView') }]
         });
       }
     });
@@ -396,34 +359,27 @@ function setupEvidenceDrilldowns(app) {
   const rows = document.querySelectorAll('#evidenceTableBody tr');
   const evidenceDetails = [
     {
-      name: 'Security_Sysmon.evtx',
-      type: 'Форензик-артефакт: Журнал событий Windows',
-      assertion: 'Хранилище CAS (Неизменяемый)',
-      verification: 'Хэши верифицированы',
-      details: 'Размер: 14.2 КБ\nCAS BLAKE3: 9a12b88f192a3456c7890123456789abcdef0123456789abcdef0123456777\nForensic SHA-256: d4e109823456789abcdef0123456789abcdef0123456789abcdef0123456709\nИсточник: DC01.CORP.LOCAL (C:\\Windows\\System32\\Winevt\\Logs)\nНормализовано событий: 23 записи\nВыявлено ключевых фактов: 3',
+      name: 'Security_Sysmon.evtx', type: 'Форензик-артефакт: Журнал Windows',
+      assertion: 'Хранилище CAS', verification: 'Хэши верифицированы',
+      details: 'Размер: 14.2 КБ | BLAKE3: 9a12...77 | SHA-256: d4e1...09\nИсточник: DC01.CORP.LOCAL (Winevt\\Logs)',
       actions: [
         { label: '⏱️ Показать события на Таймлайне', primary: true, onClick: () => app.navigateToView('timelineView') },
-        { label: '📊 Показать связанные узлы Графа', onClick: () => app.navigateToView('investigationGraphView') }
+        { label: '📊 Связанные узлы Графа', onClick: () => app.navigateToView('investigationGraphView') }
       ]
     },
     {
-      name: 'traffic_capture.pcap',
-      type: 'Форензик-артефакт: Сетевой трафик',
-      assertion: 'Хранилище CAS (Неизменяемый)',
-      verification: 'Хэши верифицированы',
-      details: 'Размер: 128.5 КБ\nCAS BLAKE3: b834ac23456789abcdef0123456789abcdef0123456789abcdef0123456712\nForensic SHA-256: 88faac123456789abcdef0123456789abcdef0123456789abcdef01234567ac\nИнтерфейс захвата: Ethernet0 (Периметр DMZ)\nПроанализировано пакетов: 842 пакета\nВыявлено аномалий C2: 1 сессия (порт 443)',
+      name: 'traffic_capture.pcap', type: 'Форензик-артефакт: Сетевой трафик',
+      assertion: 'Хранилище CAS', verification: 'Хэши верифицированы',
+      details: 'Размер: 128.5 КБ | BLAKE3: b834...12 | SHA-256: 88fa...ac\nПериметр DMZ: 842 пакета, 1 C2 сессия',
       actions: [
         { label: '⏱️ Показать сетевой маяк на Таймлайне', primary: true, onClick: () => app.navigateToView('timelineView') },
-        { label: '🖥️ Открыть хост источника WS-FIN-04', onClick: () => app.selectAndOpenHost('h2') }
+        { label: '🖥️ Открыть хост WS-FIN-04', onClick: () => app.selectAndOpenHost('h2') }
       ]
     }
   ];
 
   rows.forEach((row, idx) => {
     row.style.cursor = 'pointer';
-    row.title = 'Нажмите для просмотра цепочки владения и свойств артефакта';
-    row.addEventListener('mouseenter', () => row.style.backgroundColor = 'rgba(88,166,255,0.08)');
-    row.addEventListener('mouseleave', () => row.style.backgroundColor = 'transparent');
     row.addEventListener('click', () => {
       const ev = evidenceDetails[idx];
       if (ev) app.inspectEntity(ev);
@@ -441,14 +397,97 @@ function setupHeaderDrilldowns(app) {
 }
 
 function setupHostListDrilldowns(app) {
-  // Enhances host items in Infra Discovery with one-click deep dive
   const hostListEl = document.getElementById('hostList');
   if (!hostListEl) return;
-
   hostListEl.querySelectorAll('.host-item').forEach(item => {
     item.addEventListener('dblclick', () => {
       const hostId = item.getAttribute('data-host-id');
       if (hostId) app.selectAndOpenHost(hostId);
+    });
+  });
+}
+
+function setupPyramidDrilldowns(app) {
+  const tiers = {
+    TTPs: {
+      name: 'Пирамида боли: TTPs (3 техники)', type: 'Индикатор TTP (Критично)',
+      assertion: 'Влияние: Максимальное (Tough)', verification: 'Матрица ATT&CK',
+      details: '1. T1059.001 (PowerShell) — PID 4820 на WS-FIN-04.\n2. T1003.001 (LSASS) — Чтение памяти на DC01.\n3. T1053.005 (Scheduled Task) — SecurityAuditCollector на DC01.',
+      actions: [
+        { label: '🎯 Матрица MITRE ATT&CK', primary: true, onClick: () => app.navigateToView('mitreView') },
+        { label: '📊 Открыть Граф Атаки', onClick: () => app.navigateToView('investigationGraphView') },
+        { label: '🛡️ Сверить в Киберполигоне CTF', onClick: () => app.navigateToView('cyberRangeView') }
+      ]
+    },
+    Tools: {
+      name: 'Пирамида боли: Tools (2 инструмента)', type: 'Вредоносный софт (Высокий)',
+      assertion: 'Влияние: Значительное (Challenging)', verification: 'Эвристика EDR & Sysmon',
+      details: '1. Mimikatz / sekurlsa — чтение паролей из памяти LSASS на DC01.\n2. Obfuscated PowerShell Loader — стейджер C2 на WS-FIN-04.',
+      actions: [
+        { label: '🖥️ Процессы DC01 (LSASS)', primary: true, onClick: () => app.selectAndOpenHost('h1', 'tabProcesses') },
+        { label: '🖥️ Процессы WS-FIN-04', onClick: () => app.selectAndOpenHost('h2', 'tabProcesses') }
+      ]
+    },
+    Artifacts: {
+      name: 'Пирамида боли: Артефакты (9 шт.)', type: 'Артефакты расследования',
+      assertion: 'Влияние: Ощутимое (Annoying)', verification: 'CAS & журналы ОС',
+      details: '• EVTX: Security_Sysmon.evtx (ID 1, 10, 13)\n• Security Events: 4688, 4698, 4768\n• PCAP: traffic_capture.pcap (TCP 443)\n• Файл: C:\\Temp\\updater_payload.exe\n• Реестр: HKLM\\...\\Run\\Updater.exe',
+      actions: [
+        { label: '📦 Проверить улики в CAS', primary: true, onClick: () => app.navigateToView('evidenceView') },
+        { label: '⏱️ События на Таймлайне', onClick: () => app.navigateToView('timelineView') }
+      ]
+    },
+    Domains: {
+      name: 'Пирамида боли: Домены C2 (4 шт.)', type: 'Сетевые домены C2',
+      assertion: 'Влияние: Простое (Simple)', verification: 'DNS-кэш и сетевой перехват',
+      details: '1. update.external-service-cdn.org — C2 дроппер\n2. sync.cloud-telemetry-endpoint.net — C2 маяк\n3. CORP.LOCAL — домен Active Directory\n4. defense-telemetry-check.local',
+      actions: [{ label: '⏱️ Сетевые маяки на Таймлайне', primary: true, onClick: () => app.navigateToView('timelineView') }]
+    },
+    IPs: {
+      name: 'Пирамида боли: IP-адреса (7 шт.)', type: 'Сетевые адреса',
+      assertion: 'Влияние: Легкое (Easy)', verification: 'Сетевые адаптеры и сокеты',
+      details: '• 192.168.1.10 (DC01)\n• 192.168.1.105 (WS-FIN-04)\n• 172.16.0.15 (DMZ-WEB01)\n• 198.51.100.44 (C2 сервер, 443)\n• 203.0.113.19 (Скан периметра)\n• 10.0.10.1 (БД), 127.0.0.1 (Loopback)',
+      actions: [
+        { label: '🖥️ Топология инфраструктуры', primary: true, onClick: () => app.navigateToView('infraDiscoveryView') },
+        { label: '📊 Размещение в Графе Атаки', onClick: () => app.navigateToView('investigationGraphView') }
+      ]
+    },
+    Hashes: {
+      name: 'Пирамида боли: Хэши файлов (12 шт.)', type: 'Криптографические хэши',
+      assertion: 'Влияние: Тривиальное (Trivial)', verification: 'Хранилище CAS',
+      details: '• Security_Sysmon.evtx: blake3:9a12...77 | sha256:d4e1...09\n• traffic_capture.pcap: blake3:b834...12 | sha256:88fa...ac\n• updater_payload.exe: blake3:3f7a...bc | sha256:5e89...11\n• phishing.docx: blake3:1c2d...44 | sha256:7a9b...33',
+      actions: [
+        { label: '📦 Открыть Хранилище улик CAS', primary: true, onClick: () => app.navigateToView('evidenceView') },
+        { label: '📑 Реестр находок расследования', onClick: () => app.navigateToView('casesView') }
+      ]
+    }
+  };
+
+  const tiersEls = document.querySelectorAll('.pyramid-tier');
+  const boxTitle = document.getElementById('pyramidBoxTitle');
+  const boxContent = document.getElementById('pyramidBoxContent');
+
+  tiersEls.forEach(tierEl => {
+    tierEl.addEventListener('click', () => {
+      tiersEls.forEach(t => { t.style.outline = 'none'; });
+      tierEl.style.outline = '2px solid var(--accent-info)';
+      const tierKey = tierEl.getAttribute('data-tier');
+      const data = tiers[tierKey];
+      if (!data) return;
+
+      if (boxTitle && boxContent) {
+        boxTitle.textContent = data.name;
+        boxContent.textContent = `${data.assertion} (${data.verification})\n\n${data.details}`;
+      }
+
+      app.inspectEntity({
+        name: data.name,
+        type: data.type,
+        assertion: data.assertion,
+        verification: data.verification,
+        details: data.details,
+        actions: data.actions
+      });
     });
   });
 }

@@ -474,17 +474,6 @@ class CyberRangeCockpitApp {
         });
       });
     });
-    document.querySelectorAll('.pyramid-tier').forEach(t => {
-      t.addEventListener('click', () => {
-        this.inspectEntity({
-          name: `Пирамида боли: ${t.getAttribute('data-tier')}`,
-          type: 'Индикатор IoC',
-          assertion: 'Степень противодействия: ВЫСОКАЯ',
-          verification: 'Скоррелировано в CAS',
-          details: `Уровень ${t.getAttribute('data-tier')}: Перестройка требует смены инфраструктуры атаки.`
-        });
-      });
-    });
   }
 }
 
