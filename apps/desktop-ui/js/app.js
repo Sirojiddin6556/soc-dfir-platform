@@ -1,6 +1,7 @@
 import { IpcClient } from './ipc.js';
 import { ScannerController } from './scanner.js';
 import { renderAssetTab } from './asset_tabs.js';
+import { setupDrilldowns } from './drilldown.js';
 
 class CyberRangeCockpitApp {
   constructor() {
@@ -59,33 +60,42 @@ class CyberRangeCockpitApp {
     this.setupKeyboardShortcuts();
     this.setupActionButtons();
     this.setupInteractiveElements();
+    setupDrilldowns(this);
     this.scanner.init();
   }
 
   setupNavigation() {
-    const navItems = document.querySelectorAll('#mainSidebar .nav-item');
-    navItems.forEach(item => {
+    document.querySelectorAll('#mainSidebar .nav-item').forEach(item => {
       item.addEventListener('click', () => {
         const targetView = item.getAttribute('data-view');
-        if (!targetView) return;
-
-        navItems.forEach(i => i.classList.remove('active'));
-        item.classList.add('active');
-
-        document.querySelectorAll('#centerWorkspace .tab-content').forEach(view => {
-          view.style.display = 'none';
-        });
-
-        const targetEl = document.getElementById(targetView);
-        if (targetEl) {
-          targetEl.style.display = targetView === 'infraDiscoveryView' || targetView === 'investigationGraphView' ? 'flex' : 'block';
-          this.currentView = targetView;
-          if (targetView === 'investigationGraphView') {
-            this.drawAttackGraph();
-          }
-        }
+        if (targetView) this.navigateToView(targetView);
       });
     });
+  }
+
+  navigateToView(targetView) {
+    document.querySelectorAll('#mainSidebar .nav-item').forEach(i => {
+      i.classList.toggle('active', i.getAttribute('data-view') === targetView);
+    });
+    document.querySelectorAll('#centerWorkspace .tab-content').forEach(v => {
+      v.style.display = 'none';
+    });
+    const targetEl = document.getElementById(targetView);
+    if (targetEl) {
+      targetEl.style.display = targetView === 'infraDiscoveryView' || targetView === 'investigationGraphView' ? 'flex' : 'block';
+      this.currentView = targetView;
+      if (targetView === 'investigationGraphView') this.drawAttackGraph();
+    }
+  }
+
+  selectAndOpenHost(hostId, tab = 'tabOverview') {
+    const host = this.hosts.find(h => h.id === hostId || h.hostname === hostId || h.ip === hostId);
+    if (host) this.selectedHost = host;
+    this.currentAssetTab = tab;
+    this.renderAssetDetails();
+    this.navigateToView('assetDetailsView');
+    const tabBtn = document.querySelector(`.asset-tabs .tab-btn[data-tab="${tab}"], #assetSubTabs .sub-tab-btn[data-asset-tab="${tab}"]`);
+    if (tabBtn) tabBtn.click();
   }
 
   renderInfraDiscovery() {
@@ -170,18 +180,7 @@ class CyberRangeCockpitApp {
   }
 
   openAssetDetailsView() {
-    document.querySelectorAll('#mainSidebar .nav-item').forEach(i => {
-      if (i.getAttribute('data-view') === 'assetDetailsView') i.classList.add('active');
-      else i.classList.remove('active');
-    });
-
-    document.querySelectorAll('#centerWorkspace .tab-content').forEach(view => {
-      view.style.display = 'none';
-    });
-
-    const el = document.getElementById('assetDetailsView');
-    if (el) el.style.display = 'flex';
-    this.currentView = 'assetDetailsView';
+    this.navigateToView('assetDetailsView');
     this.renderAssetDetails();
   }
 
@@ -346,15 +345,39 @@ class CyberRangeCockpitApp {
     if (!content || !typeBadge) return;
 
     typeBadge.textContent = entity.type;
+    const actionsHtml = Array.isArray(entity.actions) && entity.actions.length > 0 ? `
+      <div style="margin-top: 10px; border-top: 1px solid var(--border-color); padding-top: 8px;">
+        <div class="inspector-label" style="margin-bottom: 6px;">Быстрый переход и действия</div>
+        <div style="display: flex; flex-direction: column; gap: 4px;">
+          ${entity.actions.map((act, idx) => `
+            <button class="btn ${act.primary ? 'btn-primary' : ''} inspector-action-btn" data-action-idx="${idx}" style="text-align: left; font-size: 11px; padding: 4px 8px;">
+              ${act.label}
+            </button>
+          `).join('')}
+        </div>
+      </div>
+    ` : '';
+
     content.innerHTML = `
       <div class="inspector-field"><div class="inspector-label">Имя сущности</div><div class="inspector-value">${entity.name}</div></div>
       <div class="inspector-field"><div class="inspector-label">Эпистемический статус</div><div class="inspector-value">${entity.assertion} (${entity.verification})</div></div>
-      <div class="inspector-field"><div class="inspector-label">Детали</div><div class="inspector-value">${entity.details}</div></div>
+      <div class="inspector-field"><div class="inspector-label">Детали</div><div class="inspector-value" style="white-space: pre-line;">${entity.details}</div></div>
+      ${actionsHtml}
       <div style="display: flex; gap: 6px; margin-top: 10px;">
         <button class="btn btn-primary" style="flex: 1;">Подтвердить</button>
         <button class="btn" style="flex: 1;">Опровергнуть</button>
       </div>
     `;
+
+    if (Array.isArray(entity.actions)) {
+      content.querySelectorAll('.inspector-action-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const idx = parseInt(btn.getAttribute('data-action-idx'), 10);
+          const act = entity.actions[idx];
+          if (act && typeof act.onClick === 'function') act.onClick();
+        });
+      });
+    }
   }
 
   setupCyberRange() {
