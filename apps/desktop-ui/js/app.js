@@ -1,5 +1,6 @@
 import { IpcClient } from './ipc.js';
 import { ScannerController } from './scanner.js';
+import { renderAssetTab } from './asset_tabs.js';
 
 class CyberRangeCockpitApp {
   constructor() {
@@ -210,51 +211,7 @@ class CyberRangeCockpitApp {
     const container = document.getElementById('assetTabContent');
     const h = this.selectedHost;
     if (!container || !h) return;
-
-    switch (this.currentAssetTab) {
-      case 'tabOverview':
-        container.innerHTML = `
-          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
-            <div class="card">
-              <div class="inspector-label">Имя хоста и FQDN</div><div class="inspector-value">${h.hostname}</div>
-              <div class="inspector-label" style="margin-top: 8px;">IPv4-адрес</div><div class="inspector-value">${h.ip}</div>
-              <div class="inspector-label" style="margin-top: 8px;">Физический MAC-адрес</div><div class="inspector-value">${h.mac}</div>
-            </div>
-            <div class="card">
-              <div class="inspector-label">Операционная система</div><div class="inspector-value">${h.os}</div>
-              <div class="inspector-label" style="margin-top: 8px;">Уровень критичности</div><div class="inspector-value">${h.criticality}</div>
-              <div class="inspector-label" style="margin-top: 8px;">Статус расследования</div><div class="inspector-value">${h.status}</div>
-            </div>
-          </div>`;
-        break;
-      case 'tabNetwork':
-        container.innerHTML = `<h4 style="font-size: 12px; margin-bottom: 8px;">Слушающие сокеты и открытые порты</h4>
-          <table class="data-table"><thead><tr><th>Порт</th><th>Протокол</th><th>Служба</th><th>Состояние</th></tr></thead>
-          <tbody>${h.ports.map(p => `<tr><td><strong>${p}</strong></td><td>TCP</td><td>svc-${p}</td><td><span style="color: var(--accent-success)">СЛУШАЕТ</span></td></tr>`).join('')}</tbody></table>`;
-        break;
-      case 'tabProcesses':
-        container.innerHTML = `<h4 style="font-size: 12px; margin-bottom: 8px;">Дерево активных процессов (Форензик-снимок)</h4>
-          <table class="data-table"><thead><tr><th>PID</th><th>PPID</th><th>Образ</th><th>Пользователь</th><th>Командная строка</th></tr></thead>
-          <tbody><tr><td>4</td><td>0</td><td>System</td><td>NT AUTHORITY\\SYSTEM</td><td>-</td></tr>
-          <tr><td>612</td><td>4</td><td>lsass.exe</td><td>NT AUTHORITY\\SYSTEM</td><td>C:\\Windows\\system32\\lsass.exe</td></tr>
-          <tr style="background: rgba(248,81,73,0.1)"><td>4820</td><td>824</td><td>powershell.exe</td><td>CORP\\Administrator</td><td>powershell.exe -NoP -enc SQBFAFgA...</td></tr></tbody></table>`;
-        break;
-      case 'tabPersistence':
-        container.innerHTML = `<h4 style="font-size: 12px; margin-bottom: 8px;">Механизмы закрепления (Persistence & Auto-Runs)</h4>
-          ${(h.persistence || []).length ? (h.persistence || []).map(p => `<div class="card" style="border-left: 3px solid var(--accent-critical)">${p}</div>`).join('') : '<div style="color: var(--text-muted); font-size: 12px;">Механизмов автозапуска и закрепления не обнаружено.</div>'}`;
-        break;
-      case 'tabSoftware':
-        container.innerHTML = `<h4 style="font-size: 12px; margin-bottom: 8px;">Инвентарь ПО и SBOM CycloneDX</h4>
-          <table class="data-table"><thead><tr><th>Компонент</th><th>Версия</th><th>Идентификатор CPE</th></tr></thead>
-          <tbody>${(h.software || []).map(s => `<tr><td><strong>${s.name}</strong></td><td>${s.ver}</td><td><code>${s.cpe}</code></td></tr>`).join('')}</tbody></table>`;
-        break;
-      case 'tabVulnerabilities':
-        container.innerHTML = `<h4 style="font-size: 12px; margin-bottom: 8px;">Скоррелированные уязвимости (CVE)</h4>
-          ${(h.vulnerabilities || []).length ? (h.vulnerabilities || []).map(v => `<div class="card" style="border-left: 3px solid var(--accent-critical)"><div style="font-weight: 700;">${v.cve} (CVSS ${v.cvss})</div><div style="font-size: 11px; color: var(--text-secondary); margin-top: 4px;">${v.name}</div></div>`).join('') : '<div style="color: var(--text-muted); font-size: 12px;">Неустраненных уязвимостей не обнаружено.</div>'}`;
-        break;
-      default:
-        container.innerHTML = `<div style="color: var(--text-muted); font-size: 12px;">Телеметрия вкладки <strong>${this.currentAssetTab}</strong> синхронизирована с CAS.</div>`;
-    }
+    renderAssetTab(container, h, this.currentAssetTab);
   }
 
   renderTimeline() {
