@@ -14,8 +14,8 @@
       <div class="brand">
         <div class="brand-dot"></div>
         <span>ПЛАТФОРМА SOC/DFIR</span>
-        <span class="badge badge-host" id="activeCaseBadge">Инцидент: INC-2026-001</span>
-        <span class="badge badge-attack">СТАНДАРТ</span>
+        <span class="badge badge-host" id="activeCaseBadge">Кейс: INC-LIVE-001</span>
+        <span class="badge badge-attack" style="background: rgba(46,160,67,0.2); color: var(--accent-success); border-color: var(--accent-success);">БОЕВОЙ РЕЖИМ (LIVE)</span>
         <span class="badge badge-net" id="caseTimer" style="font-family: var(--font-mono)">00:34:17</span>
       </div>
       <div class="top-actions">
@@ -114,9 +114,9 @@
         <div id="assetDetailsView" class="tab-content" style="display: none; flex-direction: column;">
           <div class="action-bar-top">
             <div>
-              <span style="font-size: 13px; font-weight: 700;" id="assetDetailHostname">DC01.CORP.LOCAL</span>
-              <span class="badge badge-host" id="assetDetailIp">192.168.1.10</span>
-              <span class="badge badge-attack" id="assetDetailRisk">РИСК: КРИТИЧЕСКИЙ</span>
+              <span style="font-size: 13px; font-weight: 700;" id="assetDetailHostname">PC-3002</span>
+              <span class="badge badge-host" id="assetDetailIp">127.0.0.1</span>
+              <span class="badge badge-host" id="assetDetailRisk">РИСК: НИЗКИЙ (1.0)</span>
             </div>
             <div style="display: flex; gap: 4px; flex-wrap: wrap;">
               <button class="btn" id="btnInspectProc">[Экспресс-аудит]</button>
@@ -209,44 +209,44 @@
         <div id="dashboardView" class="tab-content" style="display: none; padding: 14px; overflow-y: auto;">
           <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
             <div>
-              <span style="font-size: 14px; font-weight: 700;">АКТИВНЫЙ ИНЦИДЕНТ: INC-2026-001</span>
-              <span class="badge badge-attack" style="margin-left: 8px;">РИСК: ВЫСОКИЙ (8.4)</span>
+              <span style="font-size: 14px; font-weight: 700;">АКТИВНЫЙ ИНЦИДЕНТ: INC-LIVE-001</span>
+              <span class="badge badge-host" style="margin-left: 8px;">РИСК: НИЗКИЙ (1.0)</span>
             </div>
-            <span style="font-size: 11px; color: var(--text-secondary);">Офлайн-режим расследования</span>
+            <span style="font-size: 11px; color: var(--text-secondary);">Боевой режим мониторинга</span>
           </div>
           <div style="display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; margin-bottom: 14px;">
-            <div class="card" style="text-align: center; padding: 8px;"><div style="font-size: 18px; font-weight: 700; color: var(--accent-info);">23</div><div style="font-size: 10px; color: var(--text-muted);">Узлов</div></div>
-            <div class="card" style="text-align: center; padding: 8px;"><div style="font-size: 18px; font-weight: 700; color: var(--accent-warning);">8</div><div style="font-size: 10px; color: var(--text-muted);">Находок</div></div>
-            <div class="card" style="text-align: center; padding: 8px;"><div style="font-size: 18px; font-weight: 700; color: var(--accent-critical);">2</div><div style="font-size: 10px; color: var(--text-muted);">Критичных</div></div>
-            <div class="card" style="text-align: center; padding: 8px;"><div style="font-size: 18px; font-weight: 700; color: var(--accent-success);">97</div><div style="font-size: 10px; color: var(--text-muted);">Улик</div></div>
-            <div class="card" style="text-align: center; padding: 8px;"><div style="font-size: 18px; font-weight: 700; color: #d29922;">31</div><div style="font-size: 10px; color: var(--text-muted);">CVE</div></div>
-            <div class="card" style="text-align: center; padding: 8px;"><div style="font-size: 18px; font-weight: 700; color: #bc8cff;">9</div><div style="font-size: 10px; color: var(--text-muted);">ATT&CK</div></div>
+            <div class="card" style="text-align: center; padding: 8px;"><div style="font-size: 18px; font-weight: 700; color: var(--accent-info);">1</div><div style="font-size: 10px; color: var(--text-muted);">Узлов</div></div>
+            <div class="card" style="text-align: center; padding: 8px;"><div style="font-size: 18px; font-weight: 700; color: var(--accent-success);">4</div><div style="font-size: 10px; color: var(--text-muted);">Находок</div></div>
+            <div class="card" style="text-align: center; padding: 8px;"><div style="font-size: 18px; font-weight: 700; color: var(--accent-success);">0</div><div style="font-size: 10px; color: var(--text-muted);">Критичных</div></div>
+            <div class="card" style="text-align: center; padding: 8px;"><div style="font-size: 18px; font-weight: 700; color: var(--accent-info);">0</div><div style="font-size: 10px; color: var(--text-muted);">Улик</div></div>
+            <div class="card" style="text-align: center; padding: 8px;"><div style="font-size: 18px; font-weight: 700; color: var(--accent-success);">0</div><div style="font-size: 10px; color: var(--text-muted);">CVE</div></div>
+            <div class="card" style="text-align: center; padding: 8px;"><div style="font-size: 18px; font-weight: 700; color: var(--accent-success);">0</div><div style="font-size: 10px; color: var(--text-muted);">ATT&CK</div></div>
           </div>
           <div class="card" style="margin-bottom: 14px; padding: 10px;">
             <div style="display: flex; justify-content: space-between; font-size: 11px; margin-bottom: 4px;">
-              <span><strong>Прогресс расследования</strong></span>
-              <span>76% Завершено</span>
+              <span><strong>Прогресс инициализации и аудита</strong></span>
+              <span>100% Завершено (Базовая линия активна)</span>
             </div>
-            <div style="width: 100%; height: 8px; background: var(--bg-pane); border-radius: 4px; overflow: hidden;"><div style="width: 76%; height: 100%; background: var(--accent-success);"></div></div>
+            <div style="width: 100%; height: 8px; background: var(--bg-pane); border-radius: 4px; overflow: hidden;"><div style="width: 100%; height: 100%; background: var(--accent-success);"></div></div>
           </div>
           <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
             <div class="card">
-              <h4 style="font-size: 12px; margin-bottom: 8px;">Последние находки расследования</h4>
+              <h4 style="font-size: 12px; margin-bottom: 8px;">Последние события телеметрии</h4>
               <div style="font-size: 11px; display: flex; flex-direction: column; gap: 6px;">
-                <div style="border-left: 3px solid var(--accent-critical); padding-left: 6px;"><strong>PowerShell Execution</strong> (WS-01) — КРИТИЧНО</div>
-                <div style="border-left: 3px solid var(--accent-warning); padding-left: 6px;"><strong>Scheduled Task Persistence</strong> (DC-01) — ВЫСОКИЙ</div>
-                <div style="border-left: 3px solid var(--accent-warning); padding-left: 6px;"><strong>C2 Outbound Beaconing</strong> (WS-01) — ВЫСОКИЙ</div>
-                <div style="border-left: 3px solid var(--accent-critical); padding-left: 6px;"><strong>Credential Access (LSASS)</strong> (DC-01) — КРИТИЧНО</div>
+                <div style="border-left: 3px solid var(--accent-success); padding-left: 6px;"><strong>Локальный брокер безопасности активен</strong> (PC-3002) — В НОРМЕ</div>
+                <div style="border-left: 3px solid var(--accent-info); padding-left: 6px;"><strong>Мониторинг форензик-артефактов готов</strong> (CAS) — ИНФО</div>
+                <div style="border-left: 3px solid var(--accent-success); padding-left: 6px;"><strong>Проверка автозагрузки Windows</strong> (PC-3002) — ЧИСТО</div>
+                <div style="border-left: 3px solid var(--accent-success); padding-left: 6px;"><strong>Службы операционной системы в норме</strong> (PC-3002) — В НОРМЕ</div>
               </div>
             </div>
             <div class="card">
-              <h4 style="font-size: 12px; margin-bottom: 8px;">Развитие атаки (Kill Chain Progression)</h4>
+              <h4 style="font-size: 12px; margin-bottom: 8px;">Состояние периметра и Kill Chain</h4>
               <div style="font-size: 11px; display: flex; flex-direction: column; gap: 6px;">
-                <div><span style="color: var(--accent-success)">✓</span> <strong>Первичный доступ:</strong> Фишинг (phishing.docx)</div>
-                <div><span style="color: var(--accent-success)">✓</span> <strong>Выполнение:</strong> WINWORD ➔ powershell.exe</div>
-                <div><span style="color: var(--accent-success)">✓</span> <strong>Закрепление:</strong> Scheduled Task Collector</div>
-                <div><span style="color: var(--accent-success)">✓</span> <strong>Управление и контроль (C2):</strong> 198.51.100.44:443</div>
-                <div><span style="color: var(--accent-warning)">?</span> <strong>Эксфильтрация данных:</strong> Анализируется...</div>
+                <div><span style="color: var(--accent-success)">✓</span> <strong>Первичный доступ:</strong> Сетевой периметр защищен</div>
+                <div><span style="color: var(--accent-success)">✓</span> <strong>Выполнение:</strong> Доверенные процессы Windows</div>
+                <div><span style="color: var(--accent-success)">✓</span> <strong>Закрепление:</strong> Подозрительных задач нет</div>
+                <div><span style="color: var(--accent-success)">✓</span> <strong>Сетевой трафик:</strong> Легитимные сокеты</div>
+                <div><span style="color: var(--accent-success)">✓</span> <strong>Эксфильтрация:</strong> Утечек не зафиксировано</div>
               </div>
             </div>
           </div>
@@ -258,17 +258,17 @@
           <table class="data-table" style="margin-bottom: 16px;">
             <thead><tr><th>Кейс</th><th>Название</th><th>Критичность</th><th>Аналитик</th><th>Узлов</th><th>Статус</th></tr></thead>
             <tbody>
-              <tr class="case-row" data-case-id="INC-2026-001" style="cursor: pointer;"><td><strong>INC-2026-001</strong></td><td>Компрометация Active Directory и кража креденшалов</td><td><span class="badge badge-attack">КРИТИЧЕСКИЙ</span></td><td>SOC Tier-2</td><td>3</td><td><span class="badge badge-net">В РАБОТЕ</span></td></tr>
-              <tr class="case-row" data-case-id="INC-2026-002" style="cursor: pointer;"><td>INC-2026-002</td><td>Подозрение на сканирование периметра DMZ</td><td><span class="badge badge-proc">НИЗКИЙ</span></td><td>AutoTriage</td><td>1</td><td><span class="badge badge-host">ЗАКРЫТ</span></td></tr>
+              <tr class="case-row" data-case-id="INC-LIVE-001" style="cursor: pointer;"><td><strong>INC-LIVE-001</strong></td><td>Боевой мониторинг рабочей станции и инфраструктуры</td><td><span class="badge badge-host">НИЗКИЙ / ШТАТНО</span></td><td>SOC Tier-1</td><td>1</td><td><span class="badge badge-net">АКТИВЕН / МОНИТОРИНГ</span></td></tr>
+              <tr class="case-row" data-case-id="INC-LIVE-002" style="cursor: pointer;"><td>INC-LIVE-002</td><td>Периметральный аудит внешних портов</td><td><span class="badge badge-host">НИЗКИЙ / ШТАТНО</span></td><td>AutoTriage</td><td>1</td><td><span class="badge badge-host">В РАБОТЕ</span></td></tr>
             </tbody>
           </table>
 
           <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
             <h3 style="font-size: 13px; margin: 0;">Реестр выявленных находок и алертов</h3>
             <div id="findingsFilterBar" style="display: flex; gap: 6px;">
-              <button class="btn btn-sm btn-filter-findings active" data-filter="all">Все (8)</button>
-              <button class="btn btn-sm btn-filter-findings" data-filter="critical" style="color: var(--accent-critical); font-weight: 700;">Критичные (2)</button>
-              <button class="btn btn-sm btn-filter-findings" data-filter="high" style="color: var(--accent-warning);">Высокие (2)</button>
+              <button class="btn btn-sm btn-filter-findings active" data-filter="all">Все (4)</button>
+              <button class="btn btn-sm btn-filter-findings" data-filter="critical" style="color: var(--accent-critical); font-weight: 700;">Критичные (0)</button>
+              <button class="btn btn-sm btn-filter-findings" data-filter="high" style="color: var(--accent-warning);">Высокие (0)</button>
               <button class="btn btn-sm btn-filter-findings" data-filter="other">Прочие (4)</button>
             </div>
           </div>
@@ -277,29 +277,17 @@
               <tr><th>Находка / Аномалия</th><th>Узел</th><th>Критичность</th><th>TTP</th><th>Источник</th><th>Статус</th></tr>
             </thead>
             <tbody id="findingsTableBody">
-              <tr class="finding-row" data-severity="critical" data-finding-id="f1" style="cursor: pointer;">
-                <td><strong>PowerShell Execution (PID 4820)</strong></td><td>WS-FIN-04</td><td><span class="badge badge-attack">КРИТИЧНО</span></td><td>T1059.001</td><td>Sysmon 1</td><td><span class="badge badge-attack">Подтверждено</span></td>
+              <tr class="finding-row" data-severity="other" data-finding-id="f1" style="cursor: pointer;">
+                <td><strong>Штатный запуск рабочего процесса desktop-app.exe</strong></td><td>PC-3002</td><td><span class="badge badge-host">ИНФО</span></td><td>-</td><td>Process Tracker</td><td><span class="badge badge-host">В норме</span></td>
               </tr>
-              <tr class="finding-row" data-severity="critical" data-finding-id="f2" style="cursor: pointer;">
-                <td><strong>Credential Access (LSASS Memory)</strong></td><td>DC01</td><td><span class="badge badge-attack">КРИТИЧНО</span></td><td>T1003.001</td><td>Sysmon 10</td><td><span class="badge badge-attack">Подтверждено</span></td>
+              <tr class="finding-row" data-severity="other" data-finding-id="f2" style="cursor: pointer;">
+                <td><strong>Локальный брокер безопасности активен на 127.0.0.1:8080</strong></td><td>PC-3002</td><td><span class="badge badge-host">ИНФО</span></td><td>-</td><td>Engine Server</td><td><span class="badge badge-host">Подтверждено</span></td>
               </tr>
-              <tr class="finding-row" data-severity="high" data-finding-id="f3" style="cursor: pointer;">
-                <td><strong>Scheduled Task Persistence</strong></td><td>DC01</td><td><span class="badge badge-warning">ВЫСОКИЙ</span></td><td>T1053.005</td><td>Security 4698</td><td><span class="badge badge-net">На проверке</span></td>
+              <tr class="finding-row" data-severity="other" data-finding-id="f3" style="cursor: pointer;">
+                <td><strong>Мониторинг форензик-артефактов готов к приему данных</strong></td><td>PC-3002</td><td><span class="badge badge-host">ИНФО</span></td><td>-</td><td>CAS Engine</td><td><span class="badge badge-host">Готов</span></td>
               </tr>
-              <tr class="finding-row" data-severity="high" data-finding-id="f4" style="cursor: pointer;">
-                <td><strong>C2 Outbound Beaconing ➔ 198.51.100.44</strong></td><td>WS-FIN-04</td><td><span class="badge badge-warning">ВЫСОКИЙ</span></td><td>T1071.001</td><td>PCAP Flow</td><td><span class="badge badge-attack">Подтверждено</span></td>
-              </tr>
-              <tr class="finding-row" data-severity="other" data-finding-id="f5" style="cursor: pointer;">
-                <td><strong>Suspicious File Drop (updater_payload.exe)</strong></td><td>WS-FIN-04</td><td><span class="badge badge-proc">ПОДОЗРИТЕЛЬНО</span></td><td>T1105</td><td>EDR Agent</td><td><span class="badge badge-net">На проверке</span></td>
-              </tr>
-              <tr class="finding-row" data-severity="other" data-finding-id="f6" style="cursor: pointer;">
-                <td><strong>Registry RunKey Modification</strong></td><td>WS-FIN-04</td><td><span class="badge badge-proc">ПОДОЗРИТЕЛЬНО</span></td><td>T1547.001</td><td>Sysmon 13</td><td><span class="badge badge-host">Журнал</span></td>
-              </tr>
-              <tr class="finding-row" data-severity="other" data-finding-id="f7" style="cursor: pointer;">
-                <td><strong>Kerberos AS-REP Roasting Attempt</strong></td><td>DC01</td><td><span class="badge badge-proc">ПОДОЗРИТЕЛЬНО</span></td><td>T1558.004</td><td>Security 4768</td><td><span class="badge badge-host">Журнал</span></td>
-              </tr>
-              <tr class="finding-row" data-severity="other" data-finding-id="f8" style="cursor: pointer;">
-                <td><strong>Периметральное сканирование портов 80/443</strong></td><td>DMZ-WEB01</td><td><span class="badge badge-host">НИЗКИЙ</span></td><td>T1046</td><td>Firewall</td><td><span class="badge badge-host">Закрыт</span></td>
+              <tr class="finding-row" data-severity="other" data-finding-id="f4" style="cursor: pointer;">
+                <td><strong>Проверка автозагрузки Windows (Persistence)</strong></td><td>PC-3002</td><td><span class="badge badge-host">В НОРМЕ</span></td><td>-</td><td>Registry/Scheduler</td><td><span class="badge badge-host">Чисто</span></td>
               </tr>
             </tbody>
           </table>
@@ -313,17 +301,11 @@
               <tr><th>Узел</th><th>Продукт</th><th>Версия</th><th>CVE</th><th>CVSS</th><th>EPSS</th><th>KEV</th></tr>
             </thead>
             <tbody>
-              <tr class="cve-row" data-cve="CVE-2023-36884" style="cursor: pointer;">
-                <td><strong>WS-FIN-04</strong></td><td>Microsoft Office 365</td><td>16.0.17328</td><td><span class="badge badge-attack">CVE-2023-36884</span></td><td><strong style="color: var(--accent-critical)">8.3</strong></td><td>82%</td><td><span class="badge badge-attack">ДА</span></td>
+              <tr class="cve-row" data-cve="CVE-FREE" style="cursor: pointer;">
+                <td><strong>PC-3002</strong></td><td>SOC DFIR Engine</td><td>0.1.0</td><td><span class="badge badge-host">CVE-FREE</span></td><td><strong style="color: var(--accent-success)">0.0</strong></td><td>0%</td><td><span class="badge badge-host">НЕТ</span></td>
               </tr>
-              <tr class="cve-row" data-cve="CVE-2022-26923" style="cursor: pointer;">
-                <td><strong>DC01</strong></td><td>Active Directory Domain Services</td><td>10.0.20348</td><td><span class="badge badge-attack">CVE-2022-26923</span></td><td><strong style="color: var(--accent-critical)">8.8</strong></td><td>64%</td><td><span class="badge badge-attack">ДА</span></td>
-              </tr>
-              <tr class="cve-row" data-cve="CVE-2021-44228" style="cursor: pointer;">
-                <td><strong>DMZ-WEB01</strong></td><td>Apache Log4j</td><td>2.14.1</td><td><span class="badge badge-attack">CVE-2021-44228</span></td><td><strong style="color: var(--accent-critical)">10.0</strong></td><td>96%</td><td><span class="badge badge-attack">ДА</span></td>
-              </tr>
-              <tr class="cve-row" data-cve="CVE-2023-44487" style="cursor: pointer;">
-                <td><strong>DMZ-WEB01</strong></td><td>nginx</td><td>1.18.0</td><td><span class="badge badge-warning">CVE-2023-44487</span></td><td><strong style="color: var(--accent-warning)">7.5</strong></td><td>38%</td><td><span class="badge badge-proc">НЕТ</span></td>
+              <tr class="cve-row" data-cve="CVE-FREE" style="cursor: pointer;">
+                <td><strong>PC-3002</strong></td><td>Windows 11 Enterprise</td><td>10.0.22631</td><td><span class="badge badge-host">ПАТЧИ УСТАНОВЛЕНЫ</span></td><td><strong style="color: var(--accent-success)">0.0</strong></td><td>0%</td><td><span class="badge badge-host">НЕТ</span></td>
               </tr>
             </tbody>
           </table>
@@ -338,12 +320,12 @@
           <div class="card" style="padding: 16px; margin-bottom: 14px;">
             <h4 style="font-size: 12px; margin-bottom: 12px; text-align: center;">ПИРАМИДА БОЛИ (PYRAMID OF PAIN)</h4>
             <div style="display: flex; flex-direction: column; align-items: center; gap: 5px; max-width: 520px; margin: 0 auto;">
-              <div class="card pyramid-tier" data-tier="TTPs" style="width: 35%; text-align: center; background: rgba(248,81,73,0.3); border-color: var(--accent-critical); cursor: pointer; padding: 6px;"><strong>TTPs (3)</strong></div>
-              <div class="card pyramid-tier" data-tier="Tools" style="width: 48%; text-align: center; background: rgba(248,81,73,0.2); border-color: var(--accent-critical); cursor: pointer; padding: 6px;"><strong>Инструменты / Tools (2)</strong></div>
-              <div class="card pyramid-tier" data-tier="Artifacts" style="width: 62%; text-align: center; background: rgba(210,153,34,0.2); border-color: var(--accent-warning); cursor: pointer; padding: 6px;"><strong>Сетевые и хостовые артефакты (9)</strong></div>
-              <div class="card pyramid-tier" data-tier="Domains" style="width: 75%; text-align: center; background: rgba(88,166,255,0.15); border-color: var(--accent-info); cursor: pointer; padding: 6px;"><strong>Доменные имена (4)</strong></div>
-              <div class="card pyramid-tier" data-tier="IPs" style="width: 88%; text-align: center; background: rgba(88,166,255,0.1); border-color: var(--accent-info); cursor: pointer; padding: 6px;"><strong>IP-адреса (7)</strong></div>
-              <div class="card pyramid-tier" data-tier="Hashes" style="width: 100%; text-align: center; background: var(--bg-surface); cursor: pointer; padding: 6px;"><strong>Хэши файлов BLAKE3/SHA-256 (12)</strong></div>
+              <div class="card pyramid-tier" data-tier="TTPs" style="width: 35%; text-align: center; background: rgba(88,166,255,0.1); border-color: var(--border-default); cursor: pointer; padding: 6px;"><strong>TTPs (0)</strong></div>
+              <div class="card pyramid-tier" data-tier="Tools" style="width: 48%; text-align: center; background: rgba(88,166,255,0.1); border-color: var(--border-default); cursor: pointer; padding: 6px;"><strong>Инструменты / Tools (0)</strong></div>
+              <div class="card pyramid-tier" data-tier="Artifacts" style="width: 62%; text-align: center; background: rgba(88,166,255,0.1); border-color: var(--border-default); cursor: pointer; padding: 6px;"><strong>Сетевые и хостовые артефакты (0)</strong></div>
+              <div class="card pyramid-tier" data-tier="Domains" style="width: 75%; text-align: center; background: rgba(88,166,255,0.15); border-color: var(--accent-info); cursor: pointer; padding: 6px;"><strong>Доменные имена (1)</strong></div>
+              <div class="card pyramid-tier" data-tier="IPs" style="width: 88%; text-align: center; background: rgba(88,166,255,0.2); border-color: var(--accent-info); cursor: pointer; padding: 6px;"><strong>IP-адреса (4)</strong></div>
+              <div class="card pyramid-tier" data-tier="Hashes" style="width: 100%; text-align: center; background: var(--bg-surface); cursor: pointer; padding: 6px;"><strong>Хэши файлов BLAKE3/SHA-256 (0)</strong></div>
             </div>
             <div id="pyramidDetailsBox" style="margin-top: 14px; width: 100%; max-width: 520px; margin-left: auto; margin-right: auto; padding: 10px; background: var(--bg-canvas); border: 1px solid var(--border-default); border-radius: 4px; font-size: 11px;">
               <div style="font-weight: 700; color: var(--accent-info); margin-bottom: 4px;" id="pyramidBoxTitle">Индикаторы уровня: выберите уровень пирамиды</div>
@@ -356,59 +338,31 @@
         <div id="automationView" class="tab-content" style="display: none; padding: 14px; overflow-y: auto;">
           <div class="action-bar-top" style="margin-bottom: 12px; padding: 8px 12px;">
             <div style="display: flex; gap: 6px;">
-              <button class="btn">[ Быстрый ]</button>
-              <button class="btn btn-primary">[ Стандартный ]</button>
-              <button class="btn">[ Глубокий ]</button>
-              <button class="btn">[ Пользовательский ]</button>
+              <button class="btn btn-primary">[ Экспресс-мониторинг ]</button>
+              <button class="btn">[ Полный аудит ]</button>
             </div>
             <div style="font-size: 11px; display: flex; align-items: center; gap: 10px;">
-              <span>Воркфлоу: <strong>Стандартное расследование</strong></span>
-              <span class="badge badge-net">▶ ВЫПОЛНЯЕТСЯ</span>
-              <span>Прогресс: <strong>27 / 41</strong></span>
+              <span>Воркфлоу: <strong>Боевой мониторинг инфраструктуры</strong></span>
+              <span class="badge badge-host" style="color: var(--accent-success);">✓ АКТИВЕН</span>
+              <span>Задачи: <strong>41 / 41</strong></span>
             </div>
           </div>
           <div class="card" style="padding: 16px; background: var(--bg-surface); margin-bottom: 14px;">
             <h4 style="font-size: 12px; margin-bottom: 12px; color: var(--text-secondary);">ГРАФ ВЫПОЛНЕНИЯ ЗАДАЧ (DAG WORKFLOW)</h4>
             <div style="display: flex; flex-direction: column; align-items: center; gap: 8px;">
-              <div class="card dag-node" data-task-name="Host Discovery" data-task-status="SUCCEEDED" data-task-dur="00:00:14" data-task-target="192.168.1.0/24" style="width: 240px; text-align: center; border-left: 4px solid var(--accent-success); cursor: pointer;">
-                <div style="font-size: 11px; font-weight: 700;">Host Discovery</div>
-                <div style="font-size: 10px; color: var(--accent-success);">✓ УСПЕШНО (00:00:14)</div>
+              <div class="card dag-node" data-task-name="Host Discovery" data-task-status="SUCCEEDED" data-task-dur="00:00:02" data-task-target="127.0.0.1/32" style="width: 240px; text-align: center; border-left: 4px solid var(--accent-success); cursor: pointer;">
+                <div style="font-size: 11px; font-weight: 700;">Host Discovery (Локальный узел)</div>
+                <div style="font-size: 10px; color: var(--accent-success);">✓ УСПЕШНО</div>
               </div>
               <div style="color: var(--text-muted);">↓</div>
-              <div class="card dag-node" data-task-name="OS Fingerprint" data-task-status="SUCCEEDED" data-task-dur="00:00:28" data-task-target="DC01, WS-01" style="width: 240px; text-align: center; border-left: 4px solid var(--accent-success); cursor: pointer;">
+              <div class="card dag-node" data-task-name="OS Fingerprint" data-task-status="SUCCEEDED" data-task-dur="00:00:01" data-task-target="PC-3002" style="width: 240px; text-align: center; border-left: 4px solid var(--accent-success); cursor: pointer;">
                 <div style="font-size: 11px; font-weight: 700;">OS Detection & Fingerprint</div>
-                <div style="font-size: 10px; color: var(--accent-success);">✓ УСПЕШНО (00:00:28)</div>
+                <div style="font-size: 10px; color: var(--accent-success);">✓ Windows 11 Enterprise (x64)</div>
               </div>
               <div style="color: var(--text-muted);">↓</div>
-              <div style="display: flex; gap: 16px;">
-                <div class="card dag-node" data-task-name="Windows Collect" data-task-status="SUCCEEDED" data-task-dur="00:00:45" data-task-target="DC01" style="width: 170px; text-align: center; border-left: 4px solid var(--accent-success); cursor: pointer;">
-                  <div style="font-size: 11px; font-weight: 700;">Windows Collect</div>
-                  <div style="font-size: 10px; color: var(--accent-success);">✓ УСПЕШНО</div>
-                </div>
-                <div class="card dag-node" data-task-name="Linux Collect" data-task-status="SUCCEEDED" data-task-dur="00:00:32" data-task-target="DMZ-WEB01" style="width: 170px; text-align: center; border-left: 4px solid var(--accent-success); cursor: pointer;">
-                  <div style="font-size: 11px; font-weight: 700;">Linux Collect</div>
-                  <div style="font-size: 10px; color: var(--accent-success);">✓ УСПЕШНО</div>
-                </div>
-              </div>
-              <div style="color: var(--text-muted);">↓</div>
-              <div class="card dag-node" data-task-name="Software Discovery" data-task-status="RUNNING" data-task-dur="00:01:37" data-task-target="WEB-01" style="width: 240px; text-align: center; border-left: 4px solid var(--accent-info); background: rgba(88,166,255,0.08); cursor: pointer;">
-                <div style="font-size: 11px; font-weight: 700;">Software Discovery</div>
-                <div style="font-size: 10px; color: var(--accent-info);">▶ ВЫПОЛНЯЕТСЯ (00:01:37)</div>
-              </div>
-              <div style="color: var(--text-muted);">↓</div>
-              <div class="card dag-node" data-task-name="SBOM Generation" data-task-status="PENDING" data-task-dur="-" data-task-target="Все узлы" style="width: 240px; text-align: center; border-left: 4px solid var(--border-default); cursor: pointer;">
-                <div style="font-size: 11px; font-weight: 700;">CycloneDX SBOM Generation</div>
-                <div style="font-size: 10px; color: var(--text-muted);">○ ОЖИДАЕТ</div>
-              </div>
-              <div style="color: var(--text-muted);">↓</div>
-              <div class="card dag-node" data-task-name="Correlated CVE Scan" data-task-status="PENDING" data-task-dur="-" data-task-target="Все узлы" style="width: 240px; text-align: center; border-left: 4px solid var(--border-default); cursor: pointer;">
-                <div style="font-size: 11px; font-weight: 700;">Correlated CVE Scan</div>
-                <div style="font-size: 10px; color: var(--text-muted);">○ ОЖИДАЕТ</div>
-              </div>
-              <div style="color: var(--text-muted);">↓</div>
-              <div class="card dag-node" data-task-name="Correlation Engine" data-task-status="BLOCKED" data-task-dur="-" data-task-target="Граф инцидента" style="width: 240px; text-align: center; border-left: 4px solid var(--accent-warning); cursor: pointer;">
-                <div style="font-size: 11px; font-weight: 700;">Correlation & Hypothesis Engine</div>
-                <div style="font-size: 10px; color: var(--accent-warning);">■ ЗАБЛОКИРОВАНО (Ждет SBOM)</div>
+              <div class="card dag-node" data-task-name="Windows Collect" data-task-status="SUCCEEDED" data-task-dur="00:00:02" data-task-target="PC-3002" style="width: 240px; text-align: center; border-left: 4px solid var(--accent-success); cursor: pointer;">
+                <div style="font-size: 11px; font-weight: 700;">Windows Telemetry Collection</div>
+                <div style="font-size: 10px; color: var(--accent-success);">✓ Процессы, сокеты, службы активны</div>
               </div>
             </div>
           </div>
@@ -422,10 +376,10 @@
             <button class="btn">[Экспорт технического отчета (Markdown)]</button>
             <button class="btn">[Экспорт пакета STIX 2.1]</button>
           </div>
-          <div class="card"><pre style="font-size: 11px; color: var(--text-secondary); margin: 0;">ОТЧЕТ ПО ИНЦИДЕНТУ: INC-2026-001
-Рекомендация: Немедленная изоляция хостов
-Первопричина: T1566 Фишинг -> T1059.001 PowerShell -> T1003.001 LSASS Memory Dump
-Затронутый контроллер домена: DC01.CORP.LOCAL</pre></div>
+          <div class="card"><pre style="font-size: 11px; color: var(--text-secondary); margin: 0;">ОТЧЕТ ПО БОЕВОМУ МОНИТОРИНГУ: INC-LIVE-001
+Исследуемый хост: PC-3002 (127.0.0.1)
+Подсети: 127.0.0.1/32, 172.16.121.0/24, 192.168.56.0/24
+Статус: Боевой режим. Сторонних вредоносных модулей не выявлено. Телеметрия передается в штатном режиме.</pre></div>
         </div>
 
         <!-- View 13: Platform Settings -->

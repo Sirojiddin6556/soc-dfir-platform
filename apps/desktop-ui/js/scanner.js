@@ -8,7 +8,7 @@ export class ScannerController {
     this.ipc = ipc;
     this.isScanning = false;
     this.scanInterval = null;
-    this.selectedSubnet = '192.168.1.0/24';
+    this.selectedSubnet = '127.0.0.1/32';
   }
 
   init() {
@@ -27,7 +27,7 @@ export class ScannerController {
     document.getElementById('btnScanRemote')?.addEventListener('click', () => {
       const input = document.getElementById('remoteTargetInput');
       const target = input ? input.value.trim() : '';
-      this.startRemoteServiceScan(target || '192.168.1.50');
+      this.startRemoteServiceScan(target || '127.0.0.1');
     });
 
     // Кнопки аудита и CVE в карточке актива

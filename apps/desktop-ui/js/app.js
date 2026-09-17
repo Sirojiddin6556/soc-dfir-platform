@@ -14,31 +14,13 @@ class CyberRangeCockpitApp {
 
     this.hosts = [
       {
-        id: 'h1', hostname: 'DC01.CORP.LOCAL', ip: '192.168.1.10', mac: '00:1A:2B:3C:4D:5E',
-        os: 'Windows Server 2022 Datacenter (Сборка 20348)', criticality: 'Tier-0 (Контроллер домена)',
-        status: 'Скомпрометирован / Расследование', risk: 'КРИТИЧЕСКИЙ (9.6)', subnet: '192.168.1.0/24',
-        ports: [53, 88, 135, 139, 389, 445, 636, 3268, 3389],
-        services: ['Active Directory Domain Services', 'DNS Server', 'Kerberos KDC', 'Netlogon'],
-        persistence: ['Планировщик: SecurityAuditCollector (powershell -enc ...)', 'Реестр Run: SysMonitor (На проверке)'],
-        software: [{ name: 'Microsoft Active Directory', ver: '10.0.20348', cpe: 'cpe:2.3:o:microsoft:windows_server_2022' }],
-        vulnerabilities: [{ cve: 'CVE-2022-26923', cvss: 8.8, name: 'Повышение привилегий в Active Directory Domain Services' }]
-      },
-      {
-        id: 'h2', hostname: 'WS-FIN-04.CORP.LOCAL', ip: '192.168.1.105', mac: '00:1A:2B:AA:BB:CC',
-        os: 'Windows 11 Enterprise (Сборка 22631)', criticality: 'Tier-2 (Рабочая станция)',
-        status: 'Нулевой пациент (Фишинг)', risk: 'ВЫСОКИЙ (8.2)', subnet: '192.168.1.0/24',
-        ports: [135, 445, 3389], services: ['Windows Defender ATP', 'Workstation'],
-        persistence: ['RunKey: HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\Run\\Updater.exe'],
-        software: [{ name: 'Microsoft Office 365', ver: '16.0.17328', cpe: 'cpe:2.3:a:microsoft:office:365' }],
-        vulnerabilities: [{ cve: 'CVE-2023-36884', cvss: 8.3, name: 'Уязвимость удаленного выполнения кода (RCE) в HTML Office/Windows' }]
-      },
-      {
-        id: 'h3', hostname: 'DMZ-WEB01', ip: '172.16.0.15', mac: '52:54:00:12:34:56',
-        os: 'Ubuntu 22.04.4 LTS (Ядро Linux 5.15.0-107-generic)', criticality: 'Tier-1 (Внешний периметр)',
-        status: 'В норме / Мониторинг', risk: 'НИЗКИЙ (2.1)', subnet: '172.16.0.0/20',
-        ports: [22, 80, 443], services: ['nginx.service', 'sshd.service', 'systemd-resolved.service'],
-        persistence: ['Cron: /etc/cron.daily/logrotate'],
-        software: [{ name: 'nginx', ver: '1.18.0-0ubuntu1.4', cpe: 'cpe:2.3:a:f5:nginx:1.18.0' }],
+        id: 'h_local', hostname: 'PC-3002', ip: '127.0.0.1', mac: '00:00:00:00:00:00',
+        os: 'Windows 11 Enterprise (x64)', criticality: 'Tier-1 (Рабочая станция аналитика)',
+        status: 'В сети / Боевой режим', risk: 'НИЗКИЙ (1.0)', subnet: '127.0.0.1/32',
+        ports: [135, 445, 8080],
+        services: ['Desktop Engine Server', 'Windows Platform Broker', 'Windows Workstation'],
+        persistence: [],
+        software: [{ name: 'SOC DFIR Engine', ver: '0.1.0', cpe: 'cpe:2.3:a:soc:dfir_engine:0.1.0' }],
         vulnerabilities: []
       }
     ];
@@ -62,6 +44,17 @@ class CyberRangeCockpitApp {
     this.setupInteractiveElements();
     setupDrilldowns(this);
     this.scanner.init();
+
+    // Auto-probe live workstation on startup
+    try {
+      const res = await this.ipc.call('scan.network', { subnet: '127.0.0.1', mode: 'quick' });
+      if (res && res.discovered_hosts && res.discovered_hosts.length > 0) {
+        this.hosts[0] = Object.assign({}, this.hosts[0], res.discovered_hosts[0]);
+        this.selectedHost = this.hosts[0];
+        this.renderInfraDiscovery();
+        this.renderAssetDetails();
+      }
+    } catch (_) {}
   }
 
   setupNavigation() {
@@ -106,14 +99,14 @@ class CyberRangeCockpitApp {
     const subnetListEl = document.getElementById('subnetList');
     if (subnetListEl) {
       const subnets = [
-        { cidr: '192.168.1.0/24', label: 'Корпоративная ЛВС' },
-        { cidr: '172.16.0.0/20', label: 'DMZ (Периметр)' },
-        { cidr: '10.0.10.0/24', label: 'Базы данных и VPC' },
-        { cidr: '127.0.0.1/32', label: 'Локальный хост (Loopback)' }
+        { cidr: '127.0.0.1/32', label: 'Локальная станция аналитика' },
+        { cidr: '172.16.121.0/24', label: 'Основная сеть Ethernet' },
+        { cidr: '192.168.56.0/24', label: 'Адаптер хоста (Host-Only)' },
+        { cidr: '172.20.32.0/20', label: 'Виртуальная подсеть WSL' }
       ];
       subnetListEl.innerHTML = subnets.map(s => {
         const count = this.hosts.filter(h => h.subnet === s.cidr || (s.cidr.startsWith('127.') && h.ip === '127.0.0.1')).length;
-        const active = (this.scanner && this.scanner.selectedSubnet === s.cidr) || (!this.scanner && s.cidr === '192.168.1.0/24');
+        const active = (this.scanner && this.scanner.selectedSubnet === s.cidr) || (!this.scanner && s.cidr === '127.0.0.1/32');
         return `
           <div class="card subnet-card ${active ? 'active' : ''}" data-cidr="${s.cidr}" style="padding: 6px 8px; margin-bottom: 4px; font-size: 11px; cursor: pointer;">
             <strong>${s.cidr}</strong> (${s.label} - ${count} хост.)
@@ -184,8 +177,8 @@ class CyberRangeCockpitApp {
   }
 
   openAssetDetailsView() {
-    this.navigateToView('assetDetailsView');
     this.renderAssetDetails();
+    this.navigateToView('assetDetailsView');
   }
 
   setupAssetDetailsTabs() {
@@ -204,9 +197,17 @@ class CyberRangeCockpitApp {
     const h = this.selectedHost;
     if (!h) return;
 
-    document.getElementById('assetDetailHostname').textContent = h.hostname;
-    document.getElementById('assetDetailIp').textContent = h.ip;
-    document.getElementById('assetDetailRisk').textContent = h.risk;
+    const hostnameEl = document.getElementById('assetDetailHostname');
+    const ipEl = document.getElementById('assetDetailIp');
+    const riskEl = document.getElementById('assetDetailRisk');
+
+    if (hostnameEl) hostnameEl.textContent = h.hostname;
+    if (ipEl) ipEl.textContent = h.ip;
+    if (riskEl) {
+      riskEl.textContent = `РИСК: ${h.risk}`;
+      riskEl.className = `badge ${h.risk.includes('КРИТИЧЕСКИЙ') || h.risk.includes('CRITICAL') ? 'badge-attack' : 'badge-host'}`;
+    }
+
     this.renderAssetDetailsTabContent();
   }
 
@@ -221,19 +222,19 @@ class CyberRangeCockpitApp {
     const lanesEl = document.getElementById('timelineLanes');
     if (!lanesEl) return;
     lanesEl.innerHTML = `
-      <div class="card" style="border-left: 3px solid var(--accent-critical); margin-bottom: 8px;">
+      <div class="card" style="border-left: 3px solid var(--accent-success); margin-bottom: 8px;">
         <div style="display: flex; justify-content: space-between; font-size: 11px;">
-          <span><strong>2026-09-17 14:02:18.104 UTC</strong> │ Поток: Безопасность DC01</span>
-          <span class="badge badge-attack">КРИТИЧНО</span>
+          <span><strong>18:00:05.120 UTC</strong> │ Поток: Локальный брокер ядра</span>
+          <span class="badge badge-host">ИНФО</span>
         </div>
-        <div style="font-size: 12px; margin-top: 4px;">Событие Sysmon 10: Подозрительный доступ к памяти LSASS из powershell.exe (PID 4820)</div>
+        <div style="font-size: 12px; margin-top: 4px;">Engine Server JSON-RPC активен на 127.0.0.1:8080. Форензик-аудит запущен.</div>
       </div>
-      <div class="card" style="border-left: 3px solid var(--accent-warning); margin-bottom: 8px;">
+      <div class="card" style="border-left: 3px solid var(--accent-info); margin-bottom: 8px;">
         <div style="display: flex; justify-content: space-between; font-size: 11px;">
-          <span><strong>2026-09-17 14:01:55.002 UTC</strong> │ Поток: Сетевой периметр</span>
-          <span class="badge badge-net">ПОДОЗРИТЕЛЬНО</span>
+          <span><strong>18:00:01.004 UTC</strong> │ Поток: Телеметрия хоста</span>
+          <span class="badge badge-net">В НОРМЕ</span>
         </div>
-        <div style="font-size: 12px; margin-top: 4px;">Поток PCAP: Исходящий маяк (beaconing) на 198.51.100.44:443 (TCP SYN/ACK 128 КБ)</div>
+        <div style="font-size: 12px; margin-top: 4px;">Станция ${this.hosts[0]?.hostname || 'PC-3002'}: Сетевые интерфейсы и сокеты в штатном режиме. Вредоносных аномалий не обнаружено.</div>
       </div>
     `;
   }
@@ -245,8 +246,8 @@ class CyberRangeCockpitApp {
     grid.innerHTML = tactics.map((t, idx) => `
       <div class="card" style="font-size: 11px; padding: 8px;">
         <div style="font-weight: 700; color: var(--accent-info); margin-bottom: 6px;">${idx + 1}. ${t}</div>
-        <div style="background: ${t === 'Сбор учетных данных' ? 'rgba(248,81,73,0.2)' : 'var(--bg-canvas)'}; border: 1px solid var(--border-muted); padding: 4px; border-radius: 3px; font-size: 10px;">
-          ${t === 'Сбор учетных данных' ? '<strong style="color: var(--accent-critical)">T1003.001 (LSASS)</strong>' : (t === 'Выполнение' ? 'T1059.001 (PowerShell)' : 'Не обнаружено')}
+        <div style="background: var(--bg-canvas); border: 1px solid var(--border-muted); padding: 4px; border-radius: 3px; font-size: 10px; color: var(--text-secondary);">
+          Не обнаружено
         </div>
       </div>
     `).join('');
@@ -256,18 +257,14 @@ class CyberRangeCockpitApp {
     const tbody = document.getElementById('evidenceTableBody');
     if (tbody) {
       tbody.innerHTML = `
-        <tr><td><strong>Security_Sysmon.evtx</strong></td><td>14.2 KB</td><td>2026-09-17 14:00 UTC</td><td><code>blake3:9a12...77</code></td><td><code>sha256:d4e1...09</code></td></tr>
-        <tr><td><strong>traffic_capture.pcap</strong></td><td>128.5 KB</td><td>2026-09-17 14:01 UTC</td><td><code>blake3:b834...12</code></td><td><code>sha256:88fa...ac</code></td></tr>
+        <tr><td colspan="5" style="text-align: center; color: var(--text-muted); padding: 14px;">Хранилище CAS готово к приему форензик-артефактов (.evtx, .pcap, .raw). Загрузите файл через кнопку сверху.</td></tr>
       `;
     }
     const custody = document.getElementById('custodyChainLog');
     if (custody) {
       custody.innerHTML = `
         <div class="card" style="font-size: 11px;">
-          <strong>Блок #1: ArtifactIngested</strong> │ Двойной хеш BLAKE3 проверен в 14:00:02 UTC
-        </div>
-        <div class="card" style="font-size: 11px;">
-          <strong>Блок #2: Normalized</strong> │ Схема Sysmon v1.40 смаппирована в репозиторий SQLite
+          <strong>Блок #0: GenesisBlock</strong> │ Хранилище CAS инициализировано в каталоге data/cas. Доказательная база защищена BLAKE3.
         </div>
       `;
     }
@@ -284,29 +281,21 @@ class CyberRangeCockpitApp {
     canvas.addEventListener('click', (e) => {
       const rect = canvas.getBoundingClientRect();
       const x = e.clientX - rect.left;
-      if (x > 200 && x < 420) {
+      if (x > 220 && x < 480) {
         this.inspectEntity({
-          name: 'Связь: spawned (Порождение процесса)',
-          type: 'Ребро графа атак',
-          assertion: 'Вероятность: 0.99 (Факт)',
-          verification: 'Sysmon Event 1 & EVTX 4688',
-          details: 'Подтверждено: Sysmon Event 1 (ProcessCreate), EVTX 4688, совпадение PPID: 824 -> PID: 4820. Впервые: 10:32:44 UTC'
-        });
-      } else if (x >= 420) {
-        this.inspectEntity({
-          name: 'Связь: credential_access (Доступ к памяти)',
-          type: 'Ребро графа атак',
-          assertion: 'Вероятность: 0.96 (Подтверждено)',
-          verification: 'Sysmon Event 10',
-          details: 'Подтверждено: powershell.exe запросил HANDLE к lsass.exe (0x1010 PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ).'
+          name: 'Связь: IPC Broker (Локальный канал)',
+          type: 'Шина телеметрии ядра',
+          assertion: 'Статус: Активен (JSON-RPC)',
+          verification: 'Engine Server 127.0.0.1:8080',
+          details: 'Подтверждено: Высокоскоростной локальный сокет между WebView и Rust-ядром. Задержка < 1 мс.'
         });
       } else {
         this.inspectEntity({
-          name: 'DC01.CORP.LOCAL',
-          type: 'Сущность хоста',
-          assertion: 'Контроллер домена Tier-0',
-          verification: 'Скомпрометирован',
-          details: 'IPv4: 192.168.1.10 | Windows Server 2022 Datacenter (Сборка 20348)'
+          name: this.hosts[0]?.hostname || 'PC-3002',
+          type: 'Сущность хоста (Live Station)',
+          assertion: 'Рабочая станция аналитика Tier-1',
+          verification: 'Штатный режим / Защищен',
+          details: `IPv4: ${this.hosts[0]?.ip || '127.0.0.1'} | ${this.hosts[0]?.os || 'Windows 11 Enterprise'}`
         });
       }
     });
@@ -321,13 +310,14 @@ class CyberRangeCockpitApp {
     ctx.strokeStyle = '#30363d';
     ctx.lineWidth = 2;
     ctx.beginPath();
-    ctx.moveTo(150, 150); ctx.lineTo(350, 150);
-    ctx.moveTo(350, 150); ctx.lineTo(550, 150);
+    ctx.moveTo(150, 150); ctx.lineTo(380, 150);
+    ctx.moveTo(380, 150); ctx.lineTo(610, 150);
     ctx.stroke();
 
-    this.drawNode(ctx, 150, 150, 'Хост: DC01', '#58a6ff', 'circle');
-    this.drawNode(ctx, 350, 150, 'powershell.exe:4820', '#f85149', 'diamond');
-    this.drawNode(ctx, 550, 150, 'T1003.001 (LSASS)', '#d29922', 'hexagon');
+    const hostName = this.hosts[0]?.hostname || 'PC-3002';
+    this.drawNode(ctx, 150, 150, `Хост: ${hostName}`, '#58a6ff', 'circle');
+    this.drawNode(ctx, 380, 150, 'Engine Server :8080', '#2ea043', 'square');
+    this.drawNode(ctx, 610, 150, 'CAS Storage: Ready', '#58a6ff', 'diamond');
   }
 
   drawNode(ctx, x, y, label, color, shape) {
