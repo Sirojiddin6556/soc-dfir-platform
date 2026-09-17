@@ -12,15 +12,9 @@ class CyberRangeCockpitApp {
 
     this.hosts = [
       {
-        id: 'h1',
-        hostname: 'DC01.CORP.LOCAL',
-        ip: '192.168.1.10',
-        mac: '00:1A:2B:3C:4D:5E',
-        os: 'Windows Server 2022 Datacenter (Сборка 20348)',
-        criticality: 'Tier-0 (Контроллер домена)',
-        status: 'Скомпрометирован / Расследование',
-        risk: 'КРИТИЧЕСКИЙ (9.6)',
-        subnet: '192.168.1.0/24',
+        id: 'h1', hostname: 'DC01.CORP.LOCAL', ip: '192.168.1.10', mac: '00:1A:2B:3C:4D:5E',
+        os: 'Windows Server 2022 Datacenter (Сборка 20348)', criticality: 'Tier-0 (Контроллер домена)',
+        status: 'Скомпрометирован / Расследование', risk: 'КРИТИЧЕСКИЙ (9.6)', subnet: '192.168.1.0/24',
         ports: [53, 88, 135, 139, 389, 445, 636, 3268, 3389],
         services: ['Active Directory Domain Services', 'DNS Server', 'Kerberos KDC', 'Netlogon'],
         persistence: ['Планировщик: SecurityAuditCollector (powershell -enc ...)', 'Реестр Run: SysMonitor (На проверке)'],
@@ -28,33 +22,19 @@ class CyberRangeCockpitApp {
         vulnerabilities: [{ cve: 'CVE-2022-26923', cvss: 8.8, name: 'Повышение привилегий в Active Directory Domain Services' }]
       },
       {
-        id: 'h2',
-        hostname: 'WS-FIN-04.CORP.LOCAL',
-        ip: '192.168.1.105',
-        mac: '00:1A:2B:AA:BB:CC',
-        os: 'Windows 11 Enterprise (Сборка 22631)',
-        criticality: 'Tier-2 (Рабочая станция)',
-        status: 'Нулевой пациент (Фишинг)',
-        risk: 'ВЫСОКИЙ (8.2)',
-        subnet: '192.168.1.0/24',
-        ports: [135, 445, 3389],
-        services: ['Windows Defender ATP', 'Workstation'],
+        id: 'h2', hostname: 'WS-FIN-04.CORP.LOCAL', ip: '192.168.1.105', mac: '00:1A:2B:AA:BB:CC',
+        os: 'Windows 11 Enterprise (Сборка 22631)', criticality: 'Tier-2 (Рабочая станция)',
+        status: 'Нулевой пациент (Фишинг)', risk: 'ВЫСОКИЙ (8.2)', subnet: '192.168.1.0/24',
+        ports: [135, 445, 3389], services: ['Windows Defender ATP', 'Workstation'],
         persistence: ['RunKey: HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\Run\\Updater.exe'],
         software: [{ name: 'Microsoft Office 365', ver: '16.0.17328', cpe: 'cpe:2.3:a:microsoft:office:365' }],
         vulnerabilities: [{ cve: 'CVE-2023-36884', cvss: 8.3, name: 'Уязвимость удаленного выполнения кода (RCE) в HTML Office/Windows' }]
       },
       {
-        id: 'h3',
-        hostname: 'DMZ-WEB01',
-        ip: '172.16.0.15',
-        mac: '52:54:00:12:34:56',
-        os: 'Ubuntu 22.04.4 LTS (Ядро Linux 5.15.0-107-generic)',
-        criticality: 'Tier-1 (Внешний периметр)',
-        status: 'В норме / Мониторинг',
-        risk: 'НИЗКИЙ (2.1)',
-        subnet: '172.16.0.0/20',
-        ports: [22, 80, 443],
-        services: ['nginx.service', 'sshd.service', 'systemd-resolved.service'],
+        id: 'h3', hostname: 'DMZ-WEB01', ip: '172.16.0.15', mac: '52:54:00:12:34:56',
+        os: 'Ubuntu 22.04.4 LTS (Ядро Linux 5.15.0-107-generic)', criticality: 'Tier-1 (Внешний периметр)',
+        status: 'В норме / Мониторинг', risk: 'НИЗКИЙ (2.1)', subnet: '172.16.0.0/20',
+        ports: [22, 80, 443], services: ['nginx.service', 'sshd.service', 'systemd-resolved.service'],
         persistence: ['Cron: /etc/cron.daily/logrotate'],
         software: [{ name: 'nginx', ver: '1.18.0-0ubuntu1.4', cpe: 'cpe:2.3:a:f5:nginx:1.18.0' }],
         vulnerabilities: []
@@ -77,6 +57,7 @@ class CyberRangeCockpitApp {
     this.setupCyberRange();
     this.setupKeyboardShortcuts();
     this.setupActionButtons();
+    this.setupInteractiveElements();
     this.scanner.init();
   }
 
@@ -235,75 +216,41 @@ class CyberRangeCockpitApp {
         container.innerHTML = `
           <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
             <div class="card">
-              <div class="inspector-label">Имя хоста и FQDN</div>
-              <div class="inspector-value">${h.hostname}</div>
-              <div class="inspector-label" style="margin-top: 8px;">IPv4-адрес</div>
-              <div class="inspector-value">${h.ip}</div>
-              <div class="inspector-label" style="margin-top: 8px;">Физический MAC-адрес</div>
-              <div class="inspector-value">${h.mac}</div>
+              <div class="inspector-label">Имя хоста и FQDN</div><div class="inspector-value">${h.hostname}</div>
+              <div class="inspector-label" style="margin-top: 8px;">IPv4-адрес</div><div class="inspector-value">${h.ip}</div>
+              <div class="inspector-label" style="margin-top: 8px;">Физический MAC-адрес</div><div class="inspector-value">${h.mac}</div>
             </div>
             <div class="card">
-              <div class="inspector-label">Операционная система</div>
-              <div class="inspector-value">${h.os}</div>
-              <div class="inspector-label" style="margin-top: 8px;">Уровень критичности</div>
-              <div class="inspector-value">${h.criticality}</div>
-              <div class="inspector-label" style="margin-top: 8px;">Статус расследования</div>
-              <div class="inspector-value">${h.status}</div>
+              <div class="inspector-label">Операционная система</div><div class="inspector-value">${h.os}</div>
+              <div class="inspector-label" style="margin-top: 8px;">Уровень критичности</div><div class="inspector-value">${h.criticality}</div>
+              <div class="inspector-label" style="margin-top: 8px;">Статус расследования</div><div class="inspector-value">${h.status}</div>
             </div>
-          </div>
-        `;
+          </div>`;
         break;
       case 'tabNetwork':
-        container.innerHTML = `
-          <h4 style="font-size: 12px; margin-bottom: 8px;">Слушающие сокеты и открытые порты</h4>
-          <table class="data-table">
-            <thead><tr><th>Порт</th><th>Протокол</th><th>Служба</th><th>Состояние</th></tr></thead>
-            <tbody>
-              ${h.ports.map(p => `<tr><td><strong>${p}</strong></td><td>TCP</td><td>svc-${p}</td><td><span style="color: var(--accent-success)">СЛУШАЕТ</span></td></tr>`).join('')}
-            </tbody>
-          </table>
-        `;
+        container.innerHTML = `<h4 style="font-size: 12px; margin-bottom: 8px;">Слушающие сокеты и открытые порты</h4>
+          <table class="data-table"><thead><tr><th>Порт</th><th>Протокол</th><th>Служба</th><th>Состояние</th></tr></thead>
+          <tbody>${h.ports.map(p => `<tr><td><strong>${p}</strong></td><td>TCP</td><td>svc-${p}</td><td><span style="color: var(--accent-success)">СЛУШАЕТ</span></td></tr>`).join('')}</tbody></table>`;
         break;
       case 'tabProcesses':
-        container.innerHTML = `
-          <h4 style="font-size: 12px; margin-bottom: 8px;">Дерево активных процессов (Форензик-снимок)</h4>
-          <table class="data-table">
-            <thead><tr><th>PID</th><th>PPID</th><th>Образ</th><th>Пользователь</th><th>Командная строка</th></tr></thead>
-            <tbody>
-              <tr><td>4</td><td>0</td><td>System</td><td>NT AUTHORITY\\SYSTEM</td><td>-</td></tr>
-              <tr><td>612</td><td>4</td><td>lsass.exe</td><td>NT AUTHORITY\\SYSTEM</td><td>C:\\Windows\\system32\\lsass.exe</td></tr>
-              <tr style="background: rgba(248,81,73,0.1)"><td>4820</td><td>824</td><td>powershell.exe</td><td>CORP\\Administrator</td><td>powershell.exe -NoP -enc SQBFAFgA...</td></tr>
-            </tbody>
-          </table>
-        `;
+        container.innerHTML = `<h4 style="font-size: 12px; margin-bottom: 8px;">Дерево активных процессов (Форензик-снимок)</h4>
+          <table class="data-table"><thead><tr><th>PID</th><th>PPID</th><th>Образ</th><th>Пользователь</th><th>Командная строка</th></tr></thead>
+          <tbody><tr><td>4</td><td>0</td><td>System</td><td>NT AUTHORITY\\SYSTEM</td><td>-</td></tr>
+          <tr><td>612</td><td>4</td><td>lsass.exe</td><td>NT AUTHORITY\\SYSTEM</td><td>C:\\Windows\\system32\\lsass.exe</td></tr>
+          <tr style="background: rgba(248,81,73,0.1)"><td>4820</td><td>824</td><td>powershell.exe</td><td>CORP\\Administrator</td><td>powershell.exe -NoP -enc SQBFAFgA...</td></tr></tbody></table>`;
         break;
       case 'tabPersistence':
-        container.innerHTML = `
-          <h4 style="font-size: 12px; margin-bottom: 8px;">Механизмы закрепления (Persistence & Auto-Runs)</h4>
-          ${h.persistence.map(p => `<div class="card" style="border-left: 3px solid var(--accent-critical)">${p}</div>`).join('')}
-        `;
+        container.innerHTML = `<h4 style="font-size: 12px; margin-bottom: 8px;">Механизмы закрепления (Persistence & Auto-Runs)</h4>
+          ${h.persistence.map(p => `<div class="card" style="border-left: 3px solid var(--accent-critical)">${p}</div>`).join('')}`;
         break;
       case 'tabSoftware':
-        container.innerHTML = `
-          <h4 style="font-size: 12px; margin-bottom: 8px;">Инвентарь ПО и SBOM CycloneDX</h4>
-          <table class="data-table">
-            <thead><tr><th>Компонент</th><th>Версия</th><th>Идентификатор CPE</th></tr></thead>
-            <tbody>
-              ${h.software.map(s => `<tr><td><strong>${s.name}</strong></td><td>${s.ver}</td><td><code>${s.cpe}</code></td></tr>`).join('')}
-            </tbody>
-          </table>
-        `;
+        container.innerHTML = `<h4 style="font-size: 12px; margin-bottom: 8px;">Инвентарь ПО и SBOM CycloneDX</h4>
+          <table class="data-table"><thead><tr><th>Компонент</th><th>Версия</th><th>Идентификатор CPE</th></tr></thead>
+          <tbody>${h.software.map(s => `<tr><td><strong>${s.name}</strong></td><td>${s.ver}</td><td><code>${s.cpe}</code></td></tr>`).join('')}</tbody></table>`;
         break;
       case 'tabVulnerabilities':
-        container.innerHTML = `
-          <h4 style="font-size: 12px; margin-bottom: 8px;">Скоррелированные уязвимости (CVE)</h4>
-          ${h.vulnerabilities.length ? h.vulnerabilities.map(v => `
-            <div class="card" style="border-left: 3px solid var(--accent-critical)">
-              <div style="font-weight: 700;">${v.cve} (CVSS ${v.cvss})</div>
-              <div style="font-size: 11px; color: var(--text-secondary); margin-top: 4px;">${v.name}</div>
-            </div>
-          `).join('') : '<div style="color: var(--text-muted); font-size: 12px;">Неустраненных уязвимостей не обнаружено.</div>'}
-        `;
+        container.innerHTML = `<h4 style="font-size: 12px; margin-bottom: 8px;">Скоррелированные уязвимости (CVE)</h4>
+          ${h.vulnerabilities.length ? h.vulnerabilities.map(v => `<div class="card" style="border-left: 3px solid var(--accent-critical)"><div style="font-weight: 700;">${v.cve} (CVSS ${v.cvss})</div><div style="font-size: 11px; color: var(--text-secondary); margin-top: 4px;">${v.name}</div></div>`).join('') : '<div style="color: var(--text-muted); font-size: 12px;">Неустраненных уязвимостей не обнаружено.</div>'}`;
         break;
       default:
         container.innerHTML = `<div style="color: var(--text-muted); font-size: 12px;">Телеметрия вкладки <strong>${this.currentAssetTab}</strong> синхронизирована с CAS.</div>`;
@@ -373,6 +320,36 @@ class CyberRangeCockpitApp {
     canvas.width = container.clientWidth || 800;
     canvas.height = container.clientHeight || 500;
     this.drawAttackGraph();
+
+    canvas.addEventListener('click', (e) => {
+      const rect = canvas.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      if (x > 200 && x < 420) {
+        this.inspectEntity({
+          name: 'Связь: spawned (Порождение процесса)',
+          type: 'Ребро графа атак',
+          assertion: 'Вероятность: 0.99 (Факт)',
+          verification: 'Sysmon Event 1 & EVTX 4688',
+          details: 'Подтверждено: Sysmon Event 1 (ProcessCreate), EVTX 4688, совпадение PPID: 824 -> PID: 4820. Впервые: 10:32:44 UTC'
+        });
+      } else if (x >= 420) {
+        this.inspectEntity({
+          name: 'Связь: credential_access (Доступ к памяти)',
+          type: 'Ребро графа атак',
+          assertion: 'Вероятность: 0.96 (Подтверждено)',
+          verification: 'Sysmon Event 10',
+          details: 'Подтверждено: powershell.exe запросил HANDLE к lsass.exe (0x1010 PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ).'
+        });
+      } else {
+        this.inspectEntity({
+          name: 'DC01.CORP.LOCAL',
+          type: 'Сущность хоста',
+          assertion: 'Контроллер домена Tier-0',
+          verification: 'Скомпрометирован',
+          details: 'IPv4: 192.168.1.10 | Windows Server 2022 Datacenter (Сборка 20348)'
+        });
+      }
+    });
   }
 
   drawAttackGraph() {
@@ -464,6 +441,42 @@ class CyberRangeCockpitApp {
     document.getElementById('btnOpenGraphFromAsset')?.addEventListener('click', () => {
       const graphNav = document.querySelector('[data-view="investigationGraphView"]');
       if (graphNav) graphNav.click();
+    });
+  }
+
+  setupInteractiveElements() {
+    document.querySelectorAll('.dag-node').forEach(n => {
+      n.addEventListener('click', () => {
+        this.inspectEntity({
+          name: `Задача: ${n.getAttribute('data-task-name')}`,
+          type: 'Воркфлоу DAG',
+          assertion: `Статус: ${n.getAttribute('data-task-status')}`,
+          verification: `Длительность: ${n.getAttribute('data-task-dur')}`,
+          details: `Цель: ${n.getAttribute('data-task-target')} | Ресурсы: CPU 1/4, IO 1/4, NET 0/6, FORENSIC 0/1`
+        });
+      });
+    });
+    document.querySelectorAll('.cve-row').forEach(r => {
+      r.addEventListener('click', () => {
+        this.inspectEntity({
+          name: r.getAttribute('data-cve'),
+          type: 'Уязвимость CVE',
+          assertion: 'Контекстный риск: КРИТИЧЕСКИЙ',
+          verification: 'CISA KEV: ДА | EPSS: 82%',
+          details: 'Доступ из сети: ДА | Эксплуатация: Зафиксирован аномальный процесс powershell.exe'
+        });
+      });
+    });
+    document.querySelectorAll('.pyramid-tier').forEach(t => {
+      t.addEventListener('click', () => {
+        this.inspectEntity({
+          name: `Пирамида боли: ${t.getAttribute('data-tier')}`,
+          type: 'Индикатор IoC',
+          assertion: 'Степень противодействия: ВЫСОКАЯ',
+          verification: 'Скоррелировано в CAS',
+          details: `Уровень ${t.getAttribute('data-tier')}: Перестройка требует смены инфраструктуры атаки.`
+        });
+      });
     });
   }
 }
