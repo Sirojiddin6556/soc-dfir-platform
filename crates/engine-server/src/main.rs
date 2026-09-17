@@ -27,18 +27,61 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!("Desktop Server Listening on http://{}", addr);
     tracing::info!("Serving Desktop Cockpit UI from: {}", ui_dir.display());
 
-    // Auto-launch desktop window / browser
+    // Auto-launch dedicated standalone desktop application window
     #[cfg(target_os = "windows")]
     {
         let url = format!("http://{}", addr);
-        let _ = std::process::Command::new("cmd")
-            .args(["/C", "start", &url])
-            .spawn();
+        let edge_path = r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe";
+        let chrome_path = r"C:\Program Files\Google\Chrome\Application\chrome.exe";
+        let temp_profile = std::env::temp_dir().join("soc-dfir-desktop-profile");
+
+        let launched = if std::path::Path::new(edge_path).exists() {
+            std::process::Command::new(edge_path)
+                .args([
+                    &format!("--app={}", url),
+                    "--window-size=1440,900",
+                    &format!("--user-data-dir={}", temp_profile.display()),
+                ])
+                .spawn()
+                .is_ok()
+        } else if std::path::Path::new(chrome_path).exists() {
+            std::process::Command::new(chrome_path)
+                .args([
+                    &format!("--app={}", url),
+                    "--window-size=1440,900",
+                    &format!("--user-data-dir={}", temp_profile.display()),
+                ])
+                .spawn()
+                .is_ok()
+        } else {
+            false
+        };
+
+        if !launched {
+            let _ = std::process::Command::new("cmd")
+                .args(["/C", "start", &url])
+                .spawn();
+        }
     }
     #[cfg(target_os = "linux")]
     {
         let url = format!("http://{}", addr);
-        let _ = std::process::Command::new("xdg-open").arg(&url).spawn();
+        let temp_profile = std::env::temp_dir().join("soc-dfir-desktop-profile");
+        let app_arg = format!("--app={}", url);
+        let profile_arg = format!("--user-data-dir={}", temp_profile.display());
+
+        let launched = std::process::Command::new("google-chrome")
+            .args([&app_arg, "--window-size=1440,900", &profile_arg])
+            .spawn()
+            .is_ok()
+            || std::process::Command::new("chromium")
+                .args([&app_arg, "--window-size=1440,900", &profile_arg])
+                .spawn()
+                .is_ok();
+
+        if !launched {
+            let _ = std::process::Command::new("xdg-open").arg(&url).spawn();
+        }
     }
 
     loop {
