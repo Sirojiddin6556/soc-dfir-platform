@@ -1,0 +1,66 @@
+{
+  "schema_version": "1.0.0",
+  "plan_id": "soc-dfir-platform-v1",
+  "artifacts": [
+    {
+      "artifact_id": "ART-01-DISCOVERY",
+      "type": "discovery_document",
+      "owner": "PRF-01-DISCOVERY",
+      "revision": "r1",
+      "created_by": "Product Discovery Manager",
+      "task_id": "TASK-01",
+      "plan_id": "soc-dfir-platform-v1",
+      "sha256": "d1a6cbee778bb37c4657205525fea9fc8a465634c951163bc1fc129ac47f808e",
+      "status": "VERIFIED",
+      "dependencies": [],
+      "supersedes": null,
+      "path": "docs/it-company/01-product-discovery-manager.md",
+      "evidence": ["D:\\BlueTeam_CyberRange_TZ_v1.0.docx"]
+    },
+    {
+      "artifact_id": "ART-02-ANALYST",
+      "type": "requirements_catalog",
+      "owner": "PRF-02-ANALYST",
+      "revision": "r1",
+      "created_by": "Business Analyst",
+      "task_id": "TASK-02",
+      "plan_id": "soc-dfir-platform-v1",
+      "sha256": "f5130dfe36cf4f3983e5bf5b9dc775f7c249180e3b9c2ce8489f8a4622b2d89c",
+      "status": "VERIFIED",
+      "dependencies": ["ART-01-DISCOVERY"],
+      "supersedes": null,
+      "path": "docs/it-company/02-business-analyst.md",
+      "evidence": ["docs/it-company/01-product-discovery-manager.md"]
+    },
+    {
+      "artifact_id": "ART-03-PRODUCT",
+      "type": "product_backlog",
+      "owner": "PRF-03-PRODUCT",
+      "revision": "r1",
+      "created_by": "Product Manager",
+      "task_id": "TASK-03",
+      "plan_id": "soc-dfir-platform-v1",
+      "sha256": "4a68120db6c8bd514caf9988f95b2872fa3eeabc95e2d07e790ff7229fbdfe7e",
+      "status": "VERIFIED",
+      "dependencies": ["ART-02-ANALYST"],
+      "supersedes": null,
+      "path": "docs/it-company/03-product-manager.md",
+      "evidence": ["docs/it-company/02-business-analyst.md"]
+    },
+    {
+      "artifact_id": "ART-00-REQ-CONTRACT",
+      "type": "requirements_contract",
+      "owner": "PRF-03-PRODUCT",
+      "revision": "r1",
+      "created_by": "Product Manager",
+      "task_id": "TASK-00",
+      "plan_id": "soc-dfir-platform-v1",
+      "sha256": "47c615f3ab2b0c11d66adf2f16966dedad719d02deccf21c45f1930d3c7f27a8",
+      "status": "CANDIDATE",
+      "dependencies": ["ART-01-DISCOVERY", "ART-02-ANALYST", "ART-03-PRODUCT"],
+      "supersedes": null,
+      "path": "docs/it-company/00-requirements-contract.md",
+      "evidence": ["docs/it-company/00-requirements-contract.md"]
+    }
+  ]
+}
