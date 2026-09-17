@@ -1,57 +1,54 @@
 # 01. Product Discovery: Blue Team Cyber Range & SOC/DFIR Platform
 
 **Profile ID**: `PRF-01-DISCOVERY`  
-**Status**: `COMPLETED`  
-**Source Baseline**: `D:\BlueTeam_CyberRange_TZ_v1.0.docx` (ТЗ v1.0, 41 раздел)
+**Status**: `APPROVED / SCOPE FROZEN`  
+**Baseline**: Human Gate 1 Scope Freeze
 
 ---
 
-## 1. Product Vision & Проблема
-- **Проблема**: В реальных SOC и DFIR расследованиях аналитики тратят часы на ручной сбор разрозненных логов, артефактов и дампов памяти. Существующие SIEM/SOAR перегружены шумом, требуют облачной телеметрии или централизованных серверов, а автономные AI-агенты страдают галлюцинациями и недетерминированностью, что недопустимо для судебной экспертизы и криминалистической чистоты доказательств.
-- **Видение Продукта**: Локальная, детерминированная, высокопроизводительная кроссплатформенная десктопная платформа («Blue Team Cyber Range / SOC-DFIR Investigation Platform») для проведения киберучений (Blue Team CTF), расследования инцидентов и криминалистического анализа артефактов с автоматическим построением графа атаки и проекцией на MITRE ATT&CK, Cyber Kill Chain и Pyramid of Pain.
+## 1. Product Vision
+**SOC-DFIR Platform** — локальная deterministic desktop Blue Team-платформа, которая автоматически исследует неизвестную инфраструктуру, собирает и нормализует security evidence, определяет assets/software/vulnerabilities, строит доказуемый Attack Graph и Timeline, сопоставляет поведение противника с MITRE ATT&CK, Cyber Kill Chain и Pyramid of Pain и позволяет проводить воспроизводимые SOC/DFIR/Threat Hunting/CTF-расследования со скрытым Ground Truth и объяснимым scoring.
 
 ---
 
-## 2. Целевая аудитория и роли
-1. **Tier-1/Tier-2 SOC Analyst**: Быстрый триаж инцидента, сбор и сопоставление первичных фактов, проверка сетевых и системных артефактов.
-2. **DFIR Specialist / Incident Responder**: Глубокий форензик-анализ (PCAP, EVTX, Prefetch, Memory Dump, MFT, Procmon), таймлайн-реконструкция, сохранение криминалистической цепочки владения (Chain of Custody).
-3. **Cyber Range Instructor / CTF Operator**: Создание обучающих сценариев, внедрение инцидентов, автоматическая верификация решений обучающихся по детерминированным фактам.
-4. **Platform Administrator**: Управление локальными воркспейсами, правилами корреляции, брокером привилегий и экспортом кейсов.
+## 2. Ключевые архитектурные инварианты MVP (P0 Scope)
+
+1. **Deterministic Architecture**:
+   - Полное отсутствие недетерминированных LLM-планеров и автономных probabilistic AI-агентов. Все выводы строятся на строгих детерминированных правилах, нормализаторах и корреляторах графа.
+2. **Infrastructure & Asset Discovery (P0)**:
+   - Автоматическая инвентаризация неизвестной инфраструктуры: обнаружение хостов, IP, ОС, сетевых интерфейсов, маршрутов, портов, топологии сети, правил фаервола, запущенных процессов, служб, планировщиков (cron/systemd timers, Scheduled Tasks), пользователей/групп, точек автозапуска (autoruns), активных соединений, контейнеров и конфигураций.
+3. **Software, SBOM & Vulnerability Pipeline (P0)**:
+   - Непрерывная цепочка: `Asset → Service → Software → Version → CPE/PURL → SBOM → CVE → CVSS → EPSS → KEV → Contextual Risk`.
+   - Защита от ложных срабатываний (False Positives) при анализе пакетов с Linux security backports и эвристическом фингерпринтинге версий.
+4. **Автоматизированный Workflow Engine & Conditional DAG (P0)**:
+   - Аналитик не запускает десятки утилит вручную. Система выполняет conditional DAG с автоэскалацией:
+     `Quick (разведка) → Anomaly detected → Standard (сбор артефактов) → Suspicious asset → Deep (форензика/дампы)`.
+   - Контроль 6 ресурсных классов: `CPU`, `IO`, `NET`, `MEMORY`, `FORENSIC`, `TARGET_LOAD` (защита исследуемой системы от деградации).
+5. **Строгая модель данных (P0)**:
+   - `Artifact` $\rightarrow$ `Observation` $\rightarrow$ `Fact` $\rightarrow$ `Evidence / EvidenceSet` $\rightarrow$ `Correlation` $\rightarrow$ `Attack Graph` $\rightarrow$ `Finding`.
+   - Разделение измерений:
+     - `AssertionType`: `Fact` (наблюдение), `Inference` (вывод правила), `Hypothesis` (аналитическая гипотеза).
+     - `VerificationState`: `Candidate`, `Corroborated`, `Confirmed`, `Disproved`.
+     - Метрики: `confidence`, `severity`, `risk_score`, `evidence_strength`, `pain_level`.
+6. **Scenario Ground Truth & Investigation-Based Scoring (P0)**:
+   - Отказ от flag-centric CTF. Оценка строится на сопоставлении с защищённым Ground Truth:
+     `Assets discovered + Facts + Evidence coverage + Timeline correctness + Attack Graph + ATT&CK techniques + Containment actions → Explainable Score`.
+7. **Privilege Broker с типизированными операциями (P0)**:
+   - UI полностью непривилегирован. Брокер валидирует не command-line allowlist, а строго типизированные `PrivilegedOperation` после проверки `BrokerCapability`. UI никогда не передаёт shell commands или сырые `argv[]`.
+8. **Visual Intelligence (P0/P1)**:
+   - Автоматическая проекция: `Infrastructure Map`, `Attack Graph`, `Process Tree`, `Timeline`, `MITRE ATT&CK Matrix`, `Cyber Kill Chain`, `Pyramid of Pain`, `Lateral Movement Map`.
+   - Каждая вершина и стрелка содержат drill-down на подтверждающие факты (`supported_by`). Многомерное кодирование: фигура = тип сущности (NFR-UX-002), цвет = severity, граница = confidence.
 
 ---
 
-## 3. Границы MVP (In Scope vs Out of Scope)
+## 3. Границы платформ и условные роли
 
-### In Scope (MVP):
-- **Локальный Case Management**: Изолированные кейсы/расследования с базой SQLite (WAL) и Content-Addressed Storage (CAS) для неизменяемых артефактов.
-- **Многоуровневый конвейер фактов**: `Observation` (сырые логи) → `Fact` (подтвержденные факты с confidence) → `Inference` & `Hypothesis` (выводы правил).
-- **Детерминированный Graph Engine**: Автоматическое построение `Attack Graph` (Infrastructure, Identity, Execution, Artifact, Vulnerability) без галлюцинаций LLM.
-- **Синхронные проекции таксономий**: Маппинг графа на MITRE ATT&CK, Cyber Kill Chain, Pyramid of Pain.
-- **Workflow DAG & Планировщик задач**: Запуск локальных анализаторов и парсеров с контролем ресурсов (CPU, IO, Network) и кооперативной отменой.
-- **Безопасная архитектура**: Разделение привилегий (непривилегированный UI + локальный брокер с whitelist команд).
-- **Кроссплатформенность**: Windows, Linux, macOS (Rust-ядро + кроссплатформенный десктопный клиент).
-
-### Explicit Out of Scope:
-- Автономные самообучающиеся AI-агенты, принимающие решения за аналитика без прозрачной трассировки.
-- Облачная зависимость (обязанность отправлять данные сторонним SaaS).
-- Произвольное исполнение невалидированных shell-команд в обход брокера.
-- Деструктивные активные действия без явного ручного подтверждения (destructive payload execution).
-
----
-
-## 4. Решение по условным ролям (@it-company)
-
-| Роль | Название | Статус | Обоснование |
-|---|---|---|---|
-| 13–15 | ML/CV Block | **SKIPPED** | ТЗ (раздел 31) категорически требует детерминированные правила, цепочки эвристик и graph pattern-matching; вероятностные LLM-планеры исключены. |
-| 20a | Data Visualization Engineer | **REQUIRED** | Критически необходимы кастомные визуализаторы: интерактивный граф атаки, матрица MITRE ATT&CK, таймлайн с дорожками хостов и иерархия процессов. |
-| 26a | Accessibility Auditor | **REQUIRED** | ТЗ NFR-UX-002: состояния и статусы в графах и индикаторах обязаны различаться не только цветом (форма узла, бейджи, текст). |
-| 31 | SRE | **SKIPPED** | MVP является автономным десктопным приложением (Local-first / Workstation / Lab environment) без 24/7 облачной инфраструктуры и SLA. |
-
----
-
-## 5. Дорожная карта и фазы реализации
-1. **Phase 1 (MVP Foundation)**: Ядро на Rust, SQLite WAL, CAS-хранилище, базовые парсеры (EVTX, PCAP, Sysmon), граф атаки и UI с таймлайном.
-2. **Phase 2 (DFIR Deep Dive)**: Memory Dump анализ, MFT/Prefetch, автоматическая генерация отчетов STIX 2.1 / JSON / PDF.
-3. **Phase 3 (Cyber Range & CTF)**: Сценарный движок, флаги, система скоринга, импорт/экспорт CTF-пакетов.
-4. **Phase 4 (Enterprise Integration)**: Multi-seat синхронизация кейсов, экспорт в SIEM/SOAR, опциональный сервер брокера.
+| Платформа / Роль | Статус | Обоснование |
+|---|---|---|
+| **Windows** | **Tier 1 (MVP)** | Основная рабочая среда расследований и хостовой телеметрии (ETW, Sysmon, EVTX, Registry). |
+| **Linux** | **Tier 1 (MVP)** | Инфраструктурные сервисы, контейнеры, eBPF, auditd, сетевые шлюзы. |
+| **macOS** | **Tier 2 (Future)** | Исключён из MVP во избежание распыления ресурсов до стабилизации ядра. |
+| **ML/CV (13–15)** | **SKIPPED** | Полный отказ от вероятностных моделей ради юридической чистоты и 100% воспроизводимости. |
+| **Data Viz (20a)**| **REQUIRED**| Сложные интерактивные графы, таймлайн, матрица ATT&CK, карты инфраструктуры. |
+| **A11y (26a)**    | **REQUIRED**| Соответствие NFR-UX-002: различение состояний формой/геометрией, а не только цветом. |
+| **SRE (31)**      | **SKIPPED** | Продукт является локальным десктопным приложением (Offline-first) без круглосуточного облачного SLA. |

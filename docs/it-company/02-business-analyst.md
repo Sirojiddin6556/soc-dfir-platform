@@ -1,55 +1,43 @@
 # 02. Business Analyst: Blue Team Cyber Range & SOC/DFIR Platform
 
 **Profile ID**: `PRF-02-ANALYST`  
-**Status**: `COMPLETED`  
-**Input**: `docs/it-company/01-product-discovery-manager.md` & `D:\BlueTeam_CyberRange_TZ_v1.0.docx`
+**Status**: `APPROVED / SCOPE FROZEN`  
+**Baseline**: Human Gate 1 Scope Freeze
 
 ---
 
-## 1. User Stories & Use Cases
+## 1. User Stories
 
-### User Stories
-- **US-01 (Analyst / Case Management)**: As a SOC/DFIR analyst, I want to create an isolated investigation case and import raw forensic artifacts (PCAP, EVTX, logs) so that evidence is securely preserved with cryptographic hashes and metadata.
-- **US-02 (Analyst / Fact Pipeline)**: As an analyst, I want the system to parse raw observations into structured facts with confidence scores, so that I can filter out noise and focus on verified indicators.
-- **US-03 (Analyst / Attack Graph)**: As an investigator, I want to see an automatically generated Attack Graph connecting hosts, processes, accounts, and network sockets, so that I can trace the root cause and lateral movement of an adversary.
-- **US-04 (Analyst / Multi-Framework Projection)**: As an investigator, I want to project my attack graph onto MITRE ATT&CK techniques, Cyber Kill Chain stages, and Pyramid of Pain levels, so that I can generate industry-standard threat reports.
-- **US-05 (CTF Operator / Verification)**: As a Cyber Range instructor, I want student answers/flags to be verified deterministically against graph facts, so that grading is objective and reproducible.
-
-### Use Cases
-- **UC-01 (Evidence Ingestion & Hashing)**:
-  - *Trigger*: User drags and drops EVTX/PCAP file into Case Workspace.
-  - *Main Flow*: System computes SHA-256/BLAKE3, stores file in Content-Addressed Storage (CAS), creates immutable `Artifact` record, and registers ingestion task in Workflow DAG.
-- **UC-02 (Automated Fact Extraction & Correlation)**:
-  - *Trigger*: Task Scheduler executes parser tool for ingested artifact.
-  - *Main Flow*: Parser emits `Observation` records. Correlation rules match observations into `Fact` objects with confidence $\in [0.0, 1.0]$.
-- **UC-03 (Attack Graph Construction & Expansion)**:
-  - *Trigger*: Facts are written to the case database.
-  - *Main Flow*: Graph Engine merges entities (Identity, Host, Process, Network, File) into graph nodes and creates typed, directional edges with full provenance.
-- **UC-04 (Privileged Tool Execution)**:
-  - *Trigger*: User triggers live memory/network capture on local machine.
-  - *Main Flow*: Unprivileged UI sends request to Local Privilege Broker via IPC. Broker checks command allowlist, validates parameters, runs process under elevated privileges, and returns sanitized stream to UI.
+- **US-01 (Automated Infrastructure Discovery)**: As a SOC analyst, I want the system to scan and catalog all network hosts, open ports, OS versions, routing tables, and firewall rules automatically, so that I have a complete infrastructure baseline.
+- **US-02 (Deep Host Inspection)**: As a DFIR specialist, I want automatic inspection of processes, services, cron/systemd timers, Windows Scheduled Tasks, autoruns, and active network sockets on target hosts without manual intervention.
+- **US-03 (Software Inventory & Vulnerability Triage)**: As a security engineer, I want the platform to extract software packages into SBOM (CPE/PURL) and correlate with CVE, CVSS, EPSS, and CISA KEV, accounting for Linux backport patches to eliminate false positives.
+- **US-04 (Automated Workflow Escalation)**: As an incident responder, I want the engine to run multi-stage investigation profiles (`Quick → Standard → Deep`) with resource budgets, so that suspect assets are deeply analyzed while preserving system stability.
+- **US-05 (Deterministic Attack Graph & Timeline)**: As an investigator, I want an automatically generated, explainable Attack Graph and forensic timeline where every relationship points to verified evidence facts.
+- **US-06 (Scenario Evaluation & Ground Truth)**: As an instructor / blue-team evaluator, I want student findings to be scored against sealed Ground Truth across 10 dimensions (assets, facts, evidence, relationships, timeline, ATT&CK, containment).
 
 ---
 
 ## 2. Requirements Catalog (REQ-XXX-NN)
 
-| ID | TZ Source | Описание | Приоритет | Acceptance Criteria (Given/When/Then) |
+| ID | Область | Описание | Приоритет | Измеримый Acceptance Criteria (Given/When/Then) |
 |---|---|---|---|---|
-| `REQ-CASE-01` | FR-CASE-001 | Создание и изоляция кейса (SQLite WAL + CAS) | **P0** | **Given** открытое приложение, **When** пользователь создает кейс "Incident-2026", **Then** создается изолированная БД SQLite и папка CAS; статус кейса `Active`. |
-| `REQ-CASE-02` | FR-CASE-002 | Криминалистический Chain of Custody для артефактов | **P0** | **Given** входной файл, **When** файл импортируется, **Then** вычисляется SHA-256, файл переносится в CAS по хешу и делается запись в лог целостности. |
-| `REQ-DATA-01` | FR-DATA-001 | 4-уровневая модель данных (Observation/Fact/Inference/Hypothesis) | **P0** | **Given** сырой лог EVTX, **When** парсер отрабатывает, **Then** создаются `Observation` (сырые), затем `Fact` (с confidence 0..1), без смешивания типов. |
-| `REQ-GRAPH-01` | FR-GRAPH-001 | Построение детерминированного графа атаки | **P0** | **Given** набор фактов процесса и сети, **When** запускается Graph Engine, **Then** строятся типизированные узлы и ребра с обязательной ссылкой на факт-обоснование (`fact_id`). |
-| `REQ-MAP-01` | FR-MAP-001 | Синхронная проекция на MITRE ATT&CK и Kill Chain | **P0** | **Given** готовый Attack Graph, **When** пользователь переключает таб на "MITRE Matrix", **Then** подсвечиваются точные техники (T-номера) с сылкой на узлы графа. |
-| `REQ-WORK-01` | FR-WORK-001 | Workflow DAG с бюджетированием ресурсов (CPU/IO/Net) | **P0** | **Given** 10 тяжелых задач парсинга, **When** планировщик запускает их, **Then** соблюдаются семафоры классов ресурсов, без зависания UI; доступна отмена задач. |
-| `REQ-SEC-01` | FR-SEC-001 | Разделение привилегий (Unprivileged UI + Local Broker) | **P0** | **Given** UI запущен от непривилегированного пользователя, **When** требуется запуск с правами (raw socket/ETW), **Then** вызов идет через Broker с проверкой allowlist. |
-| `REQ-VIZ-01` | NFR-UX-002 | Доступность визуализации (A11y / Форма + Цвет) | **P1** | **Given** граф или таймлайн, **When** отрисовываются узлы различных типов/статусов, **Then** они различимы по форме узла и текстовому бейджу, а не только по цвету. |
+| `REQ-DISC-01` | Discovery | Автоматическая инвентаризация сети и хостов | **P0** | **Given** целевая подсеть, **When** запущен профиль Quick, **Then** за $\le 60$ сек обнаруживаются 100% активных IP, открытых портов и OS fingerprints. |
+| `REQ-HOST-01` | Host Insp | Глубокий сбор хостовых артефактов (процессы, автозапуск) | **P0** | **Given** исследуемый хост, **When** агент инспектирует систему, **Then** извлекаются процессы, сервисы, Scheduled Tasks/cron, autoruns, сокеты в нормализованные `Observation`. |
+| `REQ-VULN-01` | Vulnerability | SBOM (CPE/PURL) и корреляция CVE/CVSS/EPSS/KEV | **P0** | **Given** список установленных пакетов, **When** отрабатывает сканер уязвимостей, **Then** генерируется SBOM, находятся CVE, а для Debian/RHEL backports отфильтровываются false positives. |
+| `REQ-DATA-01` | Data Pipeline | Конвейер: Artifact $\rightarrow$ Obs $\rightarrow$ Fact $\rightarrow$ Evidence $\rightarrow$ Graph | **P0** | **Given** сырой артефакт, **When** конвейер обрабатывает данные, **Then** факты получают типизацию (`Fact`/`Inference`/`Hypothesis`) и состояние (`Candidate`/`Corroborated`/`Confirmed`). |
+| `REQ-AUTO-01` | Workflow | Conditional DAG и профили Quick/Standard/Deep | **P0** | **Given** подозрительная аномалия в Quick, **When** срабатывает conditional edge, **Then** задача эскалируется в Standard/Deep с соблюдением 6 ресурсных семафоров. |
+| `REQ-GRAPH-01`| Graph Engine | Детерминированный граф атаки с provenance | **P0** | **Given** факты расследования, **When** строится Attack Graph, **Then** каждое ребро содержит список `supported_by` fact IDs с возможностью drill-down. |
+| `REQ-TAX-01`  | Taxonomy | Версионируемые проекции (MITRE, Kill Chain, Pyramid) | **P0** | **Given** Attack Graph и Evidence, **When** запускается проектор, **Then** формируются `TaxonomyCandidate` с фиксацией `taxonomy_version` и `mapping_rule_version`. |
+| `REQ-SEC-01`  | Security | Непривилегированный UI + брокер с типизированными операциями | **P0** | **Given** UI без прав root/admin, **When** требуется privileged probe, **Then** брокер принимает строго `PrivilegedOperation` после проверки `BrokerCapability`. Запрещён shell (`no sh -c`). |
+| `REQ-SCEN-01` | Verification | Scenario Verifier со скрытым Ground Truth и scoring | **P0** | **Given** завершённый кейс расследования, **When** вызывается верификатор, **Then** Ground Truth остаётся изолированным от игрока, а отчёт даёт объяснимый скоринг по критериям. |
+| `REQ-VIZ-01`  | Visual Intel | Автоматические проекции и карты с геометрическим кодированием | **P0** | **Given** данные кейса, **When** открыт интерфейс, **Then** отображаются Infrastructure Map, Attack Graph, Timeline, MITRE Matrix. Сущности кодируются фигурами (NFR-UX-002). |
 
 ---
 
-## 3. Негативные сценарии и граничные условия (Edge Cases)
-1. **Поврежденный артефакт (Corrupted EVTX/PCAP)**:
-   - *Поведение*: Парсер регистрирует ошибку валидации заголовка, помечает `Observation` как `Malformed`, не падает аварийно (panic) и информирует аналитика.
-2. **Превышение лимита ресурсов (Resource Exhaustion / OOM)**:
-   - *Поведение*: Планировщик отслеживает лимиты памяти/времени. При исчерпании квоты задача принудительно переводится в статус `TIMEOUT` или `RESOURCE_EXCEEDED` с возможностью возобновления с чекпоинта.
-3. **Попытка инъекции команды в Broker**:
-   - *Поведение*: Любые параметры проверяются по строгому регулярному выражению и whitelist; аргументы передаются в OS exec как вектор `argv[]` без вызова командной оболочки (`cmd.exe` / `/bin/sh`).
+## 3. Измеримые нефункциональные требования (NFR)
+
+- **NFR-PERF-001 (Ingestion Throughput)**: $\ge 50{,}000$ events/sec на эталонном 4-ядерном x86_64 с NVMe накопителем при потоковом парсинге EVTX/PCAP.
+- **NFR-PERF-002 (Query Latency)**: Время отклика графовых и табличных запросов $<100$ мс (p95) для $10^6$ проиндексированных фактов в SQLite WAL при тёплом кэше.
+- **NFR-DET-001 (Canonical Determinism)**: 100% эквивалентность выводимых `Fact`, `AttackGraph` и `TaxonomyCandidate` при повторном прогоне на идентичных `dataset_version + engine_version + rules_version + taxonomy_version` (независимо от runtime UUID и timestamp генерации).
+- **NFR-SEC-001 (Privilege Isolation)**: Zero unvalidated argv execution; 100% вызовов повышенных привилегий проходят через `PrivilegedOperation`.
+- **NFR-UX-002 (Visual Accessibility)**: Различение сущностей и их состояний на диаграммах геометрической формой (круг, шестиугольник, ромб, квадрат, восьмиугольник) и текстовыми бейджами, а не только цветом.

@@ -1,0 +1,13 @@
+[package]
+name = "tool-adapters"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+core-domain = { path = "../core-domain" }
+thiserror.workspace = true
+async-trait.workspace = true
+tokio.workspace = true
+blake3.workspace = true

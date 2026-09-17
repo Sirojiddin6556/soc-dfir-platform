@@ -1,0 +1,10 @@
+[package]
+name = "taxonomy-projection"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+core-domain = { path = "../core-domain" }
+thiserror.workspace = true

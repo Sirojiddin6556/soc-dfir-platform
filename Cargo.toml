@@ -1,0 +1,56 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/core-domain",
+    "crates/storage-cas",
+    "crates/storage-sqlite",
+    "crates/workflow-dag",
+    "crates/normalization-engine",
+    "crates/correlation-engine",
+    "crates/evidence-engine",
+    "crates/tool-adapters",
+    "crates/graph-engine",
+    "crates/timeline-engine",
+    "crates/taxonomy-projection",
+    "crates/scenario-engine",
+    "crates/scenario-verifier",
+    "crates/scoring-engine",
+    "crates/diagram-engine",
+    "crates/report-engine",
+    "crates/privilege-broker",
+    "crates/ipc-protocol",
+    "crates/platform-windows",
+    "crates/platform-linux",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Sirojiddin <sirojiddin@local>"]
+license = "Apache-2.0"
+repository = "https://github.com/Sirojiddin6556/soc-dfir-platform"
+
+[workspace.dependencies]
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+uuid = { version = "1.10", features = ["v7", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+# Cryptography & Hashing
+blake3 = "1.5"
+sha2 = "0.10"
+hex = "0.4"
+
+# Async & Concurrency
+tokio = { version = "1.40", features = ["full"] }
+async-trait = "0.1"
+futures = "0.3"
+
+# Persistence
+rusqlite = { version = "0.32", features = ["bundled", "chrono", "uuid"] }
+
+# Error Handling & Tracing
+thiserror = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

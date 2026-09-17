@@ -1,57 +1,75 @@
 # 03. Product Manager: Blue Team Cyber Range & SOC/DFIR Platform
 
 **Profile ID**: `PRF-03-PRODUCT`  
-**Status**: `COMPLETED`  
-**Input**: `docs/it-company/01-product-discovery-manager.md` & `docs/it-company/02-business-analyst.md`
+**Status**: `APPROVED / SCOPE FROZEN`  
+**Baseline**: Human Gate 1 Scope Freeze
 
 ---
 
-## 1. Epics & Feature Breakdown
+## 1. Product Epics Breakdown (P0 Scope)
 
-### Epic 1: Forensic Storage & Case Workspace (P0 - MVP)
-- **Feature 1.1**: SQLite Case Engine with WAL mode, schema migrations, and metadata tracking (`REQ-CASE-01`).
-- **Feature 1.2**: Content-Addressed Storage (CAS) with BLAKE3/SHA-256 deduplication and immutability (`REQ-CASE-02`).
-- **Feature 1.3**: Cryptographic Chain of Custody logging and audit trails.
+### Epic 1: Domain, Forensic Storage & Case Workspace (P0)
+- **Feature 1.1**: SQLite WAL storage layer with foreign keys and migrations (`REQ-DATA-01`).
+- **Feature 1.2**: Content-Addressed Storage (CAS) on BLAKE3 (internal address) + SHA-256 (forensic hash).
+- **Feature 1.3**: Cryptographic, append-only Chain of Custody tracking with Merkle-linked `previous_state_hash`.
 
-### Epic 2: Deterministic Ingestion & Fact Pipeline (P0 - MVP)
-- **Feature 2.1**: Extensible `ToolAdapter` interface for raw log parsers (EVTX, PCAP, Sysmon, Auditd) (`REQ-DATA-01`).
-- **Feature 2.2**: 4-Tier Data Model: Observation → Fact → Inference → Hypothesis (`REQ-DATA-01`).
-- **Feature 2.3**: Correlation Rules Engine with confidence scoring $\in [0.0, 1.0]$.
+### Epic 2: Automated Infrastructure & Host Discovery (P0)
+- **Feature 2.1**: Network & Asset Discovery (active hosts, IP, interfaces, routing tables, open ports) (`REQ-DISC-01`).
+- **Feature 2.2**: Deep Host Inspection (processes, services, cron/systemd, Scheduled Tasks, autoruns, sockets) (`REQ-HOST-01`).
 
-### Epic 3: Deterministic Attack Graph & Taxonomy Mappings (P0 - MVP)
-- **Feature 3.1**: Attack Graph construction (Entities: Host, Process, NetworkSocket, User, File; Edges: Spawned, Connected, Wrote, Authenticated) (`REQ-GRAPH-01`).
-- **Feature 3.2**: Multi-Taxonomy Projection Engine: MITRE ATT&CK Matrix, Cyber Kill Chain, Pyramid of Pain (`REQ-MAP-01`).
+### Epic 3: Software Discovery, SBOM & Vulnerability Pipeline (P0)
+- **Feature 3.1**: Software inventory extraction and SBOM synthesis (CPE/PURL standard) (`REQ-VULN-01`).
+- **Feature 3.2**: Multi-source vulnerability enrichment (CVE, CVSS, EPSS, CISA KEV) with Linux backport false-positive suppression.
 
-### Epic 4: Workflow DAG & Resilient Scheduling (P0 - MVP)
-- **Feature 4.1**: Directed Acyclic Graph (DAG) task engine with cooperative cancellation and time budgets (`REQ-WORK-01`).
-- **Feature 4.2**: Resource-class semaphores (`CPU`, `IO`, `NETWORK`, `FORENSIC`) preventing system lockups.
+### Epic 4: Ingestion, Normalization & Correlation Engine (P0)
+- **Feature 4.1**: Modular `ToolAdapter` interface producing pure `RawToolResult`.
+- **Feature 4.2**: `NormalizerEngine` transforming raw results into standardized `Observation[]`.
+- **Feature 4.3**: `CorrelationEngine` synthesizing `Observation[]` into typed `Fact[]` (`Fact`, `Inference`, `Hypothesis`) with multi-dimensional confidence.
+- **Feature 4.4**: `EvidenceEngine` aggregating supporting facts into verifiable `Evidence` units.
 
-### Epic 5: Privileged Broker & Security Architecture (P0 - MVP)
-- **Feature 5.1**: Unprivileged Desktop Shell with secure local IPC (named pipes / UNIX domain sockets) (`REQ-SEC-01`).
-- **Feature 5.2**: Local Broker daemon enforcing strict argument allowlists and isolated process spawning.
+### Epic 5: Deterministic Attack Graph, Timeline & Taxonomy Projections (P0)
+- **Feature 5.1**: Event-derived `AttackGraph` with `supported_by` fact provenance on all edges (`REQ-GRAPH-01`).
+- **Feature 5.2**: Multi-host horizontal chronological timeline with lanes and filtering.
+- **Feature 5.3**: Versioned taxonomy projection (MITRE ATT&CK Enterprise, Cyber Kill Chain, Pyramid of Pain) emitting `TaxonomyCandidate[]` (`REQ-TAX-01`).
 
-### Epic 6: Interactive Desktop UI & Investigation Cockpit (P1 - MVP+)
-- **Feature 6.1**: Multi-host timeline visualizer with lanes, zoom, and time-range filtering (`REQ-VIZ-01`).
-- **Feature 6.2**: Graph viewer with accessible shapes/badges and MITRE matrix view.
-- **Feature 6.3**: Evidence inspector and report exporter (JSON, STIX 2.1).
+### Epic 6: Workflow Automation DAG & Resource Budgets (P0)
+- **Feature 6.1**: Conditional DAG execution with restricted expression DSL (`REQ-AUTO-01`).
+- **Feature 6.2**: Standardized profiles (`Quick → Standard → Deep`) with auto-escalation upon anomaly detection.
+- **Feature 6.3**: 6 resource semaphores (`CPU`, `IO`, `NET`, `MEMORY`, `FORENSIC`, `TARGET_LOAD`).
+
+### Epic 7: Privilege Broker & Security Boundaries (P0)
+- **Feature 7.1**: Unprivileged Desktop UI communicating via local IPC (`REQ-SEC-01`).
+- **Feature 7.2**: Hardened Broker validating caller capabilities and executing strictly typed `PrivilegedOperation` without shell execution.
+
+### Epic 8: Visual Intelligence & Desktop Cockpit (P0/P1)
+- **Feature 8.1**: 3-pane desktop workspace (Sidebar, Canvas, Inspector) (`REQ-VIZ-01`).
+- **Feature 8.2**: Geometry-based visual encoding (circle, hexagon, diamond, square, octagon) conforming to NFR-UX-002.
+- **Feature 8.3**: Interactive views: Infrastructure Map, Attack Graph, Timeline, ATT&CK Matrix.
+
+### Epic 9: Scenario Engine, Isolated Ground Truth & Scoring (P0)
+- **Feature 9.1**: Cryptographically signed scenario bundles (`REQ-SCEN-01`).
+- **Feature 9.2**: Sealed Ground Truth inaccessible to player queries or SQLite database.
+- **Feature 9.3**: Multi-dimensional explainable scoring across 10 investigation criteria.
 
 ---
 
-## 2. Definition of Done (DoD)
-1. **Code Quality**: Code formatted according to standard conventions (e.g. `cargo fmt` & `cargo clippy`), zero compiler warnings.
-2. **Deterministic Behavior**: Identical raw inputs produce bit-for-bit or entity-for-entity identical `Fact` and `AttackGraph` outputs.
-3. **Traceability**: Every generated Fact, Inference, and Graph Edge references its origin `Observation` or rule ID.
-4. **Security Check**: Privileged operations execute strictly through the Broker; UI runs with standard user privileges.
-5. **Testing**: 100% of P0 Acceptance Criteria verified with automated unit and integration tests; zero memory leaks.
+## 2. Realigned Sprint Roadmap
 
----
-
-## 3. Sprint Roadmap (MVP Execution)
-- **Sprint 1 (Core Engine & Storage)**:
-  - Rust workspace setup, SQLite storage layer, CAS file repository, and `Observation`/`Fact` schemas.
-- **Sprint 2 (Workflow DAG & Graph Engine)**:
-  - DAG scheduler with resource budgets, parsers execution, entity deduplication, and Attack Graph builder.
-- **Sprint 3 (Taxonomy Mappings & Broker IPC)**:
-  - MITRE ATT&CK / Kill Chain projections, IPC protocol, and Local Privilege Broker.
-- **Sprint 4 (Desktop UI & End-to-End Integration)**:
-  - Investigation Cockpit, timeline & graph visualization, automated CTF verification test harness.
+```
+Sprint 1: Domain / Storage / CAS / SQLite WAL
+   │
+   ▼
+Sprint 2: Workflow DAG / Automation / Resource Limiter
+   │
+   ▼
+Sprint 3: Discovery / Normalization / Ingestion Adapters
+   │
+   ▼
+Sprint 4: Evidence / Correlation / Graph Engine / Timeline
+   │
+   ▼
+Sprint 5: Versioned Taxonomy / Diagram Engine / Desktop UI
+   │
+   ▼
+Sprint 6: Scenario Engine / Isolated Ground Truth Verifier / Scoring Engine
+```

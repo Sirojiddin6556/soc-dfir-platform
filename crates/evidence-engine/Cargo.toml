@@ -1,0 +1,11 @@
+[package]
+name = "evidence-engine"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+core-domain = { path = "../core-domain" }
+chrono.workspace = true
+thiserror.workspace = true

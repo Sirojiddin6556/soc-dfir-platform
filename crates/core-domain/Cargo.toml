@@ -1,0 +1,31 @@
+[package]
+name = "core-domain"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+blake3.workspace = true
+sha2.workspace = true
+hex.workspace = true
+thiserror.workspace = true
+async-trait.workspace = true
+
+[dev-dependencies]
+tool-adapters = { path = "../tool-adapters" }
+normalization-engine = { path = "../normalization-engine" }
+correlation-engine = { path = "../correlation-engine" }
+evidence-engine = { path = "../evidence-engine" }
+graph-engine = { path = "../graph-engine" }
+taxonomy-projection = { path = "../taxonomy-projection" }
+diagram-engine = { path = "../diagram-engine" }
+scenario-verifier = { path = "../scenario-verifier" }
+scoring-engine = { path = "../scoring-engine" }
+storage-cas = { path = "../storage-cas" }
+storage-sqlite = { path = "../storage-sqlite" }
+tokio = { workspace = true, features = ["full"] }

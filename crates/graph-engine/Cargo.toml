@@ -1,0 +1,12 @@
+[package]
+name = "graph-engine"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+core-domain = { path = "../core-domain" }
+serde_json.workspace = true
+thiserror.workspace = true
+chrono.workspace = true

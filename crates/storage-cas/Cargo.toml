@@ -1,0 +1,17 @@
+[package]
+name = "storage-cas"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+core-domain = { path = "../core-domain" }
+blake3.workspace = true
+sha2.workspace = true
+hex.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+uuid = { workspace = true, features = ["v4"] }
