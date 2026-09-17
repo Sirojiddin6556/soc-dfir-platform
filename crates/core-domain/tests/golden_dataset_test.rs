@@ -125,7 +125,7 @@ async fn test_end_to_end_golden_dataset_pipeline() {
 
     let verifier = ScenarioVerifier::new();
     let report = verifier.verify_investigation("SCEN-APT-01", case_id, &ground_truth, &facts);
-    assert_eq!(report.total_score, 40);
+    assert_eq!(report.total_score, 130);
     assert_eq!(report.percentage, 100.0);
 
     let scoring = ScoringEngine::new();

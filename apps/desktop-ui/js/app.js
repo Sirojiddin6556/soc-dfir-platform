@@ -363,20 +363,43 @@ class CyberRangeCockpitApp {
     const res = document.getElementById('verificationResult');
     if (!btn || !input || !res) return;
 
-    btn.addEventListener('click', () => {
+    btn.addEventListener('click', async () => {
       const val = input.value.trim();
-      if (val === 'T1003.001') {
+      if (!val) return;
+
+      btn.disabled = true;
+      btn.textContent = 'Верификация...';
+      res.innerHTML = '<div style="color: var(--text-muted); font-size: 11px;">Вычисление метрик §17.2 через scenario-verifier...</div>';
+
+      try {
+        const evalResp = await this.ipc.call('scenario.evaluate', {
+          scenario_id: 'SCEN-APT29',
+          hypothesis: val,
+        });
+
+        const isSuccess = evalResp.verdict === 'SUCCESS';
+        const color = isSuccess ? 'var(--accent-success)' : 'var(--accent-warning)';
+        const bg = isSuccess ? 'rgba(46,160,67,0.15)' : 'rgba(210,153,34,0.15)';
+
         res.innerHTML = `
-          <div style="background: rgba(46,160,67,0.15); border: 1px solid var(--accent-success); padding: 10px; border-radius: 4px; color: var(--accent-success); font-size: 12px;">
-            <strong>УСПЕХ (Баллы: 100/100)</strong><br>Гипотеза совпала с эталоном инцидента: T1003.001 (OS Credential Dumping: LSASS Memory).
+          <div style="background: ${bg}; border: 1px solid ${color}; padding: 10px; border-radius: 4px; color: ${color}; font-size: 12px;">
+            <div style="font-weight: 700; margin-bottom: 4px;">
+              ${isSuccess ? 'ВЕРИФИЦИРОВАНО' : 'НЕ ПОЛНОСТЬЮ'}: ${evalResp.total_score}/${evalResp.max_possible_score} баллов (${evalResp.percentage.toFixed(1)}%)
+            </div>
+            <div style="font-size: 11px; margin-bottom: 6px; white-space: pre-line; color: var(--text-secondary);">
+              ${evalResp.explainable_summary || 'Оценка 7 критериев завершена.'}
+            </div>
           </div>
         `;
-      } else {
+      } catch (err) {
+        const isMatch = val === 'T1003.001';
         res.innerHTML = `
-          <div style="background: rgba(248,81,73,0.15); border: 1px solid var(--accent-critical); padding: 10px; border-radius: 4px; color: var(--accent-critical); font-size: 12px;">
-            <strong>НЕСООТВЕТСТВИЕ (Баллы: 0/100)</strong><br>Указанная техника не совпала с первопричиной сценария. Проверьте артефакты чтения памяти.
-          </div>
-        `;
+          <div style="background: ${isMatch ? 'rgba(46,160,67,0.15)' : 'rgba(248,81,73,0.15)'}; border: 1px solid ${isMatch ? 'var(--accent-success)' : 'var(--accent-critical)'}; padding: 10px; border-radius: 4px; font-size: 12px;">
+            <strong>${isMatch ? 'УСПЕХ' : 'ОТКЛОНЕНО'}</strong>: ${err.message || 'Локальный режим'}
+          </div>`;
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Верифицировать гипотезу';
       }
     });
   }
