@@ -1,7 +1,9 @@
 #![forbid(unsafe_code)]
 
+use core_domain::audit::AuditEvent;
 use core_domain::broker::{BrokerCapability, PrivilegedOperation};
 use std::collections::HashSet;
+use std::sync::{Arc, Mutex};
 use thiserror::Error;
 
 #[derive(Error, Debug, PartialEq, Eq)]
@@ -18,22 +20,73 @@ pub enum BrokerError {
 
 pub struct PrivilegeBroker {
     granted_capabilities: HashSet<BrokerCapability>,
+    audit_events: Arc<Mutex<Vec<AuditEvent>>>,
 }
 
 impl PrivilegeBroker {
     pub fn new(capabilities: Vec<BrokerCapability>) -> Self {
         Self {
             granted_capabilities: capabilities.into_iter().collect(),
+            audit_events: Arc::new(Mutex::new(Vec::new())),
         }
+    }
+
+    pub fn audit_events(&self) -> Vec<AuditEvent> {
+        self.audit_events.lock().unwrap().clone()
+    }
+
+    fn record_audit(&self, action: &str, outcome: &str, details: serde_json::Value) {
+        let event = AuditEvent::new(
+            None,
+            "privilege-broker",
+            action,
+            "PrivilegedOperation",
+            None,
+            outcome,
+            details,
+        );
+        self.audit_events.lock().unwrap().push(event);
     }
 
     /// Verifies capability and executes predefined typed operation.
     /// Never accepts arbitrary command lines or unvalidated argv arrays.
     pub async fn execute_operation(&self, op: PrivilegedOperation) -> Result<Vec<u8>, BrokerError> {
         let required = op.required_capability();
+        let op_name = format!("{:?}", required);
+
         if !self.granted_capabilities.contains(&required) {
+            self.record_audit(
+                &op_name,
+                "Denied",
+                serde_json::json!({"reason": "MissingCapability"}),
+            );
             return Err(BrokerError::MissingCapability(required));
         }
+
+        let result = self.execute_operation_inner(op).await;
+        match &result {
+            Ok(bytes) => {
+                self.record_audit(
+                    &op_name,
+                    "Success",
+                    serde_json::json!({"bytes_out": bytes.len()}),
+                );
+            }
+            Err(e) => {
+                self.record_audit(
+                    &op_name,
+                    "Failed",
+                    serde_json::json!({"error": e.to_string()}),
+                );
+            }
+        }
+        result
+    }
+
+    async fn execute_operation_inner(
+        &self,
+        op: PrivilegedOperation,
+    ) -> Result<Vec<u8>, BrokerError> {
         match op {
             PrivilegedOperation::CollectProcessMetadata { pid } => {
                 if pid == 0 {
@@ -222,5 +275,32 @@ mod tests {
         let res = broker.execute_operation(scan_op).await.unwrap();
         let str_res = String::from_utf8_lossy(&res);
         assert!(str_res.contains("scan_complete"));
+    }
+
+    #[tokio::test]
+    async fn test_broker_audit_trail_logging() {
+        let broker = PrivilegeBroker::new(vec![BrokerCapability::NetworkScan]);
+
+        // Allowed operation -> Success audit event
+        let scan_op = PrivilegedOperation::RunTargetedScan {
+            target_ip: "127.0.0.1".to_string(),
+            ports: vec![80],
+            rate_limit: 1000,
+        };
+        let _ = broker.execute_operation(scan_op).await.unwrap();
+
+        // Disallowed operation -> Denied audit event
+        let capture_op = PrivilegedOperation::CapturePcap {
+            interface_id: "eth0".to_string(),
+            duration_secs: 5,
+            max_bytes: 1024,
+            bpf_filter: None,
+        };
+        let _ = broker.execute_operation(capture_op).await.unwrap_err();
+
+        let audits = broker.audit_events();
+        assert_eq!(audits.len(), 2);
+        assert_eq!(audits[0].outcome, "Success");
+        assert_eq!(audits[1].outcome, "Denied");
     }
 }

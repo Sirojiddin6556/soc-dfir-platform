@@ -1,8 +1,10 @@
 #![forbid(unsafe_code)]
 
+pub mod audit;
 pub mod schema;
 
 use core_domain::artifact::{Artifact, CustodyEvent};
+use core_domain::audit::AuditEvent;
 use core_domain::case::Case;
 use core_domain::epistemic::{AssertionType, Confidence, PainLevel, Severity, VerificationState};
 use core_domain::fact::{EntityType, Fact};
@@ -355,6 +357,19 @@ impl SqliteStorage {
         )?;
         Ok(())
     }
+
+    pub fn insert_audit_event(&self, event: &AuditEvent) -> Result<(), SqliteStorageError> {
+        let conn = self.conn.lock().unwrap();
+        audit::insert_audit_event(&conn, event)
+    }
+
+    pub fn list_audit_events(
+        &self,
+        case_id: Option<EntityId>,
+    ) -> Result<Vec<AuditEvent>, SqliteStorageError> {
+        let conn = self.conn.lock().unwrap();
+        audit::list_audit_events(&conn, case_id)
+    }
 }
 
 #[cfg(test)]
@@ -440,5 +455,28 @@ mod tests {
                 exp
             );
         }
+    }
+
+    #[test]
+    fn test_audit_event_logging() {
+        let storage = SqliteStorage::open_in_memory().unwrap();
+        let case_id = EntityId::new_v7();
+        storage.insert_case(case_id, "Audit Case", None).unwrap();
+
+        let event = AuditEvent::new(
+            Some(case_id),
+            "analyst_alice",
+            "PrivilegedPortScan",
+            "Network",
+            Some("192.168.1.1".to_string()),
+            "Success",
+            serde_json::json!({"ports": [80, 443]}),
+        );
+        storage.insert_audit_event(&event).unwrap();
+
+        let events = storage.list_audit_events(Some(case_id)).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].actor_id, "analyst_alice");
+        assert_eq!(events[0].action, "PrivilegedPortScan");
     }
 }

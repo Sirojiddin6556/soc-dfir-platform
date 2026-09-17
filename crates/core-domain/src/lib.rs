@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 pub mod artifact;
+pub mod audit;
 pub mod broker;
 pub mod case;
 pub mod epistemic;
@@ -16,6 +17,7 @@ pub mod workflow;
 
 // Re-exports of foundational domain types
 pub use artifact::{Artifact, CustodyEvent, CustodyEventType};
+pub use audit::AuditEvent;
 pub use broker::{BrokerCapability, PrivilegedOperation};
 pub use case::Case;
 pub use epistemic::{AssertionType, Confidence, PainLevel, Severity, VerificationState};
