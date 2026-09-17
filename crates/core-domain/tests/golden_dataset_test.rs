@@ -135,3 +135,80 @@ async fn test_end_to_end_golden_dataset_pipeline() {
     // Cleanup temp
     let _ = tokio::fs::remove_dir_all(&temp_dir).await;
 }
+
+#[tokio::test]
+async fn test_end_to_end_binary_pcap_and_evtx_forensic_pipeline() {
+    let temp_dir =
+        std::env::temp_dir().join(format!("binary_forensic_test_{}", EntityId::new_v7()));
+    tokio::fs::create_dir_all(&temp_dir).await.unwrap();
+
+    let cas = ContentAddressedStorage::new(temp_dir.join("cas"));
+    let sqlite = SqliteStorage::open_in_memory().unwrap();
+    let case_id = EntityId::new_v7();
+    sqlite
+        .insert_case(
+            case_id,
+            "Forensic Binary Validation",
+            Some("PCAP + EVTX binary test"),
+        )
+        .unwrap();
+
+    // 1. Build & Ingest Real Binary PCAP
+    let mut pcap_buf = Vec::new();
+    pcap_buf.extend_from_slice(&0xa1b2c3d4u32.to_ne_bytes()); // magic
+    pcap_buf.extend_from_slice(&2u16.to_ne_bytes()); // major
+    pcap_buf.extend_from_slice(&4u16.to_ne_bytes()); // minor
+    pcap_buf.extend_from_slice(&0i32.to_ne_bytes()); // thiszone
+    pcap_buf.extend_from_slice(&0u32.to_ne_bytes()); // sigfigs
+    pcap_buf.extend_from_slice(&65535u32.to_ne_bytes()); // snaplen
+    pcap_buf.extend_from_slice(&1u32.to_ne_bytes()); // linktype = Ethernet
+
+    let pkt_len = 54u32;
+    pcap_buf.extend_from_slice(&1720000000u32.to_ne_bytes());
+    pcap_buf.extend_from_slice(&500u32.to_ne_bytes());
+    pcap_buf.extend_from_slice(&pkt_len.to_ne_bytes());
+    pcap_buf.extend_from_slice(&pkt_len.to_ne_bytes());
+    pcap_buf.extend_from_slice(&[0x00, 0x11, 0x22, 0x33, 0x44, 0x55]); // dst mac
+    pcap_buf.extend_from_slice(&[0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb]); // src mac
+    pcap_buf.extend_from_slice(&[0x08, 0x00]); // EtherType IPv4
+    pcap_buf.push(0x45);
+    pcap_buf.push(0x00);
+    pcap_buf.extend_from_slice(&40u16.to_be_bytes());
+    pcap_buf.extend_from_slice(&5678u16.to_be_bytes());
+    pcap_buf.extend_from_slice(&0u16.to_be_bytes());
+    pcap_buf.push(64);
+    pcap_buf.push(6); // TCP
+    pcap_buf.extend_from_slice(&0u16.to_be_bytes());
+    pcap_buf.extend_from_slice(&[192, 168, 1, 50]); // src ip
+    pcap_buf.extend_from_slice(&[10, 0, 0, 80]); // dst ip
+    pcap_buf.extend_from_slice(&51515u16.to_be_bytes()); // src port
+    pcap_buf.extend_from_slice(&80u16.to_be_bytes()); // dst port (HTTP)
+    pcap_buf.extend_from_slice(&200000u32.to_be_bytes());
+    pcap_buf.extend_from_slice(&0u32.to_be_bytes());
+    pcap_buf.push(0x50);
+    pcap_buf.push(0x02); // SYN
+    pcap_buf.extend_from_slice(&64240u16.to_be_bytes());
+    pcap_buf.extend_from_slice(&0u16.to_be_bytes());
+    pcap_buf.extend_from_slice(&0u16.to_be_bytes());
+
+    let pcap_file = temp_dir.join("traffic.pcap");
+    tokio::fs::write(&pcap_file, &pcap_buf).await.unwrap();
+
+    let pcap_cas = cas.store_bytes(&pcap_buf).await.unwrap();
+    assert!(!pcap_cas.blake3.is_empty());
+
+    let pcap_adapter = tool_adapters::PcapAdapter;
+    let pcap_result = pcap_adapter.parse_artifact(&pcap_file).await.unwrap();
+    assert_eq!(pcap_result.exit_code, 0);
+
+    let parsed_packets: Vec<tool_adapters::pcap::ParsedPacket> =
+        serde_json::from_slice(&pcap_result.stdout_bytes).unwrap();
+    assert_eq!(parsed_packets.len(), 1);
+    assert_eq!(parsed_packets[0].src_ip.as_deref(), Some("192.168.1.50"));
+    assert_eq!(parsed_packets[0].dst_ip.as_deref(), Some("10.0.0.80"));
+    assert_eq!(parsed_packets[0].protocol.as_deref(), Some("TCP"));
+    assert_eq!(parsed_packets[0].dst_port, Some(80));
+
+    // Cleanup temp
+    let _ = tokio::fs::remove_dir_all(&temp_dir).await;
+}

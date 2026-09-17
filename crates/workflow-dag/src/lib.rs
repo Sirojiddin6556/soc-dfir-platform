@@ -18,6 +18,12 @@ pub enum WorkflowError {
     #[error("Resource limit exceeded: {0}")]
     ResourceLimit(String),
 
+    #[error("Execution failed: {0}")]
+    ExecutionFailed(String),
+
+    #[error("Task timed out")]
+    Timeout,
+
     #[error("Task cancelled")]
     Cancelled,
 }
@@ -76,10 +82,88 @@ impl WorkflowScheduler {
         let mut tasks = self.tasks.lock().await;
         if let Some(task) = tasks.get_mut(task_id) {
             task.status = status;
-            if status == TaskStatus::Succeeded || status == TaskStatus::Failed {
+            if status == TaskStatus::Succeeded
+                || status == TaskStatus::Failed
+                || status == TaskStatus::Cancelled
+            {
                 task.completed_at = Some(chrono::Utc::now());
             }
             Ok(())
+        } else {
+            Err(WorkflowError::TaskNotFound(task_id.to_string()))
+        }
+    }
+
+    pub async fn cancel_task(&self, task_id: &EntityId) -> Result<(), WorkflowError> {
+        self.set_task_status(task_id, TaskStatus::Cancelled).await
+    }
+
+    /// Executes task with real resource permits and timeout protection
+    pub async fn execute_task<F, Fut>(
+        &self,
+        task_id: &EntityId,
+        timeout_ms: u64,
+        executor: F,
+    ) -> Result<(), WorkflowError>
+    where
+        F: FnOnce(EntityId) -> Fut,
+        Fut: std::future::Future<Output = Result<(), String>>,
+    {
+        // 1. Fetch task and check condition DSL
+        let budget = {
+            let mut tasks = self.tasks.lock().await;
+            let task = tasks
+                .get_mut(task_id)
+                .ok_or_else(|| WorkflowError::TaskNotFound(task_id.to_string()))?;
+            if let Some(ref dsl) = task.condition_dsl {
+                if dsl == "skip" || dsl == "false" {
+                    task.status = TaskStatus::Skipped;
+                    task.completed_at = Some(chrono::Utc::now());
+                    return Ok(());
+                }
+            }
+            task.status = TaskStatus::Running;
+            task.budget
+        };
+
+        // 2. Acquire real resource permits
+        let _cpu_permit = self
+            .limiter
+            .cpu_sem
+            .acquire_many(budget.cpu.max(1))
+            .await
+            .map_err(|e| WorkflowError::ResourceLimit(e.to_string()))?;
+        let _io_permit = self
+            .limiter
+            .io_sem
+            .acquire_many(budget.io.max(1))
+            .await
+            .map_err(|e| WorkflowError::ResourceLimit(e.to_string()))?;
+
+        // 3. Execute with timeout
+        let fut = executor(*task_id);
+        let exec_result =
+            tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), fut).await;
+
+        let mut tasks = self.tasks.lock().await;
+        if let Some(task) = tasks.get_mut(task_id) {
+            task.completed_at = Some(chrono::Utc::now());
+            match exec_result {
+                Ok(Ok(())) => {
+                    task.status = TaskStatus::Succeeded;
+                    Ok(())
+                }
+                Ok(Err(e)) => {
+                    task.status = TaskStatus::Failed;
+                    task.error_message = Some(e.clone());
+                    Err(WorkflowError::ExecutionFailed(e))
+                }
+                Err(_) => {
+                    task.status = TaskStatus::TimedOut;
+                    task.error_message = Some("Task execution timed out".to_string());
+                    Err(WorkflowError::Timeout)
+                }
+            }
         } else {
             Err(WorkflowError::TaskNotFound(task_id.to_string()))
         }
@@ -173,5 +257,107 @@ mod tests {
         let ready2 = scheduler.get_ready_tasks().await;
         assert_eq!(ready2.len(), 1);
         assert_eq!(ready2[0].id, task2_id);
+    }
+
+    #[tokio::test]
+    async fn test_task_execution_with_resource_permits() {
+        let limiter = ResourceLimiter::new(2, 2, 1, 1, 1);
+        let scheduler = WorkflowScheduler::new(limiter);
+        let case_id = EntityId::new_v7();
+        let task_id = EntityId::new_v7();
+
+        let task = WorkflowTask {
+            id: task_id,
+            case_id,
+            task_name: "Correlate".to_string(),
+            status: TaskStatus::Pending,
+            budget: ResourceBudget {
+                cpu: 2,
+                io: 1,
+                net: 0,
+                mem_mb: 256,
+                forensic: 0,
+                target_load: 0,
+            },
+            priority: 10,
+            dependencies: vec![],
+            condition_dsl: None,
+            error_message: None,
+            created_at: chrono::Utc::now(),
+            completed_at: None,
+        };
+
+        scheduler.submit_task(task).await.unwrap();
+
+        let res = scheduler
+            .execute_task(&task_id, 1000, |_tid| async { Ok(()) })
+            .await;
+
+        assert!(res.is_ok());
+        let ready = scheduler.get_ready_tasks().await;
+        assert!(ready.is_empty()); // Already Succeeded
+    }
+
+    #[tokio::test]
+    async fn test_task_execution_timeout() {
+        let limiter = ResourceLimiter::new(2, 2, 1, 1, 1);
+        let scheduler = WorkflowScheduler::new(limiter);
+        let case_id = EntityId::new_v7();
+        let task_id = EntityId::new_v7();
+
+        let task = WorkflowTask {
+            id: task_id,
+            case_id,
+            task_name: "HangingTask".to_string(),
+            status: TaskStatus::Pending,
+            budget: ResourceBudget::default(),
+            priority: 5,
+            dependencies: vec![],
+            condition_dsl: None,
+            error_message: None,
+            created_at: chrono::Utc::now(),
+            completed_at: None,
+        };
+
+        scheduler.submit_task(task).await.unwrap();
+
+        let res = scheduler
+            .execute_task(&task_id, 50, |_tid| async {
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                Ok(())
+            })
+            .await;
+
+        assert!(matches!(res, Err(WorkflowError::Timeout)));
+    }
+
+    #[tokio::test]
+    async fn test_task_condition_dsl_skip() {
+        let limiter = ResourceLimiter::new(2, 2, 1, 1, 1);
+        let scheduler = WorkflowScheduler::new(limiter);
+        let case_id = EntityId::new_v7();
+        let task_id = EntityId::new_v7();
+
+        let task = WorkflowTask {
+            id: task_id,
+            case_id,
+            task_name: "ConditionalTask".to_string(),
+            status: TaskStatus::Pending,
+            budget: ResourceBudget::default(),
+            priority: 5,
+            dependencies: vec![],
+            condition_dsl: Some("skip".to_string()),
+            error_message: None,
+            created_at: chrono::Utc::now(),
+            completed_at: None,
+        };
+
+        scheduler.submit_task(task).await.unwrap();
+
+        let res = scheduler
+            .execute_task(&task_id, 1000, |_tid| async { Ok(()) })
+            .await;
+
+        assert!(res.is_ok());
     }
 }

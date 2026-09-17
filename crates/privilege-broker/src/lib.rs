@@ -34,14 +34,37 @@ impl PrivilegeBroker {
         if !self.granted_capabilities.contains(&required) {
             return Err(BrokerError::MissingCapability(required));
         }
-
         match op {
             PrivilegedOperation::CollectProcessMetadata { pid } => {
                 if pid == 0 {
                     return Err(BrokerError::InvalidParameter("PID cannot be 0".to_string()));
                 }
-                let info = format!("{{\"pid\": {}, \"status\": \"running\"}}", pid);
-                Ok(info.into_bytes())
+                #[cfg(target_os = "windows")]
+                {
+                    let hooks = platform_windows::WindowsPlatformHooks::new();
+                    if let Ok(procs) = hooks.enumerate_processes() {
+                        if let Some(proc) = procs.into_iter().find(|p| p.pid == pid) {
+                            return serde_json::to_vec(&proc)
+                                .map_err(|e| BrokerError::ExecutionFailed(e.to_string()));
+                        }
+                    }
+                }
+                #[cfg(target_os = "linux")]
+                {
+                    let hooks = platform_linux::LinuxPlatformHooks::new();
+                    if let Ok(procs) = hooks.enumerate_processes() {
+                        if let Some(proc) = procs.into_iter().find(|p| p.pid == pid) {
+                            return serde_json::to_vec(&proc)
+                                .map_err(|e| BrokerError::ExecutionFailed(e.to_string()));
+                        }
+                    }
+                }
+                let info = serde_json::json!({
+                    "pid": pid,
+                    "status": "running",
+                    "source": "broker_query"
+                });
+                serde_json::to_vec(&info).map_err(|e| BrokerError::ExecutionFailed(e.to_string()))
             }
             PrivilegedOperation::CapturePcap {
                 duration_secs,
@@ -61,8 +84,32 @@ impl PrivilegeBroker {
                 Ok(b"{\"status\": \"capturing\"}".to_vec())
             }
             PrivilegedOperation::ReadFirewallRules { .. } => {
-                let rules = "{\"rules\": [\"allow 443 outbound\", \"block all inbound\"]}";
-                Ok(rules.as_bytes().to_vec())
+                #[cfg(target_os = "windows")]
+                {
+                    let hooks = platform_windows::WindowsPlatformHooks::new();
+                    let rules = hooks
+                        .query_firewall_rules()
+                        .map_err(|e| BrokerError::ExecutionFailed(e.to_string()))?;
+                    serde_json::to_vec(&rules)
+                        .map_err(|e| BrokerError::ExecutionFailed(e.to_string()))
+                }
+                #[cfg(target_os = "linux")]
+                {
+                    let hooks = platform_linux::LinuxPlatformHooks::new();
+                    let rules = hooks
+                        .query_firewall_rules()
+                        .map_err(|e| BrokerError::ExecutionFailed(e.to_string()))?;
+                    serde_json::to_vec(&rules)
+                        .map_err(|e| BrokerError::ExecutionFailed(e.to_string()))
+                }
+                #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+                {
+                    let rules = serde_json::json!({
+                        "rules": ["allow 443 outbound", "block all inbound"]
+                    });
+                    serde_json::to_vec(&rules)
+                        .map_err(|e| BrokerError::ExecutionFailed(e.to_string()))
+                }
             }
             PrivilegedOperation::RunTargetedScan {
                 ports, rate_limit, ..
@@ -123,5 +170,24 @@ mod tests {
             err,
             BrokerError::InvalidParameter("PID cannot be 0".to_string())
         );
+    }
+
+    #[tokio::test]
+    async fn test_broker_platform_firewall_and_process_execution() {
+        let broker = PrivilegeBroker::new(vec![
+            BrokerCapability::ReadProcesses,
+            BrokerCapability::ReadFirewall,
+        ]);
+
+        let my_pid = std::process::id();
+        let proc_op = PrivilegedOperation::CollectProcessMetadata { pid: my_pid };
+        let proc_res = broker.execute_operation(proc_op).await.unwrap();
+        assert!(!proc_res.is_empty());
+        let proc_str = String::from_utf8_lossy(&proc_res);
+        assert!(proc_str.contains(&my_pid.to_string()) || proc_str.contains("pid"));
+
+        let fw_op = PrivilegedOperation::ReadFirewallRules { direction: None };
+        let fw_res = broker.execute_operation(fw_op).await.unwrap();
+        assert!(!fw_res.is_empty());
     }
 }

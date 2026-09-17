@@ -121,6 +121,81 @@ impl ApiDispatcher {
     }
 }
 
+pub const MAX_FRAME_SIZE: usize = 16 * 1024 * 1024; // 16 MB max frame safety limit
+
+#[derive(thiserror::Error, Debug, PartialEq, Eq)]
+pub enum FrameError {
+    #[error("Frame size ({0} bytes) exceeds maximum limit of {MAX_FRAME_SIZE} bytes")]
+    FrameTooLarge(usize),
+
+    #[error("Malformed frame: {0}")]
+    Malformed(String),
+}
+
+/// Length-prefixed binary frame codec: [u32 big-endian payload_length (4 bytes)] [payload bytes]
+pub struct FrameCodec;
+
+impl FrameCodec {
+    /// Encodes a raw byte payload into a length-prefixed frame
+    pub fn encode(payload: &[u8]) -> Result<Vec<u8>, FrameError> {
+        let len = payload.len();
+        if len > MAX_FRAME_SIZE {
+            return Err(FrameError::FrameTooLarge(len));
+        }
+
+        let mut frame = Vec::with_capacity(4 + len);
+        frame.extend_from_slice(&(len as u32).to_be_bytes());
+        frame.extend_from_slice(payload);
+        Ok(frame)
+    }
+
+    /// Attempts to extract the next frame from an incoming byte buffer.
+    /// Returns Ok(Some(payload)) if a full frame is present, Ok(None) if partial.
+    pub fn decode(buffer: &mut Vec<u8>) -> Result<Option<Vec<u8>>, FrameError> {
+        if buffer.len() < 4 {
+            return Ok(None);
+        }
+
+        let mut len_bytes = [0u8; 4];
+        len_bytes.copy_from_slice(&buffer[..4]);
+        let payload_len = u32::from_be_bytes(len_bytes) as usize;
+
+        if payload_len > MAX_FRAME_SIZE {
+            return Err(FrameError::FrameTooLarge(payload_len));
+        }
+
+        let total_frame_len = 4 + payload_len;
+        if buffer.len() < total_frame_len {
+            return Ok(None);
+        }
+
+        let payload = buffer[4..total_frame_len].to_vec();
+        buffer.drain(..total_frame_len);
+        Ok(Some(payload))
+    }
+
+    /// Encodes a typed value to JSON within a length-prefixed frame
+    pub fn encode_json<T: Serialize>(value: &T) -> Result<Vec<u8>, FrameError> {
+        let json_bytes =
+            serde_json::to_vec(value).map_err(|e| FrameError::Malformed(e.to_string()))?;
+        Self::encode(&json_bytes)
+    }
+
+    /// Decodes a typed value from JSON if a complete frame is available in the buffer
+    pub fn decode_json<T: for<'de> Deserialize<'de>>(
+        buffer: &mut Vec<u8>,
+    ) -> Result<Option<T>, FrameError> {
+        match Self::decode(buffer)? {
+            Some(bytes) => {
+                let value = serde_json::from_slice(&bytes)
+                    .map_err(|e| FrameError::Malformed(e.to_string()))?;
+                Ok(Some(value))
+            }
+            None => Ok(None),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -143,5 +218,55 @@ mod tests {
         assert!(ApiDispatcher::validate_version(1).is_ok());
         let err = ApiDispatcher::validate_version(2).unwrap_err();
         assert_eq!(err.status, 400);
+    }
+
+    #[test]
+    fn test_frame_codec_roundtrip() {
+        let message = b"HELLO_SOC_DFIR_IPC";
+        let frame = FrameCodec::encode(message).unwrap();
+        assert_eq!(frame.len(), 4 + message.len());
+
+        let mut buffer = frame;
+        let decoded = FrameCodec::decode(&mut buffer).unwrap().unwrap();
+        assert_eq!(decoded, message);
+        assert!(buffer.is_empty());
+    }
+
+    #[test]
+    fn test_frame_codec_partial_buffer() {
+        let message = b"PARTIAL_FRAME_TEST";
+        let frame = FrameCodec::encode(message).unwrap();
+
+        // Feed only first 5 bytes (4 length bytes + 1 data byte)
+        let mut buffer = frame[..5].to_vec();
+        assert_eq!(FrameCodec::decode(&mut buffer).unwrap(), None);
+
+        // Append the rest of the frame
+        buffer.extend_from_slice(&frame[5..]);
+        let decoded = FrameCodec::decode(&mut buffer).unwrap().unwrap();
+        assert_eq!(decoded, message);
+        assert!(buffer.is_empty());
+    }
+
+    #[test]
+    fn test_frame_codec_json_typed() {
+        let req = IpcRequest {
+            api_version: 1,
+            request_id: "req-123".to_string(),
+            case_id: None,
+            method: "case.create".to_string(),
+            params: CreateCaseParams {
+                title: "Incident Beta".to_string(),
+                description: Some("Description".to_string()),
+            },
+        };
+
+        let mut buffer = FrameCodec::encode_json(&req).unwrap();
+        let decoded: IpcRequest<CreateCaseParams> =
+            FrameCodec::decode_json(&mut buffer).unwrap().unwrap();
+
+        assert_eq!(decoded.request_id, "req-123");
+        assert_eq!(decoded.params.title, "Incident Beta");
+        assert!(buffer.is_empty());
     }
 }

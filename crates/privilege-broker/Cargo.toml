@@ -7,6 +7,9 @@ license.workspace = true
 
 [dependencies]
 core-domain = { path = "../core-domain" }
+platform-windows = { path = "../platform-windows" }
+platform-linux = { path = "../platform-linux" }
+serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true

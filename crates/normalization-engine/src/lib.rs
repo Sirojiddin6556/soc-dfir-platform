@@ -36,8 +36,36 @@ impl Normalizer for GenericLogNormalizer {
         raw: &RawToolResult,
     ) -> Result<Vec<Observation>, NormalizationError> {
         let text = String::from_utf8_lossy(&raw.stdout_bytes);
+        let trimmed = text.trim();
         let mut observations = Vec::new();
         let now = chrono::Utc::now();
+
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            if let Ok(records) = serde_json::from_str::<Vec<serde_json::Value>>(trimmed) {
+                for rec in records {
+                    let mut data = rec.clone();
+                    if let Some(inner) = rec.get("data").and_then(|d| d.as_object()) {
+                        if let Some(obj) = data.as_object_mut() {
+                            for (k, v) in inner {
+                                obj.insert(k.clone(), v.clone());
+                            }
+                        }
+                    }
+                    observations.push(Observation {
+                        id: EntityId::new_v7(),
+                        case_id,
+                        artifact_id: None,
+                        tool_run_id: None,
+                        source_tool: raw.tool_name.clone(),
+                        raw_event_type: "log_entry".to_string(),
+                        source_timestamp: now,
+                        ingest_timestamp: now,
+                        data,
+                    });
+                }
+                return Ok(observations);
+            }
+        }
 
         for line in text.lines() {
             let line = line.trim();
