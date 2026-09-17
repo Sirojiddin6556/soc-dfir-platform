@@ -112,7 +112,9 @@ impl PrivilegeBroker {
                 }
             }
             PrivilegedOperation::RunTargetedScan {
-                ports, rate_limit, ..
+                target_ip,
+                ports,
+                rate_limit,
             } => {
                 if rate_limit > 10000 {
                     return Err(BrokerError::InvalidParameter(
@@ -126,7 +128,25 @@ impl PrivilegeBroker {
                         ));
                     }
                 }
-                Ok(b"{\"status\": \"scan_complete\"}".to_vec())
+                let mut open_ports = Vec::new();
+                for &port in &ports {
+                    let addr = format!("{}:{}", target_ip, port);
+                    if let Ok(Ok(_)) = tokio::time::timeout(
+                        std::time::Duration::from_millis(80),
+                        tokio::net::TcpStream::connect(&addr),
+                    )
+                    .await
+                    {
+                        open_ports.push(port);
+                    }
+                }
+                let res = serde_json::json!({
+                    "target_ip": target_ip,
+                    "status": "scan_complete",
+                    "open_ports": open_ports,
+                    "scanned_ports": ports.len()
+                });
+                serde_json::to_vec(&res).map_err(|e| BrokerError::ExecutionFailed(e.to_string()))
             }
             _ => Ok(b"{\"status\": \"completed\"}".to_vec()),
         }
@@ -189,5 +209,18 @@ mod tests {
         let fw_op = PrivilegedOperation::ReadFirewallRules { direction: None };
         let fw_res = broker.execute_operation(fw_op).await.unwrap();
         assert!(!fw_res.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_broker_run_targeted_scan() {
+        let broker = PrivilegeBroker::new(vec![BrokerCapability::NetworkScan]);
+        let scan_op = PrivilegedOperation::RunTargetedScan {
+            target_ip: "127.0.0.1".to_string(),
+            ports: vec![1, 65534],
+            rate_limit: 1000,
+        };
+        let res = broker.execute_operation(scan_op).await.unwrap();
+        let str_res = String::from_utf8_lossy(&res);
+        assert!(str_res.contains("scan_complete"));
     }
 }

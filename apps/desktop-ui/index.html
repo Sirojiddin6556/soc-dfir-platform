@@ -67,9 +67,23 @@
               <button class="btn btn-primary" id="btnQuickScan">[Quick Scan]</button>
               <button class="btn" id="btnStandardScan">[Standard Scan]</button>
               <button class="btn" id="btnDeepScan">[Deep Scan]</button>
-              <button class="btn btn-danger" id="btnStopScan">[Stop]</button>
+              <button class="btn btn-danger" id="btnStopScan" disabled>[Stop]</button>
               <button class="btn" id="btnExportTopology">[Export]</button>
             </div>
+          </div>
+          <!-- Live Scan Visualizer Bar -->
+          <div id="scanProgressBarContainer" style="display: none; padding: 8px 14px; background: var(--bg-surface); border-bottom: 1px solid var(--border-default); font-size: 11px;">
+            <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
+              <span id="scanProgressLabel" style="font-weight: 600; color: var(--accent-primary); display: flex; align-items: center; gap: 6px;">
+                <span class="pulse-dot" style="display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--accent-primary);"></span>
+                SCANNING NETWORK INFRASTRUCTURE...
+              </span>
+              <span id="scanProgressPercent" style="color: var(--text-muted); font-weight: 700;">0%</span>
+            </div>
+            <div style="width: 100%; height: 6px; background: var(--bg-pane); border-radius: 3px; overflow: hidden; border: 1px solid var(--border-default);">
+              <div id="scanProgressBar" style="width: 0%; height: 100%; background: var(--accent-primary); transition: width 0.15s ease;"></div>
+            </div>
+            <div id="scanProgressLog" style="margin-top: 5px; font-family: monospace; color: var(--text-muted); font-size: 10px;">Initializing scan engine...</div>
           </div>
           <div class="split-view">
             <!-- Left: Subnets & Hosts List -->

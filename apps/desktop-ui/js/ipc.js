@@ -3,8 +3,16 @@
  * Implements JSON-RPC 2.0 with RFC 7807 Problem Details handling
  */
 export class IpcClient {
-  constructor(endpointUrl = 'http://localhost:8080/rpc') {
-    this.endpointUrl = endpointUrl;
+  constructor(endpointUrl = null) {
+    if (!endpointUrl) {
+      if (typeof window !== 'undefined' && window.location && window.location.origin && window.location.origin.startsWith('http')) {
+        this.endpointUrl = `${window.location.origin}/rpc`;
+      } else {
+        this.endpointUrl = 'http://127.0.0.1:8080/rpc';
+      }
+    } else {
+      this.endpointUrl = endpointUrl;
+    }
     this.apiVersion = 1;
   }
 
@@ -79,6 +87,85 @@ export class IpcClient {
             data: { process_name: 'powershell.exe', target: 'lsass.exe', ttp: 'T1003.001' }
           }
         ];
+      case 'scan.network':
+        return {
+          subnet: params.subnet || '192.168.1.0/24',
+          mode: params.mode || 'quick',
+          hosts_scanned: 254,
+          hosts_up: 3,
+          duration_ms: 150,
+          scan_rate_pps: 500,
+          discovered_hosts: [
+            {
+              id: 'h1',
+              hostname: 'DC01.CORP.LOCAL',
+              ip: '192.168.1.10',
+              mac: '00:1A:2B:3C:4D:5E',
+              os: 'Windows Server 2022 Datacenter (Build 20348)',
+              criticality: 'Tier-0 (Domain Controller)',
+              status: 'Compromised / Investigating',
+              risk: 'CRITICAL (9.6)',
+              subnet: '192.168.1.0/24',
+              ports: [53, 88, 135, 139, 389, 445, 636, 3268, 3389],
+              services: ['Active Directory Domain Services', 'DNS Server', 'Kerberos KDC', 'Netlogon'],
+              software: [{ name: 'Microsoft Active Directory', ver: '10.0.20348', cpe: 'cpe:2.3:o:microsoft:windows_server_2022' }],
+              vulnerabilities: [{ cve: 'CVE-2022-26923', cvss: 8.8, name: 'Active Directory Domain Services Privilege Escalation' }]
+            },
+            {
+              id: 'h2',
+              hostname: 'WS-FIN-04.CORP.LOCAL',
+              ip: '192.168.1.105',
+              mac: '00:1A:2B:AA:BB:CC',
+              os: 'Windows 11 Enterprise (Build 22631)',
+              criticality: 'Tier-2 (Workstation)',
+              status: 'Patient Zero (Phishing Entry)',
+              risk: 'HIGH (8.2)',
+              subnet: '192.168.1.0/24',
+              ports: [135, 445, 3389],
+              services: ['Windows Defender ATP', 'Workstation'],
+              software: [{ name: 'Microsoft Office 365', ver: '16.0.17328', cpe: 'cpe:2.3:a:microsoft:office:365' }],
+              vulnerabilities: [{ cve: 'CVE-2023-36884', cvss: 8.3, name: 'Office and Windows HTML RCE Vulnerability' }]
+            },
+            {
+              id: 'h3',
+              hostname: 'DMZ-WEB01',
+              ip: '172.16.0.15',
+              mac: '52:54:00:12:34:56',
+              os: 'Ubuntu 22.04.4 LTS',
+              criticality: 'Tier-1 (Public Facing)',
+              status: 'Normal / Monitored',
+              risk: 'LOW (2.1)',
+              subnet: '172.16.0.0/20',
+              ports: [22, 80, 443],
+              services: ['nginx.service', 'sshd.service'],
+              software: [{ name: 'nginx', ver: '1.18.0', cpe: 'cpe:2.3:a:f5:nginx:1.18.0' }],
+              vulnerabilities: []
+            }
+          ]
+        };
+      case 'scan.cve':
+        return {
+          host_id: params.host_id || 'h1',
+          calculated_risk: 9.6,
+          vulnerabilities: [
+            {
+              cve: 'CVE-2022-26923',
+              cvss: 8.8,
+              severity: 'CRITICAL',
+              title: 'Active Directory Domain Services Privilege Escalation (Certifried)',
+              affected_component: 'Active Directory Certificate Services / Domain Services',
+              remediation: 'Apply Microsoft Security Update KB5014754 immediately.'
+            },
+            {
+              cve: 'CVE-2021-42287',
+              cvss: 8.8,
+              severity: 'HIGH',
+              title: 'sAMAccountName Spoofing PAC Validation Privilege Escalation (noPac)',
+              affected_component: 'Kerberos Key Distribution Center (KDC)',
+              remediation: 'Enforce PAC signature validation on all domain controllers.'
+            }
+          ]
+        };
       default:
         return { status: 'ok', method, params };
     }

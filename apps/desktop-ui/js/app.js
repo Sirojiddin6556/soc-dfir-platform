@@ -1,8 +1,10 @@
 import { IpcClient } from './ipc.js';
+import { ScannerController } from './scanner.js';
 
 class CyberRangeCockpitApp {
   constructor() {
     this.ipc = new IpcClient();
+    this.scanner = new ScannerController(this, this.ipc);
     this.currentView = 'infraDiscoveryView';
     this.currentAssetTab = 'tabOverview';
     this.selectedHost = null;
@@ -75,6 +77,7 @@ class CyberRangeCockpitApp {
     this.setupCyberRange();
     this.setupKeyboardShortcuts();
     this.setupActionButtons();
+    this.scanner.init();
   }
 
   setupNavigation() {
@@ -106,17 +109,29 @@ class CyberRangeCockpitApp {
   renderInfraDiscovery() {
     const subnetListEl = document.getElementById('subnetList');
     if (subnetListEl) {
-      subnetListEl.innerHTML = `
-        <div class="card active" style="padding: 6px 8px; margin-bottom: 4px; font-size: 11px;">
-          <strong>192.168.1.0/24</strong> (Corp LAN - 2 Hosts)
-        </div>
-        <div class="card" style="padding: 6px 8px; margin-bottom: 4px; font-size: 11px;">
-          <strong>172.16.0.0/20</strong> (DMZ - 1 Host)
-        </div>
-        <div class="card" style="padding: 6px 8px; margin-bottom: 4px; font-size: 11px;">
-          <strong>10.0.0.0/16</strong> (Cloud VPC - 11 Hosts)
-        </div>
-      `;
+      const subnets = [
+        { cidr: '192.168.1.0/24', label: 'Corp LAN' },
+        { cidr: '172.16.0.0/20', label: 'DMZ' },
+        { cidr: '10.0.10.0/24', label: 'Database & VPC' },
+        { cidr: '127.0.0.1/32', label: 'Localhost / Loopback' }
+      ];
+      subnetListEl.innerHTML = subnets.map(s => {
+        const count = this.hosts.filter(h => h.subnet === s.cidr || (s.cidr.startsWith('127.') && h.ip === '127.0.0.1')).length;
+        const active = (this.scanner && this.scanner.selectedSubnet === s.cidr) || (!this.scanner && s.cidr === '192.168.1.0/24');
+        return `
+          <div class="card subnet-card ${active ? 'active' : ''}" data-cidr="${s.cidr}" style="padding: 6px 8px; margin-bottom: 4px; font-size: 11px; cursor: pointer;">
+            <strong>${s.cidr}</strong> (${s.label} - ${count} Hosts)
+          </div>
+        `;
+      }).join('');
+
+      subnetListEl.querySelectorAll('.subnet-card').forEach(card => {
+        card.addEventListener('click', () => {
+          const cidr = card.getAttribute('data-cidr');
+          if (this.scanner) this.scanner.selectedSubnet = cidr;
+          this.renderInfraDiscovery();
+        });
+      });
     }
 
     const hostListEl = document.getElementById('hostList');

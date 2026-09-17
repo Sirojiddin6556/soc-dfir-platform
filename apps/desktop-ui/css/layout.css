@@ -313,3 +313,20 @@
   color: var(--text-secondary);
   flex-shrink: 0;
 }
+
+.btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+@keyframes pulseDot {
+  0% { transform: scale(0.9); opacity: 0.6; }
+  50% { transform: scale(1.3); opacity: 1; }
+  100% { transform: scale(0.9); opacity: 0.6; }
+}
+
+.pulse-dot {
+  animation: pulseDot 1.2s infinite ease-in-out;
+}
+
