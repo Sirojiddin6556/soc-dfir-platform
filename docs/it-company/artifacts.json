@@ -436,6 +436,21 @@
       "supersedes": null,
       "path": "docs/it-company/35-technical-documentation.md",
       "evidence": ["docs/it-company/04-solution-architect.md", "docs/it-company/12-backend-integration-engineer.md"]
+    },
+    {
+      "artifact_id": "ART-36-UIUXSPEC",
+      "type": "ui_ux_functional_specification",
+      "owner": "PRF-18-UI",
+      "revision": "r1",
+      "created_by": "UI Designer & Information Architect",
+      "task_id": "TASK-36",
+      "plan_id": "soc-dfir-platform-v1",
+      "sha256": "7a704a1f1b2d93e81173bf67c1d3eb5dc89f15c9912d41bb6f2d9e86b9832b20",
+      "status": "VERIFIED",
+      "dependencies": ["ART-00-REQ-CONTRACT", "ART-16-FEARCH", "ART-18-UI", "ART-35-TECHDOC"],
+      "supersedes": null,
+      "path": "docs/it-company/36-ui-ux-functional-specification.md",
+      "evidence": ["docs/it-company/36-ui-ux-functional-specification.md"]
     }
   ]
 }

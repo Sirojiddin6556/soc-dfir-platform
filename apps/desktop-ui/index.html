@@ -9,142 +9,220 @@
 </head>
 <body>
   <div class="app-container">
-    <!-- Top Navigation Bar -->
+    <!-- Top Header Contract: Case Workspace Header -->
     <header class="top-bar">
       <div class="brand">
         <div class="brand-dot"></div>
-        <span>CYBER RANGE COCKPIT</span>
-        <span class="badge badge-attack">DEFENSE TIER-1</span>
+        <span>SOC/DFIR PLATFORM</span>
+        <span class="badge badge-host" id="activeCaseBadge">Case: INC-2026-001</span>
+        <span class="badge badge-attack">STANDARD</span>
+        <span class="badge badge-net" id="caseTimer" style="font-family: var(--font-mono)">00:34:17</span>
       </div>
       <div class="top-actions">
-        <button class="btn" id="btnRefreshCases">Refresh Cases</button>
+        <input type="text" id="omniSearchInput" placeholder="Quick search (Ctrl+K)..." style="background: var(--bg-canvas); border: 1px solid var(--border-muted); color: var(--text-primary); padding: 4px 8px; border-radius: 4px; font-size: 11px; width: 200px;">
         <button class="btn" id="btnIngestModal">+ Ingest Artifact</button>
-        <button class="btn btn-primary" id="btnRunCorrelate">Run Correlation</button>
+        <button class="btn btn-primary" id="btnQuickScanGlobal">Quick Scan</button>
       </div>
     </header>
 
-    <!-- Main 3-Pane Content Area -->
+    <!-- Main 3-Pane Body -->
     <div class="main-content">
-      <!-- Left Pane: Case & Evidence Management -->
-      <aside class="left-pane">
-        <div>
-          <div class="pane-section-title">Active Cases</div>
-          <div id="casesList">
-            <div class="case-card active" data-case-id="01920000-0000-7000-8000-000000000001">
-              <div class="case-title">Incident Alpha: APT29 Simulation</div>
-              <div class="case-meta">ID: 01920000-0000... | Status: Active</div>
-            </div>
-          </div>
-        </div>
-
-        <div>
-          <div class="pane-section-title">Ingested Artifacts (CAS)</div>
-          <div id="artifactsList">
-            <div class="case-card" style="margin-bottom: 6px;">
-              <div style="display: flex; justify-content: space-between; align-items: center;">
-                <span class="badge badge-file">[FILE] EVTX</span>
-                <span style="font-size: 11px; color: var(--text-muted)">14.2 KB</span>
-              </div>
-              <div style="font-size: 11px; margin-top: 4px; word-break: break-all;">Security_Sysmon.evtx</div>
-            </div>
-            <div class="case-card">
-              <div style="display: flex; justify-content: space-between; align-items: center;">
-                <span class="badge badge-net">[NET] PCAP</span>
-                <span style="font-size: 11px; color: var(--text-muted)">128.5 KB</span>
-              </div>
-              <div style="font-size: 11px; margin-top: 4px; word-break: break-all;">traffic_capture.pcap</div>
-            </div>
-          </div>
-        </div>
-
-        <div>
-          <div class="pane-section-title">Workflow Tasks</div>
-          <div id="tasksList" style="font-size: 12px; color: var(--text-secondary);">
-            <div style="display: flex; justify-content: space-between; padding: 4px 0;">
-              <span>EVTX Normalization</span>
-              <span style="color: var(--accent-success);">Completed</span>
-            </div>
-            <div style="display: flex; justify-content: space-between; padding: 4px 0;">
-              <span>PCAP Flow Extraction</span>
-              <span style="color: var(--accent-success);">Completed</span>
-            </div>
-            <div style="display: flex; justify-content: space-between; padding: 4px 0;">
-              <span>TTP Correlation DAG</span>
-              <span style="color: var(--accent-info);">Idle</span>
-            </div>
-          </div>
-        </div>
+      <!-- 1. Left Sidebar: 13 Primary Navigation Sections -->
+      <aside class="left-pane" id="mainSidebar">
+        <div class="nav-group-title">Operations</div>
+        <div class="nav-item" data-view="dashboardView"><span class="badge badge-host">1</span> Home / Dashboard</div>
+        <div class="nav-item" data-view="casesView"><span class="badge badge-host">2</span> Cases Overview</div>
+        
+        <div class="nav-group-title">Telemetry & Targets</div>
+        <div class="nav-item active" data-view="infraDiscoveryView"><span class="badge badge-net">3</span> Infrastructure</div>
+        <div class="nav-item" data-view="assetDetailsView" style="padding-left: 24px;">↳ Asset Details</div>
+        
+        <div class="nav-group-title">Analysis & Attack Path</div>
+        <div class="nav-item" data-view="investigationGraphView"><span class="badge badge-attack">4</span> Investigation & Graph</div>
+        <div class="nav-item" data-view="timelineView"><span class="badge badge-proc">5</span> Forensic Timeline</div>
+        <div class="nav-item" data-view="evidenceView"><span class="badge badge-file">6</span> Evidence & Custody</div>
+        
+        <div class="nav-group-title">Security Knowledge</div>
+        <div class="nav-item" data-view="softwareCveView"><span class="badge badge-user">7</span> Software & CVE</div>
+        <div class="nav-item" data-view="mitreView"><span class="badge badge-attack">8</span> MITRE ATT&CK</div>
+        <div class="nav-item" data-view="diagramsView"><span class="badge badge-net">9</span> Diagrams & C4</div>
+        
+        <div class="nav-group-title">Automation & Range</div>
+        <div class="nav-item" data-view="automationView"><span class="badge badge-proc">10</span> Automation / DAG</div>
+        <div class="nav-item" data-view="cyberRangeView"><span class="badge badge-attack">11</span> CTF / Cyber Range</div>
+        <div class="nav-item" data-view="reportsView"><span class="badge badge-file">12</span> Incident Reports</div>
+        <div class="nav-item" data-view="settingsView"><span class="badge badge-host">13</span> Platform Settings</div>
       </aside>
 
-      <!-- Center Pane: Visualization Workspaces -->
-      <main class="center-pane">
-        <nav class="tab-bar">
-          <button class="tab-btn active" data-tab="graphView">Attack Graph</button>
-          <button class="tab-btn" data-tab="timelineView">Forensic Timeline</button>
-          <button class="tab-btn" data-tab="mitreView">MITRE ATT&CK Matrix</button>
-          <button class="tab-btn" data-tab="observationsView">Raw Observations</button>
-          <button class="tab-btn" data-tab="cyberRangeView">Cyber Range Verifier</button>
-        </nav>
-
-        <div class="tab-content">
-          <!-- Tab 1: Attack Graph Canvas -->
-          <div id="graphView" class="canvas-container tab-panel" style="display: block;">
-            <canvas id="graphCanvas"></canvas>
-          </div>
-
-          <!-- Tab 2: Forensic Timeline -->
-          <div id="timelineView" class="tab-panel" style="display: none; padding: 16px; overflow-y: auto;">
-            <h3 style="margin-bottom: 12px;">Chronological Forensic Timeline</h3>
-            <div id="timelineLanes"></div>
-          </div>
-
-          <!-- Tab 3: MITRE ATT&CK Matrix -->
-          <div id="mitreView" class="tab-panel" style="display: none; padding: 16px; overflow-y: auto;">
-            <h3 style="margin-bottom: 12px;">MITRE ATT&CK Enterprise v14.1 Matrix</h3>
-            <div id="mitreGrid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px;"></div>
-          </div>
-
-          <!-- Tab 4: Raw Observations Table -->
-          <div id="observationsView" class="tab-panel" style="display: none; padding: 16px; overflow-y: auto;">
-            <h3 style="margin-bottom: 12px;">Normalized Observations Stream</h3>
-            <table id="obsTable" style="width: 100%; border-collapse: collapse; font-size: 12px;">
-              <thead>
-                <tr style="border-bottom: 1px solid var(--border-muted); text-align: left; color: var(--text-secondary);">
-                  <th style="padding: 6px;">Type</th>
-                  <th style="padding: 6px;">Entity Key</th>
-                  <th style="padding: 6px;">Timestamp</th>
-                  <th style="padding: 6px;">Source Tool</th>
-                </tr>
-              </thead>
-              <tbody id="obsTableBody"></tbody>
-            </table>
-          </div>
-
-          <!-- Tab 5: Cyber Range / CTF Challenge Mode -->
-          <div id="cyberRangeView" class="tab-panel" style="display: none; padding: 16px; overflow-y: auto;">
-            <h3 style="margin-bottom: 12px;">Investigation-Based Scenario Scoring</h3>
-            <div style="background-color: var(--bg-surface); padding: 16px; border-radius: 6px; border: 1px solid var(--border-muted); max-width: 600px;">
-              <div style="font-weight: 600; margin-bottom: 8px;">Target Scenario: APT29 Credential Access</div>
-              <p style="color: var(--text-secondary); margin-bottom: 12px;">Investigate and verify the primary adversary TTP and affected host.</p>
-              
-              <label class="inspector-label" for="hypothesisInput">Identified TTP Technique ID</label>
-              <input type="text" id="hypothesisInput" placeholder="e.g. T1003.001" style="width: 100%; padding: 6px; margin-bottom: 12px; background: var(--bg-canvas); border: 1px solid var(--border-muted); color: var(--text-primary); border-radius: 4px;">
-              
-              <button class="btn btn-primary" id="btnVerifyHypothesis">Submit Hypothesis for Verification</button>
-              <div id="verificationResult" style="margin-top: 12px;"></div>
+      <!-- 2. Center Pane: Dynamic Views & Canvases -->
+      <main class="center-pane" id="centerWorkspace">
+        <!-- View 3: Infrastructure Discovery -->
+        <div id="infraDiscoveryView" class="tab-content" style="display: flex; flex-direction: column;">
+          <div class="action-bar-top">
+            <div style="font-weight: 700; font-size: 12px; display: flex; align-items: center; gap: 8px;">
+              <span>INFRASTRUCTURE DISCOVERY</span>
+              <span class="badge badge-net" id="infraHostsCount">14 Hosts Detected</span>
+            </div>
+            <div style="display: flex; gap: 6px;">
+              <button class="btn btn-primary" id="btnQuickScan">[Quick Scan]</button>
+              <button class="btn" id="btnStandardScan">[Standard Scan]</button>
+              <button class="btn" id="btnDeepScan">[Deep Scan]</button>
+              <button class="btn btn-danger" id="btnStopScan">[Stop]</button>
+              <button class="btn" id="btnExportTopology">[Export]</button>
             </div>
           </div>
+          <div class="split-view">
+            <!-- Left: Subnets & Hosts List -->
+            <div class="split-sidebar">
+              <div class="inspector-label" style="margin-bottom: 6px;">Subnets</div>
+              <div id="subnetList" style="margin-bottom: 12px;"></div>
+              <div class="inspector-label" style="margin-bottom: 6px;">Discovered Hosts</div>
+              <div id="hostList"></div>
+            </div>
+            <!-- Center: Topology & Assets Canvas -->
+            <div class="split-main">
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                <h4 style="font-size: 13px;">Network Topology Map</h4>
+                <span style="font-size: 11px; color: var(--text-muted);">Click host card to open Asset Details</span>
+              </div>
+              <div id="topologyGrid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 10px;"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- View 3b: Asset Details (12 Tabs Specification) -->
+        <div id="assetDetailsView" class="tab-content" style="display: none; flex-direction: column;">
+          <div class="action-bar-top">
+            <div>
+              <span style="font-size: 13px; font-weight: 700;" id="assetDetailHostname">DC01.CORP.LOCAL</span>
+              <span class="badge badge-host" id="assetDetailIp">192.168.1.10</span>
+              <span class="badge badge-attack" id="assetDetailRisk">RISK: CRITICAL</span>
+            </div>
+            <div style="display: flex; gap: 4px; flex-wrap: wrap;">
+              <button class="btn" id="btnInspectProc">[Quick Inspect]</button>
+              <button class="btn" id="btnCaptureNet">[Capture Traffic]</button>
+              <button class="btn" id="btnInspectPersist">[Inspect Persistence]</button>
+              <button class="btn" id="btnGenerateSbom">[Generate SBOM]</button>
+              <button class="btn" id="btnScanCve">[Scan CVE]</button>
+              <button class="btn btn-primary" id="btnOpenGraphFromAsset">[Open Attack Graph]</button>
+            </div>
+          </div>
+          <!-- 12 Granular Forensic Tabs -->
+          <div class="sub-tabs-bar" id="assetSubTabs">
+            <button class="sub-tab-btn active" data-asset-tab="tabOverview">Overview</button>
+            <button class="sub-tab-btn" data-asset-tab="tabNetwork">Network</button>
+            <button class="sub-tab-btn" data-asset-tab="tabProcesses">Processes</button>
+            <button class="sub-tab-btn" data-asset-tab="tabServices">Services</button>
+            <button class="sub-tab-btn" data-asset-tab="tabPersistence">Persistence</button>
+            <button class="sub-tab-btn" data-asset-tab="tabSoftware">Software</button>
+            <button class="sub-tab-btn" data-asset-tab="tabVulnerabilities">Vulnerabilities</button>
+            <button class="sub-tab-btn" data-asset-tab="tabUsers">Users</button>
+            <button class="sub-tab-btn" data-asset-tab="tabFirewall">Firewall</button>
+            <button class="sub-tab-btn" data-asset-tab="tabFiles">Files</button>
+            <button class="sub-tab-btn" data-asset-tab="tabLogs">Logs</button>
+            <button class="sub-tab-btn" data-asset-tab="tabEvidence">Evidence</button>
+          </div>
+          <div id="assetTabContent" style="padding: 14px; overflow-y: auto; flex: 1;"></div>
+        </div>
+
+        <!-- View 4: Attack Graph Canvas -->
+        <div id="investigationGraphView" class="tab-content" style="display: none; flex-direction: column;">
+          <div class="action-bar-top">
+            <div style="font-weight: 700; font-size: 12px; display: flex; align-items: center; gap: 8px;">
+              <span>ATTACK GRAPH VISUALIZER</span>
+              <span class="badge badge-attack">APT29 INFECTION CHAIN</span>
+            </div>
+            <div style="display: flex; gap: 6px; align-items: center;">
+              <label style="font-size: 11px; color: var(--text-secondary);">LoD: </label>
+              <input type="range" id="lodSlider" min="1" max="4" value="2" style="width: 80px;">
+              <button class="btn" id="btnCenterGraph">Center View</button>
+              <button class="btn btn-primary" id="btnExportGraph">Export PNG</button>
+            </div>
+          </div>
+          <div class="canvas-container" style="flex: 1; position: relative;">
+            <canvas id="graphCanvas"></canvas>
+          </div>
+        </div>
+
+        <!-- View 5: Forensic Timeline -->
+        <div id="timelineView" class="tab-content" style="display: none; padding: 14px; overflow-y: auto;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+            <h3 style="font-size: 13px;">Microsecond Chronological Multi-Lane Timeline</h3>
+            <span class="badge badge-proc">3 Lanes Active</span>
+          </div>
+          <div id="timelineLanes"></div>
+        </div>
+
+        <!-- View 6: Evidence & Chain of Custody -->
+        <div id="evidenceView" class="tab-content" style="display: none; padding: 14px; overflow-y: auto;">
+          <h3 style="font-size: 13px; margin-bottom: 10px;">Content-Addressed Storage (CAS) Dual-Hash Artifacts</h3>
+          <table class="data-table" style="margin-bottom: 20px;">
+            <thead>
+              <tr><th>Artifact</th><th>Size</th><th>Ingest Time</th><th>BLAKE3 Path Hash</th><th>SHA-256 Forensic Hash</th></tr>
+            </thead>
+            <tbody id="evidenceTableBody"></tbody>
+          </table>
+          <h3 style="font-size: 13px; margin-bottom: 10px;">Append-Only Merkle Chain of Custody</h3>
+          <div id="custodyChainLog"></div>
+        </div>
+
+        <!-- View 8: MITRE ATT&CK Matrix -->
+        <div id="mitreView" class="tab-content" style="display: none; padding: 14px; overflow-y: auto;">
+          <h3 style="font-size: 13px; margin-bottom: 10px;">MITRE ATT&CK Enterprise v14.1 Heatmap</h3>
+          <div id="mitreGrid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 10px;"></div>
+        </div>
+
+        <!-- View 11: CTF / Cyber Range -->
+        <div id="cyberRangeView" class="tab-content" style="display: none; padding: 14px; overflow-y: auto;">
+          <h3 style="font-size: 13px; margin-bottom: 10px;">Cyber Range Scenario & Ground Truth Scorecard</h3>
+          <div style="background-color: var(--bg-surface); padding: 14px; border-radius: 6px; border: 1px solid var(--border-muted); max-width: 680px; margin-bottom: 14px;">
+            <div style="font-weight: 700; margin-bottom: 6px;">Target Mission: APT29 Lateral Movement & Credential Access</div>
+            <p style="color: var(--text-secondary); margin-bottom: 10px; font-size: 12px;">Submit identified adversary TTP technique and impacted host for mathematical verification.</p>
+            <label class="inspector-label" for="hypothesisInput">Identified Technique (e.g. T1003.001)</label>
+            <input type="text" id="hypothesisInput" placeholder="T1003.001" style="width: 100%; padding: 6px; margin: 4px 0 10px 0; background: var(--bg-canvas); border: 1px solid var(--border-muted); color: var(--text-primary); border-radius: 4px; font-size: 12px;">
+            <button class="btn btn-primary" id="btnVerifyHypothesis">Submit Hypothesis for Ground Truth Verification</button>
+            <div id="verificationResult" style="margin-top: 10px;"></div>
+          </div>
+        </div>
+
+        <!-- Generic / Fallback Workspace View -->
+        <div id="genericView" class="tab-content" style="display: none; padding: 24px;">
+          <h3 id="genericViewTitle" style="margin-bottom: 8px;">View Title</h3>
+          <p id="genericViewDesc" style="color: var(--text-secondary); font-size: 12px;">Under construction or loading data.</p>
         </div>
       </main>
 
-      <!-- Right Pane: Inspector Panel -->
+      <!-- 3. Right Pane: Selected Entity Inspector -->
       <aside class="right-pane" id="inspectorPane">
-        <div class="pane-section-title">Entity Inspector</div>
-        <div id="inspectorContent">
-          <div style="color: var(--text-muted); font-size: 12px;">Select a node in the Attack Graph or Timeline to inspect forensic details.</div>
+        <div class="inspector-header" style="display: flex; justify-content: space-between; align-items: center;">
+          <span>ENTITY INSPECTOR</span>
+          <span class="badge badge-proc" id="inspectorEntityType">Fact</span>
+        </div>
+        <div class="inspector-body" id="inspectorContent">
+          <div style="color: var(--text-muted); font-size: 11px;">Select any entity in Topology, Graph, or Timeline to inspect forensic attributes.</div>
         </div>
       </aside>
     </div>
+
+    <!-- Bottom Status Footer Contract -->
+    <footer class="workflow-footer">
+      <div>
+        <span>Workflow: <strong style="color: var(--text-primary)">27/41</strong> completed</span>
+        <span style="margin: 0 6px;">│</span>
+        <span style="color: var(--accent-success)">4 running</span>
+        <span style="margin: 0 6px;">│</span>
+        <span style="color: var(--accent-critical)">2 blocked</span>
+        <span style="margin: 0 6px;">│</span>
+        <span>Risk: <strong style="color: var(--accent-critical)">HIGH</strong></span>
+      </div>
+      <div>
+        <span>CAS: <strong style="color: var(--text-primary)">1.2 GB</strong> (WAL Active)</span>
+        <span style="margin: 0 6px;">│</span>
+        <span>Engine: <strong style="color: var(--accent-success)">127.0.0.1:8080</strong></span>
+        <span style="margin: 0 6px;">│</span>
+        <span>Mode: <strong style="color: var(--text-primary)">OFFLINE LOCAL</strong></span>
+      </div>
+    </footer>
   </div>
 
   <script type="module" src="js/app.js"></script>
