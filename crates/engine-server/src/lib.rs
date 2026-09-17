@@ -271,14 +271,21 @@ use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
-/// Runs the embedded HTTP & IPC server on the specified address
-pub async fn run_embedded_server(
-    addr: &str,
+/// Robustly binds to preferred port or falls back to an available dynamic port
+pub async fn bind_server(preferred_port: u16) -> Result<TcpListener, std::io::Error> {
+    match TcpListener::bind(format!("127.0.0.1:{}", preferred_port)).await {
+        Ok(l) => Ok(l),
+        Err(_) => TcpListener::bind("127.0.0.1:0").await,
+    }
+}
+
+/// Runs the embedded HTTP & IPC server on the specified listener
+pub async fn run_server_loop(
+    listener: TcpListener,
     cas_dir: PathBuf,
     ui_dir: PathBuf,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let app = Arc::new(EngineApp::new_in_memory(cas_dir));
-    let listener = TcpListener::bind(addr).await?;
     tracing::info!(
         "Embedded Desktop Server listening on http://{}",
         listener.local_addr()?
@@ -295,6 +302,16 @@ pub async fn run_embedded_server(
             }
         });
     }
+}
+
+/// Runs the embedded HTTP & IPC server on the specified address
+pub async fn run_embedded_server(
+    addr: &str,
+    cas_dir: PathBuf,
+    ui_dir: PathBuf,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let listener = TcpListener::bind(addr).await?;
+    run_server_loop(listener, cas_dir, ui_dir).await
 }
 
 pub async fn handle_connection(

@@ -10,42 +10,78 @@ use wry::WebViewBuilder;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _ = tracing_subscriber::fmt::try_init();
 
-    let base_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let cas_dir = base_dir.join("data").join("cas");
-    let ui_dir = base_dir.join("apps").join("desktop-ui");
+    // 1. Resolve Project Root, UI assets, and CAS directory robustly across working directories
+    let cur_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+        .unwrap_or_else(|| PathBuf::from("."));
 
-    // Spawn embedded local engine-server on a dedicated background thread
+    let root_dir = if cur_dir.join("apps").join("desktop-ui").exists() {
+        cur_dir
+    } else if exe_dir.join("apps").join("desktop-ui").exists() {
+        exe_dir
+    } else if exe_dir
+        .join("..")
+        .join("..")
+        .join("apps")
+        .join("desktop-ui")
+        .exists()
+    {
+        exe_dir.join("..").join("..")
+    } else {
+        cur_dir
+    };
+
+    let ui_dir = root_dir.join("apps").join("desktop-ui");
+    let cas_dir = root_dir.join("data").join("cas");
+
+    // 2. Bind local HTTP / IPC server to port 8080 or dynamic fallback
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("Failed to create background Tokio runtime");
+
+    let listener = rt
+        .block_on(async { engine_server::bind_server(8080).await })
+        .expect("Failed to bind TCP listener");
+
+    let port = listener.local_addr()?.port();
+    let url = format!("http://127.0.0.1:{}", port);
+
+    // 3. Launch embedded server loop on dedicated background thread
+    let ui_dir_clone = ui_dir.clone();
     std::thread::spawn(move || {
-        let rt = tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .expect("Failed to create background Tokio runtime");
-
         rt.block_on(async move {
-            let _ = engine_server::run_embedded_server("127.0.0.1:8080", cas_dir, ui_dir).await;
+            let _ = engine_server::run_server_loop(listener, cas_dir, ui_dir_clone).await;
         });
     });
 
-    // Give server a moment to bind port 8080
-    std::thread::sleep(std::time::Duration::from_millis(150));
+    // 4. Create isolated per-process WebView2 directory to prevent 0x800700AA lock collisions
+    let pid = std::process::id();
+    let webview_data_dir = std::env::temp_dir().join(format!("soc-dfir-wv-{}", pid));
+    let mut web_context = wry::WebContext::new(Some(webview_data_dir));
 
-    // Native Window via Tao
+    // 5. Initialize native Tao desktop window
     let event_loop = EventLoop::new();
     let window = WindowBuilder::new()
         .with_title("Blue Team Cyber Range & SOC/DFIR Platform")
         .with_inner_size(LogicalSize::new(1440.0, 900.0))
         .with_min_inner_size(LogicalSize::new(1024.0, 700.0))
+        .with_visible(true)
         .build(&event_loop)?;
 
-    // Native WebView via Wry mounted into the native Tao window
-    let webview_data_dir = std::env::temp_dir().join("soc-dfir-webview-data");
-    let mut web_context = wry::WebContext::new(Some(webview_data_dir));
+    // 6. Mount native Wry WebView
     let _webview = WebViewBuilder::new_with_web_context(&mut web_context)
-        .with_url("http://127.0.0.1:8080")
+        .with_url(&url)
         .build(&window)?;
 
+    window.set_focus();
+
+    // 7. Native event pump
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Wait;
+        let _ = (&_webview, &web_context);
 
         if let Event::WindowEvent {
             event: WindowEvent::CloseRequested,
