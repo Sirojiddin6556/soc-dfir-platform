@@ -256,8 +256,16 @@ impl EngineApp {
                 }
             }
             "scan.network" => {
-                let subnet = req.params.get("subnet").and_then(|v| v.as_str()).unwrap_or("192.168.1.0/24");
-                let mode = req.params.get("mode").and_then(|v| v.as_str()).unwrap_or("quick");
+                let subnet = req
+                    .params
+                    .get("subnet")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("192.168.1.0/24");
+                let mode = req
+                    .params
+                    .get("mode")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("quick");
                 let result = scanner::execute_network_scan(subnet, mode).await;
                 let resp = IpcResponse {
                     api_version: 1,
@@ -268,7 +276,11 @@ impl EngineApp {
                 serde_json::to_string(&resp).unwrap()
             }
             "scan.cve" => {
-                let host_id = req.params.get("host_id").and_then(|v| v.as_str()).unwrap_or("h1");
+                let host_id = req
+                    .params
+                    .get("host_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("h1");
                 let result = scanner::execute_cve_scan(host_id);
                 let resp = IpcResponse {
                     api_version: 1,

@@ -1,6 +1,6 @@
 /**
- * Scanner Controller for SOC/DFIR Platform
- * Orchestrates Network Discovery, Port Scanners, and CVE Vulnerability Scanners
+ * Контроллер сканирования для платформы SOC/DFIR
+ * Управляет сетевой разведкой инфраструктуры, портовыми зондами и сканером CVE
  */
 export class ScannerController {
   constructor(app, ipc) {
@@ -12,7 +12,7 @@ export class ScannerController {
   }
 
   init() {
-    // Top Discovery Action Buttons
+    // Кнопки управления сканированием в шапке
     document.getElementById('btnQuickScan')?.addEventListener('click', () => this.startNetworkScan('quick'));
     document.getElementById('btnQuickScanGlobal')?.addEventListener('click', () => {
       const infraNav = document.querySelector('[data-view="infraDiscoveryView"]');
@@ -23,7 +23,14 @@ export class ScannerController {
     document.getElementById('btnDeepScan')?.addEventListener('click', () => this.startNetworkScan('deep'));
     document.getElementById('btnStopScan')?.addEventListener('click', () => this.stopNetworkScan());
 
-    // Asset CVE & Inspection Buttons
+    // Сканирование произвольного удаленного сервиса
+    document.getElementById('btnScanRemote')?.addEventListener('click', () => {
+      const input = document.getElementById('remoteTargetInput');
+      const target = input ? input.value.trim() : '';
+      this.startRemoteServiceScan(target || '192.168.1.50');
+    });
+
+    // Кнопки аудита и CVE в карточке актива
     document.getElementById('btnScanCve')?.addEventListener('click', () => this.startCveScan());
     document.getElementById('btnInspectProc')?.addEventListener('click', () => this.quickInspectProcess());
   }
@@ -41,15 +48,19 @@ export class ScannerController {
     const scanButtons = [
       document.getElementById('btnQuickScan'),
       document.getElementById('btnStandardScan'),
-      document.getElementById('btnDeepScan')
+      document.getElementById('btnDeepScan'),
+      document.getElementById('btnScanRemote')
     ];
 
     if (container) container.style.display = 'block';
     if (btnStop) btnStop.disabled = false;
     scanButtons.forEach(btn => { if (btn) btn.disabled = true; });
 
-    const modeUpper = mode.toUpperCase();
-    if (label) label.innerHTML = `<span class="pulse-dot" style="display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--accent-primary);margin-right:6px;"></span> RUNNING ${modeUpper} SCAN (${this.selectedSubnet})...`;
+    const modeLabels = { quick: 'БЫСТРОЕ', standard: 'СТАНДАРТНОЕ', deep: 'ГЛУБОКОЕ' };
+    const modeLabel = modeLabels[mode] || mode.toUpperCase();
+    if (label) {
+      label.innerHTML = `<span class="pulse-dot" style="display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--accent-primary);margin-right:6px;"></span> ВЫПОЛНЯЕТСЯ ${modeLabel} СКАНИРОВАНИЕ (${this.selectedSubnet})...`;
+    }
 
     let progress = 5;
     const updateProgress = (val, log) => {
@@ -58,18 +69,18 @@ export class ScannerController {
       if (log && logEl) logEl.textContent = log;
     };
 
-    updateProgress(5, `[SCANNER] Initializing asynchronous socket scanner for ${this.selectedSubnet}...`);
+    updateProgress(5, `[СКАНЕР] Инициализация асинхронного сокет-сканера для ${this.selectedSubnet}...`);
 
     this.scanInterval = setInterval(() => {
       if (!this.isScanning) return;
       if (progress < 85) {
         progress += (90 - progress) * 0.2;
         if (progress > 25 && progress < 45) {
-          updateProgress(progress, `[SCANNER] Sending ARP / ICMP probes across ${this.selectedSubnet}...`);
+          updateProgress(progress, `[СКАНЕР] Отправка ARP / ICMP эхо-зондов в подсети ${this.selectedSubnet}...`);
         } else if (progress >= 45 && progress < 70) {
-          updateProgress(progress, `[SCANNER] Port probing: SYN scanning top common services (22, 53, 80, 88, 135, 445, 3389)...`);
+          updateProgress(progress, `[СКАНЕР] Зондирование портов: SYN-сканирование ключевых служб (22, 53, 80, 88, 135, 445, 3389)...`);
         } else if (progress >= 70) {
-          updateProgress(progress, `[SCANNER] Banner grabbing and OS fingerprinting active responder hosts...`);
+          updateProgress(progress, `[СКАНЕР] Считывание баннеров сервисов и отпечатков ОС активных узлов...`);
         }
       }
     }, 180);
@@ -83,9 +94,9 @@ export class ScannerController {
       clearInterval(this.scanInterval);
       if (!this.isScanning) return;
 
-      updateProgress(100, `[SCANNER] Scan completed: ${res.hosts_up} hosts online (${res.hosts_scanned} addresses scanned in ${res.duration_ms}ms)`);
+      updateProgress(100, `[СКАНЕР] Сканирование завершено: узлов в сети — ${res.hosts_up} (проверено адресов: ${res.hosts_scanned} за ${res.duration_ms} мс)`);
 
-      // Merge newly discovered hosts
+      // Добавление / обновление обнаруженных хостов
       if (res.discovered_hosts && Array.isArray(res.discovered_hosts)) {
         res.discovered_hosts.forEach(newHost => {
           const idx = this.app.hosts.findIndex(h => h.id === newHost.id || h.ip === newHost.ip);
@@ -96,9 +107,8 @@ export class ScannerController {
           }
         });
 
-        // Re-render discovery cards and update badge
         const countBadge = document.getElementById('infraHostsCount');
-        if (countBadge) countBadge.textContent = `${this.app.hosts.length} Hosts Detected`;
+        if (countBadge) countBadge.textContent = `${this.app.hosts.length} Узлов обнаружено`;
         this.app.renderInfraDiscovery();
       }
 
@@ -108,8 +118,67 @@ export class ScannerController {
 
     } catch (err) {
       clearInterval(this.scanInterval);
-      console.error('[Scanner] Scan execution error:', err);
-      updateProgress(100, `[SCANNER ERROR] ${err.message}`);
+      console.error('[Scanner] Ошибка выполнения сканирования:', err);
+      updateProgress(100, `[ОШИБКА СКАНЕРА] ${err.message}`);
+      setTimeout(() => this.resetScanControls(), 2000);
+    }
+  }
+
+  async startRemoteServiceScan(target) {
+    if (this.isScanning) return;
+    this.isScanning = true;
+
+    const container = document.getElementById('scanProgressBarContainer');
+    const bar = document.getElementById('scanProgressBar');
+    const percentEl = document.getElementById('scanProgressPercent');
+    const label = document.getElementById('scanProgressLabel');
+    const logEl = document.getElementById('scanProgressLog');
+    const btnStop = document.getElementById('btnStopScan');
+
+    if (container) container.style.display = 'block';
+    if (btnStop) btnStop.disabled = false;
+
+    if (label) {
+      label.innerHTML = `<span class="pulse-dot" style="display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--accent-warning);margin-right:6px;"></span> АУДИТ УДАЛЕННОГО СЕРВИСА: ${target}...`;
+    }
+
+    const updateProgress = (val, log) => {
+      if (bar) bar.style.width = `${val}%`;
+      if (percentEl) percentEl.textContent = `${Math.round(val)}%`;
+      if (log && logEl) logEl.textContent = log;
+    };
+
+    updateProgress(15, `[УДАЛЕННЫЙ СКАНЕР] Резолвинг хоста и установка TCP handshake с ${target}...`);
+
+    try {
+      const res = await this.ipc.call('scan.network', {
+        subnet: target,
+        mode: 'remote'
+      });
+
+      updateProgress(100, `[УДАЛЕННЫЙ СКАНЕР] Сервис ${target} успешно исследован. Добавлен в реестр активов.`);
+
+      if (res.discovered_hosts && res.discovered_hosts.length > 0) {
+        const remoteHost = res.discovered_hosts[0];
+        const idx = this.app.hosts.findIndex(h => h.ip === remoteHost.ip || h.hostname === remoteHost.hostname);
+        if (idx >= 0) {
+          this.app.hosts[idx] = Object.assign({}, this.app.hosts[idx], remoteHost);
+          this.app.selectedHost = this.app.hosts[idx];
+        } else {
+          this.app.hosts.push(remoteHost);
+          this.app.selectedHost = remoteHost;
+        }
+
+        const countBadge = document.getElementById('infraHostsCount');
+        if (countBadge) countBadge.textContent = `${this.app.hosts.length} Узлов обнаружено`;
+        this.app.renderInfraDiscovery();
+        this.app.openAssetDetailsView();
+      }
+
+      setTimeout(() => this.resetScanControls(), 1500);
+    } catch (err) {
+      console.error('[Remote Scanner Error]', err);
+      updateProgress(100, `[ОШИБКА] Не удалось просканировать ${target}: ${err.message}`);
       setTimeout(() => this.resetScanControls(), 2000);
     }
   }
@@ -118,7 +187,7 @@ export class ScannerController {
     this.isScanning = false;
     clearInterval(this.scanInterval);
     const logEl = document.getElementById('scanProgressLog');
-    if (logEl) logEl.textContent = '[SCANNER] Scan interrupted by operator.';
+    if (logEl) logEl.textContent = '[СКАНЕР] Сканирование прервано оператором.';
     this.resetScanControls();
   }
 
@@ -129,7 +198,8 @@ export class ScannerController {
     [
       document.getElementById('btnQuickScan'),
       document.getElementById('btnStandardScan'),
-      document.getElementById('btnDeepScan')
+      document.getElementById('btnDeepScan'),
+      document.getElementById('btnScanRemote')
     ].forEach(btn => { if (btn) btn.disabled = false; });
   }
 
@@ -139,7 +209,7 @@ export class ScannerController {
 
     const btn = document.getElementById('btnScanCve');
     if (btn) {
-      btn.textContent = '[Scanning CVEs...]';
+      btn.textContent = '[Сканирование CVE...]';
       btn.disabled = true;
     }
 
@@ -148,18 +218,17 @@ export class ScannerController {
       if (res && res.vulnerabilities) {
         host.vulnerabilities = res.vulnerabilities;
         if (res.calculated_risk) {
-          host.risk = `CRITICAL (${res.calculated_risk})`;
+          host.risk = `КРИТИЧЕСКИЙ (${res.calculated_risk})`;
         }
-        // Update asset details view and navigate to tabVulnerabilities
         this.app.renderAssetDetails();
         const vulnTabBtn = document.querySelector('[data-asset-tab="tabVulnerabilities"]');
         if (vulnTabBtn) vulnTabBtn.click();
       }
     } catch (err) {
-      console.error('[CVE Scanner] Failed:', err);
+      console.error('[CVE Scanner] Ошибка:', err);
     } finally {
       if (btn) {
-        btn.textContent = '[Scan CVE]';
+        btn.textContent = '[Сканировать CVE]';
         btn.disabled = false;
       }
     }
@@ -167,7 +236,6 @@ export class ScannerController {
 
   async quickInspectProcess() {
     if (!this.app.selectedHost) return;
-    const host = this.app.selectedHost;
 
     try {
       const res = await this.ipc.call('broker.execute', {
@@ -180,11 +248,11 @@ export class ScannerController {
       if (procContainer && res) {
         const notice = document.createElement('div');
         notice.style.cssText = 'background: rgba(88,166,255,0.15); border: 1px solid var(--accent-primary); padding: 8px; border-radius: 4px; margin-bottom: 8px; font-size: 11px; color: var(--accent-primary);';
-        notice.innerHTML = `<strong>Live Broker Telemetry:</strong> Verified PID 4820 (${res.process_name || 'powershell.exe'}) - Status: Active / Monitored`;
+        notice.innerHTML = `<strong>Телеметрия привилегированного брокера:</strong> Проверен PID 4820 (${res.process_name || 'powershell.exe'}) — Статус: Активен / Под наблюдением`;
         procContainer.prepend(notice);
       }
     } catch (err) {
-      console.warn('[Process Inspection] Telemetry query notice:', err.message);
+      console.warn('[Process Inspection] Уведомление:', err.message);
     }
   }
 }

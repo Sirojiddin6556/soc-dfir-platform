@@ -16,42 +16,42 @@ class CyberRangeCockpitApp {
         hostname: 'DC01.CORP.LOCAL',
         ip: '192.168.1.10',
         mac: '00:1A:2B:3C:4D:5E',
-        os: 'Windows Server 2022 Datacenter (Build 20348)',
-        criticality: 'Tier-0 (Domain Controller)',
-        status: 'Compromised / Investigating',
-        risk: 'CRITICAL (9.6)',
+        os: 'Windows Server 2022 Datacenter (Сборка 20348)',
+        criticality: 'Tier-0 (Контроллер домена)',
+        status: 'Скомпрометирован / Расследование',
+        risk: 'КРИТИЧЕСКИЙ (9.6)',
         subnet: '192.168.1.0/24',
         ports: [53, 88, 135, 139, 389, 445, 636, 3268, 3389],
-        services: ['Active Directory Domain Services', 'DNS Server', 'Kerberos Key Distribution Center', 'Netlogon'],
-        persistence: ['Scheduled Task: SecurityAuditCollector (powershell -enc ...)', 'Registry Run: SysMonitor (Pending Review)'],
+        services: ['Active Directory Domain Services', 'DNS Server', 'Kerberos KDC', 'Netlogon'],
+        persistence: ['Планировщик: SecurityAuditCollector (powershell -enc ...)', 'Реестр Run: SysMonitor (На проверке)'],
         software: [{ name: 'Microsoft Active Directory', ver: '10.0.20348', cpe: 'cpe:2.3:o:microsoft:windows_server_2022' }],
-        vulnerabilities: [{ cve: 'CVE-2022-26923', cvss: 8.8, name: 'Active Directory Domain Services Privilege Escalation' }]
+        vulnerabilities: [{ cve: 'CVE-2022-26923', cvss: 8.8, name: 'Повышение привилегий в Active Directory Domain Services' }]
       },
       {
         id: 'h2',
         hostname: 'WS-FIN-04.CORP.LOCAL',
         ip: '192.168.1.105',
         mac: '00:1A:2B:AA:BB:CC',
-        os: 'Windows 11 Enterprise (Build 22631)',
-        criticality: 'Tier-2 (Workstation)',
-        status: 'Patient Zero (Phishing Entry)',
-        risk: 'HIGH (8.2)',
+        os: 'Windows 11 Enterprise (Сборка 22631)',
+        criticality: 'Tier-2 (Рабочая станция)',
+        status: 'Нулевой пациент (Фишинг)',
+        risk: 'ВЫСОКИЙ (8.2)',
         subnet: '192.168.1.0/24',
         ports: [135, 445, 3389],
-        services: ['Windows Defender Advanced Threat Protection', 'Workstation'],
+        services: ['Windows Defender ATP', 'Workstation'],
         persistence: ['RunKey: HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\Run\\Updater.exe'],
         software: [{ name: 'Microsoft Office 365', ver: '16.0.17328', cpe: 'cpe:2.3:a:microsoft:office:365' }],
-        vulnerabilities: [{ cve: 'CVE-2023-36884', cvss: 8.3, name: 'Office and Windows HTML RCE Vulnerability' }]
+        vulnerabilities: [{ cve: 'CVE-2023-36884', cvss: 8.3, name: 'Уязвимость удаленного выполнения кода (RCE) в HTML Office/Windows' }]
       },
       {
         id: 'h3',
         hostname: 'DMZ-WEB01',
         ip: '172.16.0.15',
         mac: '52:54:00:12:34:56',
-        os: 'Ubuntu 22.04.4 LTS (Linux kernel 5.15.0-107-generic)',
-        criticality: 'Tier-1 (Public Facing)',
-        status: 'Normal / Monitored',
-        risk: 'LOW (2.1)',
+        os: 'Ubuntu 22.04.4 LTS (Ядро Linux 5.15.0-107-generic)',
+        criticality: 'Tier-1 (Внешний периметр)',
+        status: 'В норме / Мониторинг',
+        risk: 'НИЗКИЙ (2.1)',
         subnet: '172.16.0.0/20',
         ports: [22, 80, 443],
         services: ['nginx.service', 'sshd.service', 'systemd-resolved.service'],
@@ -110,17 +110,17 @@ class CyberRangeCockpitApp {
     const subnetListEl = document.getElementById('subnetList');
     if (subnetListEl) {
       const subnets = [
-        { cidr: '192.168.1.0/24', label: 'Corp LAN' },
-        { cidr: '172.16.0.0/20', label: 'DMZ' },
-        { cidr: '10.0.10.0/24', label: 'Database & VPC' },
-        { cidr: '127.0.0.1/32', label: 'Localhost / Loopback' }
+        { cidr: '192.168.1.0/24', label: 'Корпоративная ЛВС' },
+        { cidr: '172.16.0.0/20', label: 'DMZ (Периметр)' },
+        { cidr: '10.0.10.0/24', label: 'Базы данных и VPC' },
+        { cidr: '127.0.0.1/32', label: 'Локальный хост (Loopback)' }
       ];
       subnetListEl.innerHTML = subnets.map(s => {
         const count = this.hosts.filter(h => h.subnet === s.cidr || (s.cidr.startsWith('127.') && h.ip === '127.0.0.1')).length;
         const active = (this.scanner && this.scanner.selectedSubnet === s.cidr) || (!this.scanner && s.cidr === '192.168.1.0/24');
         return `
           <div class="card subnet-card ${active ? 'active' : ''}" data-cidr="${s.cidr}" style="padding: 6px 8px; margin-bottom: 4px; font-size: 11px; cursor: pointer;">
-            <strong>${s.cidr}</strong> (${s.label} - ${count} Hosts)
+            <strong>${s.cidr}</strong> (${s.label} - ${count} хост.)
           </div>
         `;
       }).join('');
@@ -150,9 +150,9 @@ class CyberRangeCockpitApp {
           this.renderInfraDiscovery();
           this.inspectEntity({
             name: this.selectedHost.hostname,
-            type: 'Host Entity',
-            assertion: 'Fact',
-            verification: 'Confirmed',
+            type: 'Сущность хоста',
+            assertion: 'Факт',
+            verification: 'Подтверждено',
             details: `${this.selectedHost.ip} | ${this.selectedHost.os}`
           });
         });
@@ -162,17 +162,17 @@ class CyberRangeCockpitApp {
     const topoGrid = document.getElementById('topologyGrid');
     if (topoGrid) {
       topoGrid.innerHTML = this.hosts.map(h => `
-        <div class="card" data-host-id="${h.id}" style="border-left: 4px solid ${h.risk.includes('CRITICAL') ? 'var(--accent-critical)' : (h.risk.includes('HIGH') ? 'var(--accent-warning)' : 'var(--accent-success)')}">
+        <div class="card" data-host-id="${h.id}" style="border-left: 4px solid ${h.risk.includes('КРИТИЧЕСКИЙ') || h.risk.includes('CRITICAL') ? 'var(--accent-critical)' : (h.risk.includes('ВЫСОКИЙ') || h.risk.includes('HIGH') ? 'var(--accent-warning)' : 'var(--accent-success)')}">
           <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 6px;">
             <div>
               <div style="font-weight: 700; font-size: 13px;">${h.hostname}</div>
               <div style="font-size: 11px; color: var(--text-secondary);">${h.ip}</div>
             </div>
-            <span class="badge ${h.risk.includes('CRITICAL') ? 'badge-attack' : 'badge-host'}">${h.risk.split(' ')[0]}</span>
+            <span class="badge ${h.risk.includes('КРИТИЧЕСКИЙ') || h.risk.includes('CRITICAL') ? 'badge-attack' : 'badge-host'}">${h.risk.split(' ')[0]}</span>
           </div>
           <div style="font-size: 11px; color: var(--text-muted); margin-bottom: 8px;">${h.os}</div>
-          <div style="font-size: 11px; margin-bottom: 8px;"><strong>Open Ports:</strong> ${h.ports.join(', ')}</div>
-          <button class="btn btn-primary btn-open-asset-details" data-host-id="${h.id}" style="width: 100%; justify-content: center;">Open Asset Details</button>
+          <div style="font-size: 11px; margin-bottom: 8px;"><strong>Открытые порты:</strong> ${h.ports.join(', ')}</div>
+          <button class="btn btn-primary btn-open-asset-details" data-host-id="${h.id}" style="width: 100%; justify-content: center;">Карточка актива</button>
         </div>
       `).join('');
 
@@ -235,19 +235,19 @@ class CyberRangeCockpitApp {
         container.innerHTML = `
           <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
             <div class="card">
-              <div class="inspector-label">Hostname & FQDN</div>
+              <div class="inspector-label">Имя хоста и FQDN</div>
               <div class="inspector-value">${h.hostname}</div>
-              <div class="inspector-label" style="margin-top: 8px;">IPv4 Address</div>
+              <div class="inspector-label" style="margin-top: 8px;">IPv4-адрес</div>
               <div class="inspector-value">${h.ip}</div>
-              <div class="inspector-label" style="margin-top: 8px;">Physical MAC</div>
+              <div class="inspector-label" style="margin-top: 8px;">Физический MAC-адрес</div>
               <div class="inspector-value">${h.mac}</div>
             </div>
             <div class="card">
-              <div class="inspector-label">Operating System</div>
+              <div class="inspector-label">Операционная система</div>
               <div class="inspector-value">${h.os}</div>
-              <div class="inspector-label" style="margin-top: 8px;">Criticality Level</div>
+              <div class="inspector-label" style="margin-top: 8px;">Уровень критичности</div>
               <div class="inspector-value">${h.criticality}</div>
-              <div class="inspector-label" style="margin-top: 8px;">Investigation State</div>
+              <div class="inspector-label" style="margin-top: 8px;">Статус расследования</div>
               <div class="inspector-value">${h.status}</div>
             </div>
           </div>
@@ -255,20 +255,20 @@ class CyberRangeCockpitApp {
         break;
       case 'tabNetwork':
         container.innerHTML = `
-          <h4 style="font-size: 12px; margin-bottom: 8px;">Listening Sockets & Open Ports</h4>
+          <h4 style="font-size: 12px; margin-bottom: 8px;">Слушающие сокеты и открытые порты</h4>
           <table class="data-table">
-            <thead><tr><th>Port</th><th>Protocol</th><th>Service</th><th>State</th></tr></thead>
+            <thead><tr><th>Порт</th><th>Протокол</th><th>Служба</th><th>Состояние</th></tr></thead>
             <tbody>
-              ${h.ports.map(p => `<tr><td><strong>${p}</strong></td><td>TCP</td><td>svc-${p}</td><td><span style="color: var(--accent-success)">LISTENING</span></td></tr>`).join('')}
+              ${h.ports.map(p => `<tr><td><strong>${p}</strong></td><td>TCP</td><td>svc-${p}</td><td><span style="color: var(--accent-success)">СЛУШАЕТ</span></td></tr>`).join('')}
             </tbody>
           </table>
         `;
         break;
       case 'tabProcesses':
         container.innerHTML = `
-          <h4 style="font-size: 12px; margin-bottom: 8px;">Active Process Tree (Forensic Snapshot)</h4>
+          <h4 style="font-size: 12px; margin-bottom: 8px;">Дерево активных процессов (Форензик-снимок)</h4>
           <table class="data-table">
-            <thead><tr><th>PID</th><th>PPID</th><th>Image</th><th>User</th><th>CLI</th></tr></thead>
+            <thead><tr><th>PID</th><th>PPID</th><th>Образ</th><th>Пользователь</th><th>Командная строка</th></tr></thead>
             <tbody>
               <tr><td>4</td><td>0</td><td>System</td><td>NT AUTHORITY\\SYSTEM</td><td>-</td></tr>
               <tr><td>612</td><td>4</td><td>lsass.exe</td><td>NT AUTHORITY\\SYSTEM</td><td>C:\\Windows\\system32\\lsass.exe</td></tr>
@@ -279,15 +279,15 @@ class CyberRangeCockpitApp {
         break;
       case 'tabPersistence':
         container.innerHTML = `
-          <h4 style="font-size: 12px; margin-bottom: 8px;">Persistence & Auto-Runs</h4>
+          <h4 style="font-size: 12px; margin-bottom: 8px;">Механизмы закрепления (Persistence & Auto-Runs)</h4>
           ${h.persistence.map(p => `<div class="card" style="border-left: 3px solid var(--accent-critical)">${p}</div>`).join('')}
         `;
         break;
       case 'tabSoftware':
         container.innerHTML = `
-          <h4 style="font-size: 12px; margin-bottom: 8px;">Software Inventory & CycloneDX SBOM</h4>
+          <h4 style="font-size: 12px; margin-bottom: 8px;">Инвентарь ПО и SBOM CycloneDX</h4>
           <table class="data-table">
-            <thead><tr><th>Component</th><th>Version</th><th>CPE Identifier</th></tr></thead>
+            <thead><tr><th>Компонент</th><th>Версия</th><th>Идентификатор CPE</th></tr></thead>
             <tbody>
               ${h.software.map(s => `<tr><td><strong>${s.name}</strong></td><td>${s.ver}</td><td><code>${s.cpe}</code></td></tr>`).join('')}
             </tbody>
@@ -296,17 +296,17 @@ class CyberRangeCockpitApp {
         break;
       case 'tabVulnerabilities':
         container.innerHTML = `
-          <h4 style="font-size: 12px; margin-bottom: 8px;">Correlated CVEs</h4>
+          <h4 style="font-size: 12px; margin-bottom: 8px;">Скоррелированные уязвимости (CVE)</h4>
           ${h.vulnerabilities.length ? h.vulnerabilities.map(v => `
             <div class="card" style="border-left: 3px solid var(--accent-critical)">
               <div style="font-weight: 700;">${v.cve} (CVSS ${v.cvss})</div>
               <div style="font-size: 11px; color: var(--text-secondary); margin-top: 4px;">${v.name}</div>
             </div>
-          `).join('') : '<div style="color: var(--text-muted); font-size: 12px;">No unmitigated vulnerabilities detected.</div>'}
+          `).join('') : '<div style="color: var(--text-muted); font-size: 12px;">Неустраненных уязвимостей не обнаружено.</div>'}
         `;
         break;
       default:
-        container.innerHTML = `<div style="color: var(--text-muted); font-size: 12px;">Tab <strong>${this.currentAssetTab}</strong> telemetry synchronized with CAS storage.</div>`;
+        container.innerHTML = `<div style="color: var(--text-muted); font-size: 12px;">Телеметрия вкладки <strong>${this.currentAssetTab}</strong> синхронизирована с CAS.</div>`;
     }
   }
 
@@ -316,17 +316,17 @@ class CyberRangeCockpitApp {
     lanesEl.innerHTML = `
       <div class="card" style="border-left: 3px solid var(--accent-critical); margin-bottom: 8px;">
         <div style="display: flex; justify-content: space-between; font-size: 11px;">
-          <span><strong>2026-09-17 14:02:18.104 UTC</strong> │ Lane: DC01 Security</span>
-          <span class="badge badge-attack">CRITICAL</span>
+          <span><strong>2026-09-17 14:02:18.104 UTC</strong> │ Поток: Безопасность DC01</span>
+          <span class="badge badge-attack">КРИТИЧНО</span>
         </div>
-        <div style="font-size: 12px; margin-top: 4px;">Sysmon Event 10: Suspicious LSASS memory access from powershell.exe (PID 4820)</div>
+        <div style="font-size: 12px; margin-top: 4px;">Событие Sysmon 10: Подозрительный доступ к памяти LSASS из powershell.exe (PID 4820)</div>
       </div>
       <div class="card" style="border-left: 3px solid var(--accent-warning); margin-bottom: 8px;">
         <div style="display: flex; justify-content: space-between; font-size: 11px;">
-          <span><strong>2026-09-17 14:01:55.002 UTC</strong> │ Lane: Network Egress</span>
-          <span class="badge badge-net">SUSPICIOUS</span>
+          <span><strong>2026-09-17 14:01:55.002 UTC</strong> │ Поток: Сетевой периметр</span>
+          <span class="badge badge-net">ПОДОЗРИТЕЛЬНО</span>
         </div>
-        <div style="font-size: 12px; margin-top: 4px;">PCAP Flow: Outbound beaconing to 198.51.100.44:443 (TCP SYN/ACK 128 KB)</div>
+        <div style="font-size: 12px; margin-top: 4px;">Поток PCAP: Исходящий маяк (beaconing) на 198.51.100.44:443 (TCP SYN/ACK 128 КБ)</div>
       </div>
     `;
   }
@@ -334,12 +334,12 @@ class CyberRangeCockpitApp {
   renderMitreMatrix() {
     const grid = document.getElementById('mitreGrid');
     if (!grid) return;
-    const tactics = ['Initial Access', 'Execution', 'Persistence', 'Privilege Escalation', 'Defense Evasion', 'Credential Access', 'Discovery', 'Lateral Movement', 'Collection', 'Command and Control', 'Exfiltration', 'Impact'];
+    const tactics = ['Первичный доступ', 'Выполнение', 'Закрепление', 'Повышение привилегий', 'Обход защиты', 'Сбор учетных данных', 'Разведка', 'Боковое перемещение', 'Сбор данных', 'Управление и контроль', 'Эксфильтрация', 'Воздействие'];
     grid.innerHTML = tactics.map((t, idx) => `
       <div class="card" style="font-size: 11px; padding: 8px;">
         <div style="font-weight: 700; color: var(--accent-info); margin-bottom: 6px;">${idx + 1}. ${t}</div>
-        <div style="background: ${t === 'Credential Access' ? 'rgba(248,81,73,0.2)' : 'var(--bg-canvas)'}; border: 1px solid var(--border-muted); padding: 4px; border-radius: 3px; font-size: 10px;">
-          ${t === 'Credential Access' ? '<strong style="color: var(--accent-critical)">T1003.001 (LSASS)</strong>' : (t === 'Execution' ? 'T1059.001 (PowerShell)' : 'None detected')}
+        <div style="background: ${t === 'Сбор учетных данных' ? 'rgba(248,81,73,0.2)' : 'var(--bg-canvas)'}; border: 1px solid var(--border-muted); padding: 4px; border-radius: 3px; font-size: 10px;">
+          ${t === 'Сбор учетных данных' ? '<strong style="color: var(--accent-critical)">T1003.001 (LSASS)</strong>' : (t === 'Выполнение' ? 'T1059.001 (PowerShell)' : 'Не обнаружено')}
         </div>
       </div>
     `).join('');
@@ -357,10 +357,10 @@ class CyberRangeCockpitApp {
     if (custody) {
       custody.innerHTML = `
         <div class="card" style="font-size: 11px;">
-          <strong>Block #1: ArtifactIngested</strong> │ BLAKE3 dual-hash verified at 14:00:02 UTC
+          <strong>Блок #1: ArtifactIngested</strong> │ Двойной хеш BLAKE3 проверен в 14:00:02 UTC
         </div>
         <div class="card" style="font-size: 11px;">
-          <strong>Block #2: Normalized</strong> │ Sysmon schema v1.40 mapped into SQLite repository
+          <strong>Блок #2: Normalized</strong> │ Схема Sysmon v1.40 смаппирована в репозиторий SQLite
         </div>
       `;
     }
@@ -388,7 +388,7 @@ class CyberRangeCockpitApp {
     ctx.moveTo(350, 150); ctx.lineTo(550, 150);
     ctx.stroke();
 
-    this.drawNode(ctx, 150, 150, 'Host: DC01', '#58a6ff', 'circle');
+    this.drawNode(ctx, 150, 150, 'Хост: DC01', '#58a6ff', 'circle');
     this.drawNode(ctx, 350, 150, 'powershell.exe:4820', '#f85149', 'diamond');
     this.drawNode(ctx, 550, 150, 'T1003.001 (LSASS)', '#d29922', 'hexagon');
   }
@@ -413,12 +413,12 @@ class CyberRangeCockpitApp {
 
     typeBadge.textContent = entity.type;
     content.innerHTML = `
-      <div class="inspector-field"><div class="inspector-label">Entity Name</div><div class="inspector-value">${entity.name}</div></div>
-      <div class="inspector-field"><div class="inspector-label">Epistemic Status</div><div class="inspector-value">${entity.assertion} (${entity.verification})</div></div>
-      <div class="inspector-field"><div class="inspector-label">Details</div><div class="inspector-value">${entity.details}</div></div>
+      <div class="inspector-field"><div class="inspector-label">Имя сущности</div><div class="inspector-value">${entity.name}</div></div>
+      <div class="inspector-field"><div class="inspector-label">Эпистемический статус</div><div class="inspector-value">${entity.assertion} (${entity.verification})</div></div>
+      <div class="inspector-field"><div class="inspector-label">Детали</div><div class="inspector-value">${entity.details}</div></div>
       <div style="display: flex; gap: 6px; margin-top: 10px;">
-        <button class="btn btn-primary" style="flex: 1;">Corroborate</button>
-        <button class="btn" style="flex: 1;">Disprove</button>
+        <button class="btn btn-primary" style="flex: 1;">Подтвердить</button>
+        <button class="btn" style="flex: 1;">Опровергнуть</button>
       </div>
     `;
   }
@@ -434,13 +434,13 @@ class CyberRangeCockpitApp {
       if (val === 'T1003.001') {
         res.innerHTML = `
           <div style="background: rgba(46,160,67,0.15); border: 1px solid var(--accent-success); padding: 10px; border-radius: 4px; color: var(--accent-success); font-size: 12px;">
-            <strong>SUCCESS (Score: 100/100)</strong><br>Hypothesis matched sealed Ground Truth: T1003.001 (OS Credential Dumping: LSASS Memory).
+            <strong>УСПЕХ (Баллы: 100/100)</strong><br>Гипотеза совпала с эталоном инцидента: T1003.001 (OS Credential Dumping: LSASS Memory).
           </div>
         `;
       } else {
         res.innerHTML = `
           <div style="background: rgba(248,81,73,0.15); border: 1px solid var(--accent-critical); padding: 10px; border-radius: 4px; color: var(--accent-critical); font-size: 12px;">
-            <strong>MISMATCH (Distance Score: 0/100)</strong><br>Submitted technique did not match scenario root-cause. Check memory read artifacts.
+            <strong>НЕСООТВЕТСТВИЕ (Баллы: 0/100)</strong><br>Указанная техника не совпала с первопричиной сценария. Проверьте артефакты чтения памяти.
           </div>
         `;
       }
@@ -455,7 +455,7 @@ class CyberRangeCockpitApp {
         if (search) search.focus();
       } else if (e.key === 'Escape') {
         this.selectedEntity = null;
-        document.getElementById('inspectorContent').innerHTML = '<div style="color: var(--text-muted); font-size: 11px;">Selection cleared.</div>';
+        document.getElementById('inspectorContent').innerHTML = '<div style="color: var(--text-muted); font-size: 11px;">Выбор сброшен.</div>';
       }
     });
   }
