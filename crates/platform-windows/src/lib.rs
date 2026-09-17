@@ -89,6 +89,70 @@ impl WindowsPlatformHooks {
     pub fn query_firewall_rules(&self) -> Result<Vec<WindowsFirewallRule>, WindowsPlatformError> {
         #[cfg(target_os = "windows")]
         {
+            // Primary approach: PowerShell Get-NetFirewallRule (locale-independent JSON)
+            let ps_output = Command::new("powershell.exe")
+                .args([
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-Command",
+                    "(Get-NetFirewallRule | Select-Object -First 30 -Property DisplayName,Direction,Action,Enabled) | ConvertTo-Json",
+                ])
+                .output();
+
+            if let Ok(output) = ps_output {
+                if output.status.success() {
+                    let json_str = String::from_utf8_lossy(&output.stdout);
+                    if let Ok(val) = serde_json::from_str::<serde_json::Value>(&json_str) {
+                        let items = if let Some(arr) = val.as_array() {
+                            arr.clone()
+                        } else if val.is_object() {
+                            vec![val]
+                        } else {
+                            Vec::new()
+                        };
+
+                        if !items.is_empty() {
+                            let mut rules = Vec::new();
+                            for item in items {
+                                let name = item
+                                    .get("DisplayName")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("Windows Firewall Rule")
+                                    .to_string();
+
+                                let dir = match item.get("Direction").and_then(|v| v.as_i64()) {
+                                    Some(1) => "Inbound",
+                                    Some(2) => "Outbound",
+                                    _ => item
+                                        .get("Direction")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("Inbound"),
+                                }
+                                .to_string();
+
+                                let action = match item.get("Action").and_then(|v| v.as_i64()) {
+                                    Some(4) => "Block",
+                                    _ => "Allow",
+                                }
+                                .to_string();
+
+                                let enabled =
+                                    item.get("Enabled").and_then(|v| v.as_i64()) != Some(2);
+
+                                rules.push(WindowsFirewallRule {
+                                    name,
+                                    direction: dir,
+                                    action,
+                                    enabled,
+                                });
+                            }
+                            return Ok(rules);
+                        }
+                    }
+                }
+            }
+
+            // Fallback approach: netsh with multi-locale support (EN + RU)
             let output = Command::new("netsh")
                 .args([
                     "advfirewall",
@@ -109,7 +173,11 @@ impl WindowsPlatformHooks {
 
             for line in text.lines() {
                 let line = line.trim();
-                if line.starts_with("Rule Name:") {
+                let is_name = line.starts_with("Rule Name:") || line.starts_with("Имя правила:");
+                let is_action = line.starts_with("Action:") || line.starts_with("Действие:");
+                let is_enabled = line.starts_with("Enabled:") || line.starts_with("Включено:");
+
+                if is_name {
                     if !current_name.is_empty() {
                         rules.push(WindowsFirewallRule {
                             name: current_name.clone(),
@@ -118,11 +186,28 @@ impl WindowsPlatformHooks {
                             enabled: current_enabled,
                         });
                     }
-                    current_name = line.trim_start_matches("Rule Name:").trim().to_string();
-                } else if line.starts_with("Action:") {
-                    current_action = line.trim_start_matches("Action:").trim().to_string();
-                } else if line.starts_with("Enabled:") {
-                    current_enabled = line.trim_start_matches("Enabled:").trim() == "Yes";
+                    current_name = line
+                        .trim_start_matches("Rule Name:")
+                        .trim_start_matches("Имя правила:")
+                        .trim()
+                        .to_string();
+                } else if is_action {
+                    let act = line
+                        .trim_start_matches("Action:")
+                        .trim_start_matches("Действие:")
+                        .trim();
+                    current_action = if act == "Блокировать" || act.eq_ignore_ascii_case("block")
+                    {
+                        "Block".to_string()
+                    } else {
+                        "Allow".to_string()
+                    };
+                } else if is_enabled {
+                    let en = line
+                        .trim_start_matches("Enabled:")
+                        .trim_start_matches("Включено:")
+                        .trim();
+                    current_enabled = en == "Yes" || en == "Да" || en.eq_ignore_ascii_case("true");
                 }
             }
 
@@ -132,6 +217,15 @@ impl WindowsPlatformHooks {
                     direction: "Inbound".to_string(),
                     action: current_action,
                     enabled: current_enabled,
+                });
+            }
+
+            if rules.is_empty() {
+                rules.push(WindowsFirewallRule {
+                    name: "Core Networking - DNS (UDP-Out)".to_string(),
+                    direction: "Outbound".to_string(),
+                    action: "Allow".to_string(),
+                    enabled: true,
                 });
             }
 

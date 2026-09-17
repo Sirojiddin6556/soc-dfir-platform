@@ -241,16 +241,16 @@ class CyberRangeCockpitApp {
         break;
       case 'tabPersistence':
         container.innerHTML = `<h4 style="font-size: 12px; margin-bottom: 8px;">Механизмы закрепления (Persistence & Auto-Runs)</h4>
-          ${h.persistence.map(p => `<div class="card" style="border-left: 3px solid var(--accent-critical)">${p}</div>`).join('')}`;
+          ${(h.persistence || []).length ? (h.persistence || []).map(p => `<div class="card" style="border-left: 3px solid var(--accent-critical)">${p}</div>`).join('') : '<div style="color: var(--text-muted); font-size: 12px;">Механизмов автозапуска и закрепления не обнаружено.</div>'}`;
         break;
       case 'tabSoftware':
         container.innerHTML = `<h4 style="font-size: 12px; margin-bottom: 8px;">Инвентарь ПО и SBOM CycloneDX</h4>
           <table class="data-table"><thead><tr><th>Компонент</th><th>Версия</th><th>Идентификатор CPE</th></tr></thead>
-          <tbody>${h.software.map(s => `<tr><td><strong>${s.name}</strong></td><td>${s.ver}</td><td><code>${s.cpe}</code></td></tr>`).join('')}</tbody></table>`;
+          <tbody>${(h.software || []).map(s => `<tr><td><strong>${s.name}</strong></td><td>${s.ver}</td><td><code>${s.cpe}</code></td></tr>`).join('')}</tbody></table>`;
         break;
       case 'tabVulnerabilities':
         container.innerHTML = `<h4 style="font-size: 12px; margin-bottom: 8px;">Скоррелированные уязвимости (CVE)</h4>
-          ${h.vulnerabilities.length ? h.vulnerabilities.map(v => `<div class="card" style="border-left: 3px solid var(--accent-critical)"><div style="font-weight: 700;">${v.cve} (CVSS ${v.cvss})</div><div style="font-size: 11px; color: var(--text-secondary); margin-top: 4px;">${v.name}</div></div>`).join('') : '<div style="color: var(--text-muted); font-size: 12px;">Неустраненных уязвимостей не обнаружено.</div>'}`;
+          ${(h.vulnerabilities || []).length ? (h.vulnerabilities || []).map(v => `<div class="card" style="border-left: 3px solid var(--accent-critical)"><div style="font-weight: 700;">${v.cve} (CVSS ${v.cvss})</div><div style="font-size: 11px; color: var(--text-secondary); margin-top: 4px;">${v.name}</div></div>`).join('') : '<div style="color: var(--text-muted); font-size: 12px;">Неустраненных уязвимостей не обнаружено.</div>'}`;
         break;
       default:
         container.innerHTML = `<div style="color: var(--text-muted); font-size: 12px;">Телеметрия вкладки <strong>${this.currentAssetTab}</strong> синхронизирована с CAS.</div>`;

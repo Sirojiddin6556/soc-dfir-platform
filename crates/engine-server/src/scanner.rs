@@ -46,6 +46,7 @@ pub async fn execute_network_scan(subnet: &str, mode: &str) -> serde_json::Value
                     "subnet": "127.0.0.1/32",
                     "ports": open_ports,
                     "services": ["Desktop Engine Server", "Platform Broker"],
+                    "persistence": ["Local Session Monitor", "Broker Service: privilege-broker"],
                     "software": [{ "name": "SOC DFIR Engine", "ver": "0.1.0", "cpe": "cpe:2.3:a:soc:dfir_engine:0.1.0" }],
                     "vulnerabilities": []
                 }
@@ -63,7 +64,8 @@ pub async fn execute_network_scan(subnet: &str, mode: &str) -> serde_json::Value
         let mut open_ports = Vec::new();
         for &port in &probe_ports {
             let addr = format!("{}:{}", target, port);
-            if let Ok(Ok(_)) = timeout(Duration::from_millis(120), TcpStream::connect(&addr)).await {
+            if let Ok(Ok(_)) = timeout(Duration::from_millis(120), TcpStream::connect(&addr)).await
+            {
                 open_ports.push(port);
             }
         }
@@ -73,17 +75,20 @@ pub async fn execute_network_scan(subnet: &str, mode: &str) -> serde_json::Value
 
         let services: Vec<String> = open_ports
             .iter()
-            .map(|&p| match p {
-                22 => "SSH (OpenSSH)",
-                53 => "DNS",
-                80 => "HTTP Web Service",
-                443 => "HTTPS / TLS",
-                3389 => "RDP Terminal Service",
-                445 => "SMB File Sharing",
-                1433 => "MSSQL Database",
-                3306 => "MySQL Database",
-                _ => "Custom TCP Service",
-            }.to_string())
+            .map(|&p| {
+                match p {
+                    22 => "SSH (OpenSSH)",
+                    53 => "DNS",
+                    80 => "HTTP Web Service",
+                    443 => "HTTPS / TLS",
+                    3389 => "RDP Terminal Service",
+                    445 => "SMB File Sharing",
+                    1433 => "MSSQL Database",
+                    3306 => "MySQL Database",
+                    _ => "Custom TCP Service",
+                }
+                .to_string()
+            })
             .collect();
 
         let remote_host = json!({
@@ -98,6 +103,7 @@ pub async fn execute_network_scan(subnet: &str, mode: &str) -> serde_json::Value
             "subnet": format!("{}/32", target),
             "ports": open_ports,
             "services": services,
+            "persistence": [],
             "software": [{ "name": "nginx / OpenSSL", "ver": "1.24.0", "cpe": "cpe:2.3:a:f5:nginx:1.24.0" }],
             "vulnerabilities": []
         });
@@ -131,6 +137,7 @@ pub async fn execute_network_scan(subnet: &str, mode: &str) -> serde_json::Value
                 vec![53, 88, 135, 139, 389, 445, 636, 3268, 3389]
             },
             "services": ["Active Directory Domain Services", "DNS Server", "Kerberos KDC", "Netlogon", "WMI/WinRM"],
+            "persistence": ["Scheduled Task: SecurityAuditCollector (powershell -enc ...)", "Registry Run: SysMonitor (Pending Review)"],
             "software": [{ "name": "Microsoft Active Directory", "ver": "10.0.20348", "cpe": "cpe:2.3:o:microsoft:windows_server_2022" }],
             "vulnerabilities": [
                 { "cve": "CVE-2022-26923", "cvss": 8.8, "name": "Active Directory Domain Services Privilege Escalation" }
@@ -148,6 +155,7 @@ pub async fn execute_network_scan(subnet: &str, mode: &str) -> serde_json::Value
             "subnet": "192.168.1.0/24",
             "ports": [135, 445, 3389],
             "services": ["Windows Defender Advanced Threat Protection", "Workstation Service", "SMBv2"],
+            "persistence": ["RunKey: HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\Run\\Updater.exe"],
             "software": [{ "name": "Microsoft Office 365", "ver": "16.0.17328", "cpe": "cpe:2.3:a:microsoft:office:365" }],
             "vulnerabilities": [
                 { "cve": "CVE-2023-36884", "cvss": 8.3, "name": "Office and Windows HTML RCE Vulnerability" }
@@ -165,6 +173,7 @@ pub async fn execute_network_scan(subnet: &str, mode: &str) -> serde_json::Value
             "subnet": "172.16.0.0/20",
             "ports": [22, 80, 443],
             "services": ["nginx.service", "sshd.service", "systemd-resolved.service"],
+            "persistence": ["Cron: /etc/cron.daily/logrotate"],
             "software": [{ "name": "nginx", "ver": "1.18.0-0ubuntu1.4", "cpe": "cpe:2.3:a:f5:nginx:1.18.0" }],
             "vulnerabilities": []
         }),
@@ -183,6 +192,7 @@ pub async fn execute_network_scan(subnet: &str, mode: &str) -> serde_json::Value
             "subnet": "192.168.1.0/24",
             "ports": [22, 111, 445, 2049],
             "services": ["nfs-server.service", "smbd.service", "ssh.service"],
+            "persistence": ["Systemd Timer: backup-sync.timer"],
             "software": [{ "name": "Samba", "ver": "4.17.12", "cpe": "cpe:2.3:a:samba:samba:4.17.12" }],
             "vulnerabilities": []
         }));
@@ -201,6 +211,7 @@ pub async fn execute_network_scan(subnet: &str, mode: &str) -> serde_json::Value
             "subnet": "10.0.10.0/24",
             "ports": [135, 445, 1433, 3389],
             "services": ["MSSQLSERVER", "SQL Server Browser", "SMBv3"],
+            "persistence": ["SQL Server Agent Job: DB_Health_Check"],
             "software": [{ "name": "Microsoft SQL Server 2019", "ver": "15.0.4375", "cpe": "cpe:2.3:a:microsoft:sql_server_2019" }],
             "vulnerabilities": []
         }));
