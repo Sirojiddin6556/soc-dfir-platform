@@ -1,0 +1,15 @@
+[package]
+name = "desktop-app"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+engine-server = { path = "../engine-server" }
+tokio = { workspace = true, features = ["full"] }
+tao = "0.37.0"
+wry = "0.57.0"
+tracing.workspace = true
+tracing-subscriber = { workspace = true }
