@@ -76,7 +76,7 @@ mod tests {
             Fact {
                 id: EntityId::new_v7(),
                 case_id,
-                observation_id: None,
+                evidence_ids: vec![EntityId::new_v7()],
                 assertion_type: AssertionType::Fact,
                 verification_state: VerificationState::Confirmed,
                 entity_type: EntityType::Process,
@@ -93,7 +93,7 @@ mod tests {
             Fact {
                 id: EntityId::new_v7(),
                 case_id,
-                observation_id: None,
+                evidence_ids: vec![EntityId::new_v7()],
                 assertion_type: AssertionType::Fact,
                 verification_state: VerificationState::Confirmed,
                 entity_type: EntityType::Process,

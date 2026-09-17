@@ -19,7 +19,7 @@ pub enum EntityType {
 pub struct Fact {
     pub id: EntityId,
     pub case_id: EntityId,
-    pub observation_id: Option<EntityId>,
+    pub evidence_ids: Vec<EntityId>,
     pub assertion_type: AssertionType,
     pub verification_state: VerificationState,
     pub entity_type: EntityType,
@@ -32,4 +32,10 @@ pub struct Fact {
     pub pain_level: Option<PainLevel>,
     pub data: serde_json::Value,
     pub created_at: DateTime<Utc>,
+}
+
+impl Fact {
+    pub fn is_corroborated(&self) -> bool {
+        self.evidence_ids.len() >= 2
+    }
 }

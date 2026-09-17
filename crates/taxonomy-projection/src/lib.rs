@@ -26,22 +26,40 @@ impl TaxonomyProjector {
             for fact in facts {
                 if let Some(cmd) = fact.data.get("command_line").and_then(|c| c.as_str()) {
                     if cmd.contains("powershell") {
+                        let state = if fact.evidence_ids.len() >= 2 {
+                            VerificationState::Corroborated
+                        } else {
+                            VerificationState::Candidate
+                        };
                         candidates.push(TaxonomyCandidate {
                             technique_id: "T1059.001".to_string(), // PowerShell
                             tactic: Some("Execution".to_string()),
-                            confidence: Confidence::new(0.95),
-                            verification_state: VerificationState::Corroborated,
-                            evidence_id: None,
+                            confidence: Confidence::new(if fact.evidence_ids.len() >= 2 {
+                                0.95
+                            } else {
+                                0.70
+                            }),
+                            verification_state: state,
+                            evidence_id: fact.evidence_ids.first().copied(),
                             mapping_rule_version: "v1.0.0".to_string(),
                         });
                     }
                     if cmd.contains("whoami") || cmd.contains("net user") {
+                        let state = if fact.evidence_ids.len() >= 2 {
+                            VerificationState::Corroborated
+                        } else {
+                            VerificationState::Candidate
+                        };
                         candidates.push(TaxonomyCandidate {
                             technique_id: "T1033".to_string(), // System Owner/User Discovery
                             tactic: Some("Discovery".to_string()),
-                            confidence: Confidence::new(0.90),
-                            verification_state: VerificationState::Candidate,
-                            evidence_id: None,
+                            confidence: Confidence::new(if fact.evidence_ids.len() >= 2 {
+                                0.90
+                            } else {
+                                0.65
+                            }),
+                            verification_state: state,
+                            evidence_id: fact.evidence_ids.first().copied(),
                             mapping_rule_version: "v1.0.0".to_string(),
                         });
                     }
@@ -81,7 +99,7 @@ mod tests {
         let fact = Fact {
             id: EntityId::new_v7(),
             case_id: EntityId::new_v7(),
-            observation_id: None,
+            evidence_ids: vec![EntityId::new_v7(), EntityId::new_v7()],
             assertion_type: AssertionType::Fact,
             verification_state: VerificationState::Confirmed,
             entity_type: EntityType::Process,

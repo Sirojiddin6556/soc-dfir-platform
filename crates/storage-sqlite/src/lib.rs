@@ -93,7 +93,7 @@ impl SqliteStorage {
             CREATE TABLE IF NOT EXISTS facts (
                 id TEXT PRIMARY KEY,
                 case_id TEXT NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
-                observation_id TEXT,
+                evidence_ids TEXT NOT NULL DEFAULT '[]',
                 assertion_type TEXT NOT NULL,
                 verification_state TEXT NOT NULL,
                 entity_type TEXT NOT NULL,
@@ -281,16 +281,23 @@ impl SqliteStorage {
 
     pub fn insert_fact(&self, fact: &Fact) -> Result<(), SqliteStorageError> {
         let conn = self.conn.lock().unwrap();
+        let ev_ids_json = serde_json::to_string(
+            &fact
+                .evidence_ids
+                .iter()
+                .map(|id| id.to_string())
+                .collect::<Vec<_>>(),
+        )?;
         conn.execute(
             r#"INSERT INTO facts (
-                id, case_id, observation_id, assertion_type, verification_state,
+                id, case_id, evidence_ids, assertion_type, verification_state,
                 entity_type, entity_key, fact_type, confidence, severity,
                 risk_score, evidence_strength, pain_level, data_json, created_at
             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)"#,
             params![
                 fact.id.to_string(),
                 fact.case_id.to_string(),
-                fact.observation_id.map(|id| id.to_string()),
+                ev_ids_json,
                 format!("{:?}", fact.assertion_type),
                 format!("{:?}", fact.verification_state),
                 format!("{:?}", fact.entity_type),
@@ -311,7 +318,7 @@ impl SqliteStorage {
     pub fn get_facts_for_case(&self, case_id: EntityId) -> Result<Vec<Fact>, SqliteStorageError> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            r#"SELECT id, case_id, observation_id, assertion_type, verification_state,
+            r#"SELECT id, case_id, evidence_ids, assertion_type, verification_state,
                       entity_type, entity_key, fact_type, confidence, severity,
                       risk_score, evidence_strength, pain_level, data_json, created_at
                FROM facts WHERE case_id = ?1 ORDER BY created_at ASC"#,
@@ -320,7 +327,7 @@ impl SqliteStorage {
         let rows = stmt.query_map(params![case_id.to_string()], |row| {
             let id_str: String = row.get(0)?;
             let case_id_str: String = row.get(1)?;
-            let obs_id_str: Option<String> = row.get(2)?;
+            let ev_ids_str: String = row.get(2)?;
             let assert_type_str: String = row.get(3)?;
             let verif_state_str: String = row.get(4)?;
             let ent_type_str: String = row.get(5)?;
@@ -342,9 +349,9 @@ impl SqliteStorage {
 
             let verification_state = match verif_state_str.as_str() {
                 "Candidate" => VerificationState::Candidate,
-                "Confirmed" => VerificationState::Confirmed,
+                "Corroborated" => VerificationState::Corroborated,
                 "Disproved" => VerificationState::Disproved,
-                _ => VerificationState::Corroborated,
+                _ => VerificationState::Confirmed,
             };
 
             let entity_type = match ent_type_str.as_str() {
@@ -366,26 +373,31 @@ impl SqliteStorage {
                 _ => Severity::Info,
             };
 
-            let pain_level = pain_str.and_then(|p| match p.as_str() {
-                "HashValues" => Some(PainLevel::HashValues),
-                "IpAddresses" => Some(PainLevel::IpAddresses),
-                "DomainNames" => Some(PainLevel::DomainNames),
-                "NetworkArtifacts" => Some(PainLevel::NetworkArtifacts),
-                "HostArtifacts" => Some(PainLevel::HostArtifacts),
-                "Tools" => Some(PainLevel::Tools),
-                "TTPs" => Some(PainLevel::TTPs),
+            let pain_level = match pain_str.as_deref() {
+                Some("HashValues") => Some(PainLevel::HashValues),
+                Some("IpAddresses") => Some(PainLevel::IpAddresses),
+                Some("DomainNames") => Some(PainLevel::DomainNames),
+                Some("NetworkArtifacts") => Some(PainLevel::NetworkArtifacts),
+                Some("Tools") => Some(PainLevel::Tools),
+                Some("TTPs") => Some(PainLevel::TTPs),
                 _ => None,
-            });
+            };
 
             let data = serde_json::from_str(&data_str).unwrap_or(serde_json::Value::Null);
             let created_at = chrono::DateTime::parse_from_rfc3339(&created_at_str)
                 .map(|dt| dt.with_timezone(&chrono::Utc))
                 .unwrap_or_else(|_| chrono::Utc::now());
 
+            let evidence_ids: Vec<EntityId> = serde_json::from_str::<Vec<String>>(&ev_ids_str)
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|s| EntityId::parse(&s).ok())
+                .collect();
+
             Ok(Fact {
                 id: EntityId::parse(&id_str).unwrap_or_default(),
                 case_id: EntityId::parse(&case_id_str).unwrap_or_default(),
-                observation_id: obs_id_str.and_then(|s| EntityId::parse(&s).ok()),
+                evidence_ids,
                 assertion_type,
                 verification_state,
                 entity_type,
@@ -445,7 +457,7 @@ mod tests {
         let fact = Fact {
             id: EntityId::new_v7(),
             case_id,
-            observation_id: None,
+            evidence_ids: vec![EntityId::new_v7(), EntityId::new_v7()],
             assertion_type: AssertionType::Fact,
             verification_state: VerificationState::Confirmed,
             entity_type: EntityType::Host,
