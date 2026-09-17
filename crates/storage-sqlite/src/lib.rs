@@ -1,5 +1,7 @@
 #![forbid(unsafe_code)]
 
+pub mod schema;
+
 use core_domain::artifact::{Artifact, CustodyEvent};
 use core_domain::case::Case;
 use core_domain::epistemic::{AssertionType, Confidence, PainLevel, Severity, VerificationState};
@@ -54,94 +56,7 @@ impl SqliteStorage {
 
     pub fn migrate(&self) -> Result<(), SqliteStorageError> {
         let conn = self.conn.lock().unwrap();
-        conn.execute_batch(
-            r#"
-            CREATE TABLE IF NOT EXISTS cases (
-                id TEXT PRIMARY KEY,
-                title TEXT NOT NULL,
-                description TEXT,
-                status TEXT NOT NULL DEFAULT 'Active',
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS artifacts (
-                id TEXT PRIMARY KEY,
-                case_id TEXT NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
-                hash_blake3 TEXT NOT NULL,
-                hash_sha256 TEXT NOT NULL,
-                original_name TEXT NOT NULL,
-                file_size INTEGER NOT NULL,
-                mime_type TEXT NOT NULL,
-                acquisition_method TEXT NOT NULL,
-                acquired_at TEXT NOT NULL,
-                ingested_at TEXT NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS observations (
-                id TEXT PRIMARY KEY,
-                case_id TEXT NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
-                artifact_id TEXT,
-                tool_run_id TEXT,
-                source_tool TEXT NOT NULL,
-                raw_event_type TEXT NOT NULL,
-                source_timestamp TEXT NOT NULL,
-                ingest_timestamp TEXT NOT NULL,
-                data_json TEXT NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS facts (
-                id TEXT PRIMARY KEY,
-                case_id TEXT NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
-                evidence_ids TEXT NOT NULL DEFAULT '[]',
-                assertion_type TEXT NOT NULL,
-                verification_state TEXT NOT NULL,
-                entity_type TEXT NOT NULL,
-                entity_key TEXT NOT NULL,
-                fact_type TEXT NOT NULL,
-                confidence REAL NOT NULL DEFAULT 1.0,
-                severity TEXT NOT NULL DEFAULT 'Info',
-                risk_score REAL NOT NULL DEFAULT 0.0,
-                evidence_strength REAL NOT NULL DEFAULT 1.0,
-                pain_level TEXT,
-                data_json TEXT NOT NULL,
-                created_at TEXT NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS attack_nodes (
-                id TEXT PRIMARY KEY,
-                case_id TEXT NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
-                node_type TEXT NOT NULL,
-                label TEXT NOT NULL,
-                properties_json TEXT NOT NULL,
-                first_seen TEXT NOT NULL,
-                last_seen TEXT NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS attack_edges (
-                id TEXT PRIMARY KEY,
-                case_id TEXT NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
-                source_node_id TEXT NOT NULL REFERENCES attack_nodes(id) ON DELETE CASCADE,
-                target_node_id TEXT NOT NULL REFERENCES attack_nodes(id) ON DELETE CASCADE,
-                relation_type TEXT NOT NULL,
-                confidence REAL NOT NULL DEFAULT 1.0,
-                supported_by_json TEXT NOT NULL DEFAULT '[]',
-                first_seen TEXT NOT NULL,
-                last_seen TEXT NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS custody_events (
-                id TEXT PRIMARY KEY,
-                case_id TEXT NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
-                actor_id TEXT NOT NULL,
-                event_type TEXT NOT NULL,
-                artifact_hash TEXT,
-                details_json TEXT NOT NULL,
-                previous_state_hash TEXT NOT NULL,
-                timestamp TEXT NOT NULL
-            );
-            "#,
-        )?;
+        conn.execute_batch(schema::MIGRATION_001_SQL)?;
         Ok(())
     }
 
@@ -478,5 +393,52 @@ mod tests {
         assert_eq!(facts.len(), 1);
         assert_eq!(facts[0].entity_key, "192.168.1.50");
         assert_eq!(facts[0].assertion_type, AssertionType::Fact);
+    }
+
+    #[test]
+    fn test_all_19_schema_tables_exist() {
+        let storage = SqliteStorage::open_in_memory().unwrap();
+        let conn = storage.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",
+            )
+            .unwrap();
+        let tables: Vec<String> = stmt
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+
+        let expected = [
+            "cases",
+            "artifacts",
+            "tool_runs",
+            "observations",
+            "facts",
+            "evidence",
+            "evidence_members",
+            "attack_nodes",
+            "attack_edges",
+            "taxonomy_versions",
+            "taxonomy_mappings",
+            "diagram_snapshots",
+            "custody_events",
+            "workflow_tasks",
+            "findings",
+            "hypotheses",
+            "entities",
+            "software",
+            "vulnerabilities",
+            "software_vulnerabilities",
+            "audit_events",
+        ];
+        for exp in expected {
+            assert!(
+                tables.iter().any(|t| t == exp),
+                "Missing expected table in schema: {}",
+                exp
+            );
+        }
     }
 }
