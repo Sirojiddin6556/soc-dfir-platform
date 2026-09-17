@@ -4,7 +4,7 @@ use core_domain::broker::{BrokerCapability, PrivilegedOperation};
 use std::collections::HashSet;
 use thiserror::Error;
 
-#[derive(Error, Debug)]
+#[derive(Error, Debug, PartialEq, Eq)]
 pub enum BrokerError {
     #[error("Missing required capability: {0:?}")]
     MissingCapability(BrokerCapability),
@@ -29,10 +29,7 @@ impl PrivilegeBroker {
 
     /// Verifies capability and executes predefined typed operation.
     /// Never accepts arbitrary command lines or unvalidated argv arrays.
-    pub async fn execute_operation(
-        &self,
-        op: PrivilegedOperation,
-    ) -> Result<Vec<u8>, BrokerError> {
+    pub async fn execute_operation(&self, op: PrivilegedOperation) -> Result<Vec<u8>, BrokerError> {
         let required = op.required_capability();
         if !self.granted_capabilities.contains(&required) {
             return Err(BrokerError::MissingCapability(required));
@@ -43,15 +40,88 @@ impl PrivilegeBroker {
                 if pid == 0 {
                     return Err(BrokerError::InvalidParameter("PID cannot be 0".to_string()));
                 }
-                // Simulated secure execution via OS API (not via shell)
                 let info = format!("{{\"pid\": {}, \"status\": \"running\"}}", pid);
                 Ok(info.into_bytes())
+            }
+            PrivilegedOperation::CapturePcap {
+                duration_secs,
+                max_bytes,
+                ..
+            } => {
+                if duration_secs > 3600 {
+                    return Err(BrokerError::InvalidParameter(
+                        "Max capture duration is 3600 seconds".to_string(),
+                    ));
+                }
+                if max_bytes > 10 * 1024 * 1024 * 1024 {
+                    return Err(BrokerError::InvalidParameter(
+                        "Max capture buffer is 10 GB".to_string(),
+                    ));
+                }
+                Ok(b"{\"status\": \"capturing\"}".to_vec())
             }
             PrivilegedOperation::ReadFirewallRules { .. } => {
                 let rules = "{\"rules\": [\"allow 443 outbound\", \"block all inbound\"]}";
                 Ok(rules.as_bytes().to_vec())
             }
+            PrivilegedOperation::RunTargetedScan {
+                ports, rate_limit, ..
+            } => {
+                if rate_limit > 10000 {
+                    return Err(BrokerError::InvalidParameter(
+                        "Rate limit exceeds 10000 pkts/sec safety boundary".to_string(),
+                    ));
+                }
+                for &port in &ports {
+                    if port == 0 {
+                        return Err(BrokerError::InvalidParameter(
+                            "Port cannot be 0".to_string(),
+                        ));
+                    }
+                }
+                Ok(b"{\"status\": \"scan_complete\"}".to_vec())
+            }
             _ => Ok(b"{\"status\": \"completed\"}".to_vec()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_broker_capability_enforcement() {
+        // Broker without PacketCapture capability
+        let broker = PrivilegeBroker::new(vec![BrokerCapability::ReadProcesses]);
+
+        let capture_op = PrivilegedOperation::CapturePcap {
+            interface_id: "eth0".to_string(),
+            duration_secs: 10,
+            max_bytes: 1024 * 1024,
+            bpf_filter: None,
+        };
+
+        let err = broker.execute_operation(capture_op).await.unwrap_err();
+        assert_eq!(
+            err,
+            BrokerError::MissingCapability(BrokerCapability::CapturePcap)
+        );
+
+        // Allowed process metadata query
+        let proc_op = PrivilegedOperation::CollectProcessMetadata { pid: 1024 };
+        let res = broker.execute_operation(proc_op).await.unwrap();
+        assert!(!res.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_broker_parameter_validation() {
+        let broker = PrivilegeBroker::new(vec![BrokerCapability::ReadProcesses]);
+        let invalid_op = PrivilegedOperation::CollectProcessMetadata { pid: 0 };
+        let err = broker.execute_operation(invalid_op).await.unwrap_err();
+        assert_eq!(
+            err,
+            BrokerError::InvalidParameter("PID cannot be 0".to_string())
+        );
     }
 }

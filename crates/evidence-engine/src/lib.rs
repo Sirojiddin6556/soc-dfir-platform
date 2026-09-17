@@ -39,11 +39,8 @@ impl EvidenceEngine {
             })
             .collect();
 
-        let avg_confidence = facts
-            .iter()
-            .map(|f| f.confidence.value())
-            .sum::<f32>()
-            / (facts.len() as f32);
+        let avg_confidence =
+            facts.iter().map(|f| f.confidence.value()).sum::<f32>() / (facts.len() as f32);
 
         Ok(Evidence {
             id: EntityId::new_v7(),
@@ -61,5 +58,65 @@ impl EvidenceEngine {
 impl Default for EvidenceEngine {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core_domain::epistemic::{AssertionType, Severity, VerificationState};
+    use core_domain::fact::EntityType;
+
+    #[test]
+    fn test_evidence_aggregation() {
+        let engine = EvidenceEngine::new();
+        let case_id = EntityId::new_v7();
+
+        let fact1 = Fact {
+            id: EntityId::new_v7(),
+            case_id,
+            observation_id: None,
+            assertion_type: AssertionType::Fact,
+            verification_state: VerificationState::Confirmed,
+            entity_type: EntityType::Process,
+            entity_key: "p1".to_string(),
+            fact_type: "Spawn".to_string(),
+            confidence: Confidence::new(0.9),
+            severity: Severity::High,
+            risk_score: 50.0,
+            evidence_strength: 1.0,
+            pain_level: None,
+            data: serde_json::Value::Null,
+            created_at: chrono::Utc::now(),
+        };
+
+        let fact2 = Fact {
+            id: EntityId::new_v7(),
+            case_id,
+            observation_id: None,
+            assertion_type: AssertionType::Fact,
+            verification_state: VerificationState::Confirmed,
+            entity_type: EntityType::Process,
+            entity_key: "p2".to_string(),
+            fact_type: "Access".to_string(),
+            confidence: Confidence::new(1.0),
+            severity: Severity::Critical,
+            risk_score: 90.0,
+            evidence_strength: 1.0,
+            pain_level: None,
+            data: serde_json::Value::Null,
+            created_at: chrono::Utc::now(),
+        };
+
+        let evidence = engine
+            .aggregate_facts(
+                case_id,
+                "Cred Dump Evidence",
+                "LSASS access detected",
+                &[&fact1, &fact2],
+            )
+            .unwrap();
+        assert_eq!(evidence.members.len(), 2);
+        assert!((evidence.confidence.value() - 0.95).abs() < 0.001);
     }
 }

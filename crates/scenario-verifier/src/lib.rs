@@ -26,10 +26,8 @@ impl ScenarioVerifier {
         let mut max_possible = 0;
 
         // 1. Assets Discovered Check
-        let player_assets: HashSet<String> = player_facts
-            .iter()
-            .map(|f| f.entity_key.clone())
-            .collect();
+        let player_assets: HashSet<String> =
+            player_facts.iter().map(|f| f.entity_key.clone()).collect();
 
         let mut matched_assets = 0;
         for expected in &ground_truth.expected_assets {
@@ -44,7 +42,11 @@ impl ScenarioVerifier {
             name: "Assets Discovered".to_string(),
             points_awarded: asset_pts as u32,
             max_points: asset_max,
-            explanation: format!("Discovered {}/{} required assets", matched_assets, ground_truth.expected_assets.len()),
+            explanation: format!(
+                "Discovered {}/{} required assets",
+                matched_assets,
+                ground_truth.expected_assets.len()
+            ),
         });
         total_score += asset_pts as u32;
         max_possible += asset_max;
@@ -70,5 +72,51 @@ impl ScenarioVerifier {
 impl Default for ScenarioVerifier {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core_domain::epistemic::{AssertionType, Confidence, Severity, VerificationState};
+    use core_domain::fact::{EntityType, Fact};
+
+    #[test]
+    fn test_scenario_verifier_matching() {
+        let verifier = ScenarioVerifier::new();
+        let ground_truth = GroundTruth {
+            scenario_id: "SCEN-APT29".to_string(),
+            expected_assets: vec!["192.168.1.100".to_string(), "192.168.1.105".to_string()],
+            expected_facts: vec!["LSASS_Dump".to_string()],
+            expected_attack_edges: vec![],
+            expected_mitre_techniques: vec!["T1003.001".to_string()],
+            expected_kill_chain_stages: vec!["CredentialAccess".to_string()],
+            expected_pyramid_levels: vec!["Tools".to_string()],
+        };
+
+        let case_id = EntityId::new_v7();
+        let facts = vec![Fact {
+            id: EntityId::new_v7(),
+            case_id,
+            observation_id: None,
+            assertion_type: AssertionType::Fact,
+            verification_state: VerificationState::Confirmed,
+            entity_type: EntityType::Host,
+            entity_key: "192.168.1.100".to_string(),
+            fact_type: "HostDiscovered".to_string(),
+            confidence: Confidence::new(1.0),
+            severity: Severity::Info,
+            risk_score: 10.0,
+            evidence_strength: 1.0,
+            pain_level: None,
+            data: serde_json::Value::Null,
+            created_at: chrono::Utc::now(),
+        }];
+
+        let report = verifier.verify_investigation("SCEN-APT29", case_id, &ground_truth, &facts);
+        assert_eq!(report.scenario_id, "SCEN-APT29");
+        assert_eq!(report.criteria_scores[0].points_awarded, 20); // 1 out of 2 assets = 20 pts
+        assert_eq!(report.criteria_scores[0].max_points, 40);
+        assert_eq!(report.percentage, 50.0);
     }
 }

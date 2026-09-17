@@ -2,6 +2,7 @@
 
 pub mod artifact;
 pub mod broker;
+pub mod case;
 pub mod epistemic;
 pub mod error;
 pub mod evidence;
@@ -16,6 +17,7 @@ pub mod workflow;
 // Re-exports of foundational domain types
 pub use artifact::{Artifact, CustodyEvent, CustodyEventType};
 pub use broker::{BrokerCapability, PrivilegedOperation};
+pub use case::Case;
 pub use epistemic::{AssertionType, Confidence, PainLevel, Severity, VerificationState};
 pub use error::DomainError;
 pub use evidence::{Evidence, EvidenceMember};
@@ -25,7 +27,9 @@ pub use id::EntityId;
 pub use observation::{Observation, RawToolResult, ToolRun};
 pub use scenario::{GroundTruth, ScenarioManifest, VerificationReport};
 pub use taxonomy::{TaxonomyCandidate, TaxonomyMapping, TaxonomyNamespace, TaxonomyVersion};
-pub use workflow::{ConditionalEdge, ResourceBudget, TaskStatus, WorkflowProfileType, WorkflowTask};
+pub use workflow::{
+    ConditionalEdge, ResourceBudget, TaskStatus, WorkflowProfileType, WorkflowTask,
+};
 
 #[cfg(test)]
 mod tests {

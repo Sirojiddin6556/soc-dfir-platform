@@ -24,19 +24,22 @@ impl DeterministicGraphEngine {
     /// Every edge explicitly links back to supporting fact IDs.
     pub fn build_graph_from_facts(&self, case_id: EntityId, facts: &[Fact]) -> AttackGraph {
         let mut nodes_map: HashMap<String, AttackNode> = HashMap::new();
-        let mut pending_edges: Vec<(String, String, EntityId, chrono::DateTime<chrono::Utc>)> = Vec::new();
+        let mut pending_edges: Vec<(String, String, EntityId, chrono::DateTime<chrono::Utc>)> =
+            Vec::new();
 
         for fact in facts {
             let node_key = format!("{:?}:{}", fact.entity_type, fact.entity_key);
-            let node = nodes_map.entry(node_key.clone()).or_insert_with(|| AttackNode {
-                id: EntityId::new_v7(),
-                case_id,
-                node_type: fact.entity_type,
-                label: fact.entity_key.clone(),
-                properties: fact.data.clone(),
-                first_seen: fact.created_at,
-                last_seen: fact.created_at,
-            });
+            let node = nodes_map
+                .entry(node_key.clone())
+                .or_insert_with(|| AttackNode {
+                    id: EntityId::new_v7(),
+                    case_id,
+                    node_type: fact.entity_type,
+                    label: fact.entity_key.clone(),
+                    properties: fact.data.clone(),
+                    first_seen: fact.created_at,
+                    last_seen: fact.created_at,
+                });
 
             if fact.created_at < node.first_seen {
                 node.first_seen = fact.created_at;
@@ -56,15 +59,18 @@ impl DeterministicGraphEngine {
 
         let mut edges = Vec::new();
         for (host_key, proc_key, fact_id, ts) in pending_edges {
-            let host_id = nodes_map.entry(host_key.clone()).or_insert_with(|| AttackNode {
-                id: EntityId::new_v7(),
-                case_id,
-                node_type: EntityType::Host,
-                label: host_key.clone(),
-                properties: serde_json::json!({}),
-                first_seen: ts,
-                last_seen: ts,
-            }).id;
+            let host_id = nodes_map
+                .entry(host_key.clone())
+                .or_insert_with(|| AttackNode {
+                    id: EntityId::new_v7(),
+                    case_id,
+                    node_type: EntityType::Host,
+                    label: host_key.clone(),
+                    properties: serde_json::json!({}),
+                    first_seen: ts,
+                    last_seen: ts,
+                })
+                .id;
 
             if let Some(proc_node) = nodes_map.get(&proc_key) {
                 edges.push(AttackEdge {
@@ -92,5 +98,41 @@ impl DeterministicGraphEngine {
 impl Default for DeterministicGraphEngine {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core_domain::epistemic::{AssertionType, Confidence, Severity, VerificationState};
+
+    #[test]
+    fn test_deterministic_graph_building() {
+        let engine = DeterministicGraphEngine::new();
+        let case_id = EntityId::new_v7();
+        let now = chrono::Utc::now();
+
+        let facts = vec![Fact {
+            id: EntityId::new_v7(),
+            case_id,
+            observation_id: None,
+            assertion_type: AssertionType::Fact,
+            verification_state: VerificationState::Confirmed,
+            entity_type: EntityType::Process,
+            entity_key: "cmd.exe:1234".to_string(),
+            fact_type: "ProcessExecution".to_string(),
+            confidence: Confidence::new(1.0),
+            severity: Severity::Medium,
+            risk_score: 30.0,
+            evidence_strength: 1.0,
+            pain_level: None,
+            data: serde_json::json!({"host_ip": "192.168.1.10"}),
+            created_at: now,
+        }];
+
+        let graph = engine.build_graph_from_facts(case_id, &facts);
+        assert_eq!(graph.nodes.len(), 2); // Host + Process
+        assert_eq!(graph.edges.len(), 1); // Host -> Process
+        assert_eq!(graph.edges[0].relation_type, "SPAWNED_PROCESS");
     }
 }

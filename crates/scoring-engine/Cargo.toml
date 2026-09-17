@@ -8,3 +8,6 @@ license.workspace = true
 [dependencies]
 core-domain = { path = "../core-domain" }
 thiserror.workspace = true
+
+[dev-dependencies]
+chrono.workspace = true

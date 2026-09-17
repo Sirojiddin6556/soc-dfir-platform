@@ -6,11 +6,11 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NodeShape {
-    Circle,   // Host
-    Hexagon,  // Process
-    Diamond,  // Network Socket
-    Square,   // Identity / User
-    Octagon,  // Threat / Tactic
+    Circle,  // Host
+    Hexagon, // Process
+    Diamond, // Network Socket
+    Square,  // Identity / User
+    Octagon, // Threat / Tactic
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -82,5 +82,63 @@ impl DiagramEngine {
 impl Default for DiagramEngine {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core_domain::graph::{AttackEdge, AttackNode};
+    use core_domain::id::EntityId;
+
+    #[test]
+    fn test_diagram_projection_shapes() {
+        let engine = DiagramEngine::new();
+        let case_id = EntityId::new_v7();
+        let now = chrono::Utc::now();
+
+        let host_node = AttackNode {
+            id: EntityId::new_v7(),
+            case_id,
+            node_type: EntityType::Host,
+            label: "192.168.1.1".to_string(),
+            properties: serde_json::json!({}),
+            first_seen: now,
+            last_seen: now,
+        };
+
+        let proc_node = AttackNode {
+            id: EntityId::new_v7(),
+            case_id,
+            node_type: EntityType::Process,
+            label: "malware.exe".to_string(),
+            properties: serde_json::json!({}),
+            first_seen: now,
+            last_seen: now,
+        };
+
+        let edge = AttackEdge {
+            id: EntityId::new_v7(),
+            case_id,
+            source_node_id: host_node.id,
+            target_node_id: proc_node.id,
+            relation_type: "SPAWNED".to_string(),
+            confidence: core_domain::epistemic::Confidence::new(1.0),
+            supported_by: vec![],
+            first_seen: now,
+            last_seen: now,
+        };
+
+        let graph = AttackGraph {
+            case_id,
+            nodes: vec![host_node, proc_node],
+            edges: vec![edge],
+        };
+
+        let view = engine.project_attack_graph(&graph);
+        assert_eq!(view.nodes.len(), 2);
+        assert_eq!(view.nodes[0].shape, NodeShape::Circle);
+        assert_eq!(view.nodes[1].shape, NodeShape::Hexagon);
+        assert_eq!(view.edges.len(), 1);
     }
 }

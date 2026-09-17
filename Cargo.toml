@@ -21,6 +21,7 @@ members = [
     "crates/ipc-protocol",
     "crates/platform-windows",
     "crates/platform-linux",
+    "crates/engine-server",
 ]
 
 [workspace.package]

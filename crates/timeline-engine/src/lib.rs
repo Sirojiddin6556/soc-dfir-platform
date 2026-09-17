@@ -59,3 +59,60 @@ impl Default for TimelineEngine {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core_domain::epistemic::{AssertionType, Confidence, Severity, VerificationState};
+    use core_domain::fact::EntityType;
+
+    #[test]
+    fn test_timeline_sorting_and_lanes() {
+        let engine = TimelineEngine::new();
+        let case_id = EntityId::new_v7();
+        let now = Utc::now();
+
+        let facts = vec![
+            Fact {
+                id: EntityId::new_v7(),
+                case_id,
+                observation_id: None,
+                assertion_type: AssertionType::Fact,
+                verification_state: VerificationState::Confirmed,
+                entity_type: EntityType::Process,
+                entity_key: "proc2".to_string(),
+                fact_type: "Exec".to_string(),
+                confidence: Confidence::new(1.0),
+                severity: Severity::High,
+                risk_score: 50.0,
+                evidence_strength: 1.0,
+                pain_level: None,
+                data: serde_json::json!({"host_ip": "10.0.0.1"}),
+                created_at: now + chrono::Duration::seconds(10),
+            },
+            Fact {
+                id: EntityId::new_v7(),
+                case_id,
+                observation_id: None,
+                assertion_type: AssertionType::Fact,
+                verification_state: VerificationState::Confirmed,
+                entity_type: EntityType::Process,
+                entity_key: "proc1".to_string(),
+                fact_type: "Exec".to_string(),
+                confidence: Confidence::new(1.0),
+                severity: Severity::Low,
+                risk_score: 10.0,
+                evidence_strength: 1.0,
+                pain_level: None,
+                data: serde_json::json!({"host_ip": "10.0.0.1"}),
+                created_at: now,
+            },
+        ];
+
+        let entries = engine.build_timeline(&facts);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].label, "Exec: proc1");
+        assert_eq!(entries[1].label, "Exec: proc2");
+        assert_eq!(entries[0].lane_id, "10.0.0.1");
+    }
+}

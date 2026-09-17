@@ -27,8 +27,8 @@ pub struct Fact {
     pub fact_type: String,
     pub confidence: Confidence,
     pub severity: Severity,
-    pub risk_score: f32,         // 0.0 .. 100.0
-    pub evidence_strength: f32,  // 0.0 .. 1.0
+    pub risk_score: f32,        // 0.0 .. 100.0
+    pub evidence_strength: f32, // 0.0 .. 1.0
     pub pain_level: Option<PainLevel>,
     pub data: serde_json::Value,
     pub created_at: DateTime<Utc>,

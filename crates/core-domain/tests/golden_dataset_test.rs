@@ -22,7 +22,13 @@ async fn test_end_to_end_golden_dataset_pipeline() {
     let sqlite = SqliteStorage::open_in_memory().unwrap();
 
     let case_id = EntityId::new_v7();
-    sqlite.insert_case(case_id, "Scenario 01: APT Lateral Movement", Some("Golden test run")).unwrap();
+    sqlite
+        .insert_case(
+            case_id,
+            "Scenario 01: APT Lateral Movement",
+            Some("Golden test run"),
+        )
+        .unwrap();
 
     // 1. Ingest Simulated EVTX Raw Log into CAS
     let raw_log_data = br#"{"event_id": 4688, "command_line": "powershell.exe -enc SQBFAFgA...", "host_ip": "10.0.0.15"}
@@ -35,7 +41,9 @@ async fn test_end_to_end_golden_dataset_pipeline() {
     // 2. Tool Adapter -> RawToolResult
     let fake_evtx_path = temp_dir.join("security.evtx");
     tokio::fs::create_dir_all(&temp_dir).await.unwrap();
-    tokio::fs::write(&fake_evtx_path, raw_log_data).await.unwrap();
+    tokio::fs::write(&fake_evtx_path, raw_log_data)
+        .await
+        .unwrap();
 
     let adapter = EvtxAdapter;
     let raw_tool_result: RawToolResult = adapter.parse_artifact(&fake_evtx_path).await.unwrap();
@@ -58,7 +66,12 @@ async fn test_end_to_end_golden_dataset_pipeline() {
     let evidence_engine = EvidenceEngine::new();
     let fact_refs: Vec<&core_domain::fact::Fact> = facts.iter().collect();
     let evidence = evidence_engine
-        .aggregate_facts(case_id, "PowerShell Recon Activity", "Detected encoded execution and user recon", &fact_refs)
+        .aggregate_facts(
+            case_id,
+            "PowerShell Recon Activity",
+            "Detected encoded execution and user recon",
+            &fact_refs,
+        )
         .unwrap();
     assert_eq!(evidence.members.len(), 2);
 
@@ -70,7 +83,10 @@ async fn test_end_to_end_golden_dataset_pipeline() {
 
     // Verify Explainability Invariant: every edge has supporting fact IDs
     for edge in &attack_graph.edges {
-        assert!(!edge.supported_by.is_empty(), "Attack edge must have provenance facts");
+        assert!(
+            !edge.supported_by.is_empty(),
+            "Attack edge must have provenance facts"
+        );
     }
 
     // 7. Taxonomy Projection -> Candidates
@@ -84,7 +100,8 @@ async fn test_end_to_end_golden_dataset_pipeline() {
         imported_at: chrono::Utc::now(),
     };
 
-    let candidates = taxonomy_projector.project_candidates(&facts, &[evidence.clone()], &mitre_v14);
+    let candidates =
+        taxonomy_projector.project_candidates(&facts, std::slice::from_ref(&evidence), &mitre_v14);
     assert!(candidates.iter().any(|c| c.technique_id == "T1059.001"));
     assert!(candidates.iter().any(|c| c.technique_id == "T1033"));
 
@@ -93,7 +110,7 @@ async fn test_end_to_end_golden_dataset_pipeline() {
     let diagram = diagram_engine.project_attack_graph(&attack_graph);
     assert_eq!(diagram.nodes.len(), attack_graph.nodes.len());
     assert!(diagram.nodes.iter().any(|n| n.shape == NodeShape::Hexagon)); // Process shape
-    assert!(diagram.nodes.iter().any(|n| n.shape == NodeShape::Circle));  // Host shape
+    assert!(diagram.nodes.iter().any(|n| n.shape == NodeShape::Circle)); // Host shape
 
     // 9. Scenario Verifier (Ground Truth Isolation) & Scoring Engine
     let ground_truth = GroundTruth {

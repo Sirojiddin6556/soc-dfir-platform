@@ -1,0 +1,88 @@
+/* Dark Cyber Design System - Role 20a (NFR-UX-002 / WCAG AA) */
+:root {
+  --bg-canvas: #0d1117;
+  --bg-surface: #161b22;
+  --bg-surface-elevated: #21262d;
+  --border-muted: #30363d;
+  --border-active: #58a6ff;
+
+  --text-primary: #f0f6fc;
+  --text-secondary: #8b949e;
+  --text-muted: #6e7681;
+
+  --accent-critical: #f85149;
+  --accent-warning: #d29922;
+  --accent-success: #2ea043;
+  --accent-info: #58a6ff;
+  --accent-purple: #bc8cff;
+  --accent-cyan: #39c5bb;
+
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: "JetBrains Mono", "Cascadia Code", Consolas, monospace;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background-color: var(--bg-canvas);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.4;
+  overflow: hidden;
+  height: 100vh;
+}
+
+/* Shape Badges for WCAG AA Accessibility (NFR-UX-002) */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  border: 1px solid transparent;
+}
+
+.badge-host {
+  color: var(--accent-info);
+  border-color: rgba(88, 166, 255, 0.4);
+  background: rgba(88, 166, 255, 0.1);
+}
+
+.badge-proc {
+  color: var(--accent-success);
+  border-color: rgba(46, 160, 67, 0.4);
+  background: rgba(46, 160, 67, 0.1);
+}
+
+.badge-net {
+  color: var(--accent-purple);
+  border-color: rgba(188, 140, 255, 0.4);
+  background: rgba(188, 140, 255, 0.1);
+}
+
+.badge-user {
+  color: var(--accent-cyan);
+  border-color: rgba(57, 197, 187, 0.4);
+  background: rgba(57, 197, 187, 0.1);
+}
+
+.badge-attack {
+  color: var(--accent-critical);
+  border-color: rgba(248, 81, 73, 0.4);
+  background: rgba(248, 81, 73, 0.1);
+}
+
+.badge-file {
+  color: var(--accent-warning);
+  border-color: rgba(210, 153, 34, 0.4);
+  background: rgba(210, 153, 34, 0.1);
+}

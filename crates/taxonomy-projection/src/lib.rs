@@ -58,3 +58,47 @@ impl Default for TaxonomyProjector {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core_domain::epistemic::{AssertionType, Severity};
+    use core_domain::fact::EntityType;
+    use core_domain::id::EntityId;
+
+    #[test]
+    fn test_taxonomy_candidate_projection() {
+        let projector = TaxonomyProjector::new();
+        let taxonomy = TaxonomyVersion {
+            id: "mitre-v14.1".to_string(),
+            namespace: TaxonomyNamespace::MitreAttackEnterprise,
+            version: "v14.1".to_string(),
+            release_date: "2023-10-31".to_string(),
+            source_hash: "sha256:abcd".to_string(),
+            imported_at: chrono::Utc::now(),
+        };
+
+        let fact = Fact {
+            id: EntityId::new_v7(),
+            case_id: EntityId::new_v7(),
+            observation_id: None,
+            assertion_type: AssertionType::Fact,
+            verification_state: VerificationState::Confirmed,
+            entity_type: EntityType::Process,
+            entity_key: "powershell.exe:1234".to_string(),
+            fact_type: "ProcessExecution".to_string(),
+            confidence: Confidence::new(1.0),
+            severity: Severity::High,
+            risk_score: 80.0,
+            evidence_strength: 1.0,
+            pain_level: None,
+            data: serde_json::json!({"command_line": "powershell.exe -NoP -enc AAAA"}),
+            created_at: chrono::Utc::now(),
+        };
+
+        let candidates = projector.project_candidates(&[fact], &[], &taxonomy);
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].technique_id, "T1059.001");
+        assert_eq!(candidates[0].tactic, Some("Execution".to_string()));
+    }
+}
