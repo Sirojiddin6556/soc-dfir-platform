@@ -1,6 +1,6 @@
 # 00. REQUIREMENTS CONTRACT: Blue Team Cyber Range & SOC/DFIR Platform
 
-**Status**: `DRAFT (Awaiting Human Gate 1 Approval)`  
+**Status**: `VERIFIED (Approved at Human Gate 1 on 2026-09-17)`  
 **Baseline Date**: 2026-09-17  
 **Traceability Baseline**: `D:\BlueTeam_CyberRange_TZ_v1.0.docx` (ТЗ v1.0) & `docs/it-company/01..03`
 
