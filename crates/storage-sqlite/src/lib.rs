@@ -72,6 +72,8 @@ impl SqliteStorage {
         conn.execute_batch(schema::MIGRATION_001_SQL)?;
         conn.execute_batch(schema::MIGRATION_002_SQL)?;
         conn.execute_batch(schema::MIGRATION_003_SQL)?;
+        conn.execute_batch(schema::MIGRATION_004_SQL)?;
+        conn.execute_batch(schema::MIGRATION_005_SQL)?;
         Ok(())
     }
 
@@ -382,6 +384,84 @@ impl SqliteStorage {
     ) -> Result<Vec<AuditEvent>, SqliteStorageError> {
         let conn = self.conn.lock().unwrap();
         audit::list_audit_events(&conn, case_id)
+    }
+
+    pub fn upsert_cve_entry(
+        &self,
+        cve_id: &str,
+        cpe_vendor: &str,
+        cpe_product: &str,
+        cvss_v3: f64,
+        epss_score: f64,
+        cisa_kev: bool,
+        severity: &str,
+        cwe_ids_json: &str,
+        description: &str,
+        source: &str,
+        published_at: Option<&str>,
+        updated_at: &str,
+    ) -> Result<(), SqliteStorageError> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO cve_entries (cve_id, cpe_vendor, cpe_product, cvss_v3, epss_score, \
+             cisa_kev, severity, cwe_ids, description, source, published_at, updated_at) \
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12) \
+             ON CONFLICT(cve_id) DO UPDATE SET \
+             cpe_vendor=excluded.cpe_vendor, cpe_product=excluded.cpe_product, \
+             cvss_v3=excluded.cvss_v3, epss_score=excluded.epss_score, \
+             cisa_kev=excluded.cisa_kev, severity=excluded.severity, \
+             cwe_ids=excluded.cwe_ids, description=excluded.description, \
+             source=excluded.source, published_at=excluded.published_at, \
+             updated_at=excluded.updated_at",
+            params![
+                cve_id,
+                cpe_vendor,
+                cpe_product,
+                cvss_v3,
+                epss_score,
+                cisa_kev as i64,
+                severity,
+                cwe_ids_json,
+                description,
+                source,
+                published_at,
+                updated_at
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn query_cves_for_product(
+        &self,
+        vendor: &str,
+        product: &str,
+    ) -> Result<Vec<serde_json::Value>, SqliteStorageError> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT cve_id, cvss_v3, epss_score, cisa_kev, severity, description \
+             FROM cve_entries WHERE cpe_vendor = ?1 AND cpe_product LIKE ?2",
+        )?;
+        let rows = stmt.query_map(params![vendor, format!("%{}%", product)], |row| {
+            Ok(serde_json::json!({
+                "cve_id":      row.get::<_, String>(0)?,
+                "cvss_v3":     row.get::<_, f64>(1)?,
+                "epss_score":  row.get::<_, f64>(2)?,
+                "cisa_kev":    row.get::<_, i64>(3)? != 0,
+                "severity":    row.get::<_, String>(4)?,
+                "description": row.get::<_, String>(5)?,
+            }))
+        })?;
+        let mut results = Vec::new();
+        for r in rows {
+            results.push(r.map_err(SqliteStorageError::Rusqlite)?);
+        }
+        Ok(results)
+    }
+
+    pub fn cve_entry_count(&self) -> Result<i64, SqliteStorageError> {
+        let conn = self.conn.lock().unwrap();
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM cve_entries", [], |r| r.get(0))?;
+        Ok(count)
     }
 }
 

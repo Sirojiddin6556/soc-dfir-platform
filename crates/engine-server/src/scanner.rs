@@ -167,21 +167,49 @@ pub async fn execute_network_scan(subnet: &str, mode: &str) -> serde_json::Value
     let start_instant = std::time::Instant::now();
 
     if is_local {
-        let common_ports = match mode {
+        let common_ports: Vec<u16> = match mode {
             "deep" => vec![
-                21, 22, 53, 80, 88, 135, 139, 443, 445, 1433, 3306, 3389, 5985, 8080, 8443,
+                21, 22, 23, 25, 53, 80, 88, 110, 111, 135, 139, 143, 443, 445, 465, 587, 993, 995,
+                1433, 1521, 3306, 3389, 5432, 5985, 5986, 6379, 8080, 8443, 8888, 9090, 9200,
+                27017,
             ],
-            "standard" => vec![22, 53, 80, 135, 443, 445, 3389, 8080],
-            _ => vec![80, 443, 135, 445, 8080],
+            "standard" => vec![
+                22, 25, 53, 80, 110, 135, 143, 443, 445, 1433, 3306, 3389, 5432, 5985, 8080, 8443,
+            ],
+            _ => vec![22, 80, 135, 443, 445, 3389, 8080], // quick
         };
 
-        let mut open_ports = Vec::new();
+        use std::sync::Arc;
+        use tokio::sync::Semaphore;
+
+        let sem = Arc::new(Semaphore::new(64)); // max 64 concurrent probes
+        let mut handles = Vec::new();
+
         for &port in &common_ports {
-            let addr = format!("127.0.0.1:{}", port);
-            if let Ok(Ok(_)) = timeout(Duration::from_millis(40), TcpStream::connect(&addr)).await {
-                open_ports.push(port);
+            let sem = Arc::clone(&sem);
+            let ip_str = "127.0.0.1".to_string(); // use "127.0.0.1" for local branch
+            handles.push(tokio::spawn(async move {
+                let _permit = sem.acquire_owned().await.ok()?;
+                let addr = format!("{}:{}", ip_str, port);
+                if timeout(Duration::from_millis(80), TcpStream::connect(&addr))
+                    .await
+                    .map(|r| r.is_ok())
+                    .unwrap_or(false)
+                {
+                    Some(port)
+                } else {
+                    None
+                }
+            }));
+        }
+
+        let mut open_ports: Vec<u16> = Vec::new();
+        for h in handles {
+            if let Ok(Some(p)) = h.await {
+                open_ports.push(p);
             }
         }
+        open_ports.sort_unstable();
 
         let mut services_json = Vec::new();
         for &port in &open_ports {
@@ -234,14 +262,49 @@ pub async fn execute_network_scan(subnet: &str, mode: &str) -> serde_json::Value
         } else {
             subnet
         };
-        let probe_ports = vec![22, 53, 80, 443, 8080, 8443, 3389, 445, 1433, 3306];
-        let mut open_ports = Vec::new();
-        for &port in &probe_ports {
-            let addr = format!("{}:{}", target, port);
-            if let Ok(Ok(_)) = timeout(Duration::from_millis(60), TcpStream::connect(&addr)).await {
-                open_ports.push(port);
+        let common_ports: Vec<u16> = match mode {
+            "deep" => vec![
+                21, 22, 23, 25, 53, 80, 88, 110, 111, 135, 139, 143, 443, 445, 465, 587, 993, 995,
+                1433, 1521, 3306, 3389, 5432, 5985, 5986, 6379, 8080, 8443, 8888, 9090, 9200,
+                27017,
+            ],
+            "standard" => vec![
+                22, 25, 53, 80, 110, 135, 143, 443, 445, 1433, 3306, 3389, 5432, 5985, 8080, 8443,
+            ],
+            _ => vec![22, 80, 135, 443, 445, 3389, 8080], // quick
+        };
+
+        use std::sync::Arc;
+        use tokio::sync::Semaphore;
+
+        let sem = Arc::new(Semaphore::new(64)); // max 64 concurrent probes
+        let mut handles = Vec::new();
+
+        for &port in &common_ports {
+            let sem = Arc::clone(&sem);
+            let ip_str = target.to_string(); // use target for remote branch
+            handles.push(tokio::spawn(async move {
+                let _permit = sem.acquire_owned().await.ok()?;
+                let addr = format!("{}:{}", ip_str, port);
+                if timeout(Duration::from_millis(80), TcpStream::connect(&addr))
+                    .await
+                    .map(|r| r.is_ok())
+                    .unwrap_or(false)
+                {
+                    Some(port)
+                } else {
+                    None
+                }
+            }));
+        }
+
+        let mut open_ports: Vec<u16> = Vec::new();
+        for h in handles {
+            if let Ok(Some(p)) = h.await {
+                open_ports.push(p);
             }
         }
+        open_ports.sort_unstable();
 
         let mut discovered = Vec::new();
         if !open_ports.is_empty() {

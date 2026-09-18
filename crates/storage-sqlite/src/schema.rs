@@ -460,3 +460,35 @@ CREATE TABLE IF NOT EXISTS scope_allowlist (
 );
 CREATE INDEX IF NOT EXISTS idx_scope_case ON scope_allowlist(case_id);
 "#;
+
+pub const MIGRATION_005_SQL: &str = r#"
+-- 35. Local CVE Knowledge Base (VULN2-002)
+-- Indexed local store for NVD/OSV/KEV/EPSS records.
+-- Populated by the offline bundle importer (VULN2-003).
+CREATE TABLE IF NOT EXISTS cve_entries (
+    cve_id         TEXT PRIMARY KEY,
+    cpe_vendor     TEXT NOT NULL DEFAULT '',
+    cpe_product    TEXT NOT NULL DEFAULT '',
+    cvss_v3        REAL NOT NULL DEFAULT 0.0,
+    epss_score     REAL NOT NULL DEFAULT 0.0,
+    cisa_kev       INTEGER NOT NULL DEFAULT 0,  -- boolean
+    severity       TEXT NOT NULL DEFAULT 'Unknown',
+    cwe_ids        TEXT NOT NULL DEFAULT '[]',  -- JSON array
+    description    TEXT NOT NULL DEFAULT '',
+    source         TEXT NOT NULL DEFAULT '',    -- 'nvd' | 'osv' | 'kev' | 'epss'
+    published_at   TEXT,
+    updated_at     TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_cve_vendor_product ON cve_entries(cpe_vendor, cpe_product);
+CREATE INDEX IF NOT EXISTS idx_cve_kev ON cve_entries(cisa_kev) WHERE cisa_kev = 1;
+CREATE INDEX IF NOT EXISTS idx_cve_severity ON cve_entries(severity);
+
+-- 36. CVE Bundle Import Log
+CREATE TABLE IF NOT EXISTS cve_import_log (
+    id          TEXT PRIMARY KEY,
+    source      TEXT NOT NULL,   -- 'nvd' | 'osv' | 'kev' | 'epss'
+    bundle_path TEXT NOT NULL,
+    records_imported INTEGER NOT NULL DEFAULT 0,
+    imported_at TEXT NOT NULL
+);
+"#;

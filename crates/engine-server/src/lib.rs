@@ -20,6 +20,7 @@ pub mod membership;
 pub mod scanner;
 pub mod scenario_eval;
 pub mod scope;
+pub mod target_parser;
 
 /// Real hostname of the machine this engine is running on, resolved once and
 /// cached. Used as the default `host_id` wherever a request omits one --
