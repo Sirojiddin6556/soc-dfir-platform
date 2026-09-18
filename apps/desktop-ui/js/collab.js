@@ -75,6 +75,7 @@ export async function loadCollabData() {
   }
   await refreshPresences();
   await refreshTeams();
+  await refreshInvites();
 }
 
 export async function initCollaboration(app, ipc) {
@@ -163,19 +164,11 @@ function renderMessages() {
     // Investigation Entity Reference Pills
     let pillsHtml = '';
     if (m.references && m.references.length > 0) {
-      pillsHtml += `<div style="display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px;">`;
-      for (const ref of m.references) {
-        if (ref.ref_type === 'Finding') {
-          pillsHtml += `<span class="badge badge-attack" style="cursor: pointer; display: inline-flex; align-items: center; gap: 4px;" data-ref-type="finding" data-ref-id="${ref.ref_id}">🔍 ${ref.title || 'Улика #' + ref.ref_id}</span>`;
-        } else if (ref.ref_type === 'Process') {
-          pillsHtml += `<span class="badge badge-proc" style="cursor: pointer;" data-ref-type="process" data-ref-id="${ref.ref_id}">⚙️ ${ref.title || 'Процесс #' + ref.ref_id}</span>`;
-        } else if (ref.ref_type === 'Mitre') {
-          pillsHtml += `<span class="badge badge-host" style="cursor: pointer;" data-ref-type="mitre" data-ref-id="${ref.ref_id}">🛡️ ${ref.title || 'MITRE ' + ref.ref_id}</span>`;
-        } else if (ref.ref_type === 'Cve') {
-          pillsHtml += `<span class="badge badge-critical" style="cursor: pointer;" data-ref-type="cve" data-ref-id="${ref.ref_id}">⚠️ ${ref.title || 'CVE-' + ref.ref_id}</span>`;
-        }
-      }
-      pillsHtml += `</div>`;
+      const typeIcons = { Finding: '🔍', Process: '⚙️', Mitre: '🛡️', Cve: '⚠️' };
+      const typeBadges = { Finding: 'badge-attack', Process: 'badge-proc', Mitre: 'badge-host', Cve: 'badge-critical' };
+      pillsHtml = `<div style="display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px;">` +
+        m.references.map(ref => `<span class="badge ${typeBadges[ref.ref_type] || 'badge-net'}" style="cursor: pointer;" data-ref-type="${ref.ref_type.toLowerCase()}" data-ref-id="${ref.ref_id}">${typeIcons[ref.ref_type] || '📌'} ${ref.title || ref.ref_id}</span>`).join('') +
+        `</div>`;
     }
 
     html += `
@@ -273,6 +266,32 @@ function renderTeams() {
     `;
   }
   list.innerHTML = html;
+}
+
+async function refreshInvites() {
+  const c = document.getElementById('invitationsList');
+  if (!c) return;
+  const list = await rpcCall('invite.list', {});
+  if (!list || list.length === 0) {
+    c.innerHTML = `<div style="color: var(--text-muted); font-size: 10px; padding: 2px 0;">Нет активных приглашений</div>`;
+    return;
+  }
+  c.innerHTML = list.map(inv => `
+    <div style="display: flex; justify-content: space-between; align-items: center; background: var(--bg-canvas); border: 1px solid var(--border-muted); border-radius: 4px; padding: 3px 6px; font-size: 10px;">
+      <div>
+        <strong style="color: var(--accent-primary); font-family: monospace;">${inv.code}</strong>
+        <span class="badge badge-host" style="font-size: 8px;">${inv.role}</span>
+        <div style="color: var(--text-muted); font-size: 9px;">Исп: ${inv.used_count}/${inv.max_uses} • ${inv.status}</div>
+      </div>
+      ${inv.status === 'Pending' ? `<button class="btn" style="padding: 1px 4px; font-size: 9px; border-color: var(--accent-critical); color: var(--accent-critical);" data-revoke-id="${inv.id}">Отозвать</button>` : ''}
+    </div>
+  `).join('');
+  c.querySelectorAll('[data-revoke-id]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      await rpcCall('invite.revoke', { invite_id: btn.getAttribute('data-revoke-id') });
+      await refreshInvites();
+    });
+  });
 }
 
 async function sendMessage() {
@@ -458,12 +477,20 @@ function bindUiEvents() {
       } else {
         showLoginModal('Неверный логин или пароль');
       }
-    };
     btnSubmitLogin.addEventListener('click', doLogin);
-    if (loginPassword) {
-      loginPassword.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') doLogin();
-      });
-    }
+    loginPassword?.addEventListener('keydown', (e) => { if (e.key === 'Enter') doLogin(); });
   }
+
+  document.getElementById('btnCreateInvite')?.addEventListener('click', async () => {
+    const role = prompt('Роль (Analyst, Responder, Viewer, Lead):', 'Analyst') || 'Analyst';
+    const res = await rpcCall('invite.create', { role, expires_hours: 24, max_uses: 1 });
+    if (res?.code) { alert(`Код создан: ${res.code}\nРоль: ${role}`); await refreshInvites(); }
+  });
+  document.getElementById('btnJoinCode')?.addEventListener('click', async () => {
+    const code = prompt('Введите код приглашения (например, 7K4P-X2MN):');
+    if (!code) return;
+    const res = await rpcCall('invite.accept', { code: code.trim() });
+    if (res?.success) { alert(`Успешно! Роль: ${res.workspace_member?.role || 'Analyst'}`); await loadCollabData(); }
+    else { alert('Не удалось принять приглашение.'); }
+  });
 }

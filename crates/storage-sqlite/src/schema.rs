@@ -379,3 +379,71 @@ CREATE TABLE IF NOT EXISTS notifications (
 );
 CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id, created_at);
 "#;
+
+pub const MIGRATION_003_SQL: &str = r#"
+-- 29. Workspace Members Table
+CREATE TABLE IF NOT EXISTS workspace_members (
+    workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    role TEXT NOT NULL DEFAULT 'Analyst',
+    status TEXT NOT NULL DEFAULT 'Active',
+    joined_at TEXT NOT NULL,
+    PRIMARY KEY (workspace_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_workspace_members_user ON workspace_members(user_id);
+
+-- 30. Invitations Table
+CREATE TABLE IF NOT EXISTS invitations (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    team_id TEXT REFERENCES teams(id) ON DELETE CASCADE,
+    code TEXT NOT NULL UNIQUE,
+    token_hash TEXT NOT NULL,
+    created_by TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    email TEXT,
+    role TEXT NOT NULL DEFAULT 'Analyst',
+    expires_at TEXT NOT NULL,
+    max_uses INTEGER NOT NULL DEFAULT 1,
+    used_count INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'Pending',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_invitations_code ON invitations(code);
+CREATE INDEX IF NOT EXISTS idx_invitations_status ON invitations(status);
+
+-- 31. Case Members Table
+CREATE TABLE IF NOT EXISTS case_members (
+    case_id TEXT NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    role TEXT NOT NULL DEFAULT 'Analyst',
+    assigned_by TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    assigned_at TEXT NOT NULL,
+    PRIMARY KEY (case_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_case_members_user ON case_members(user_id);
+
+-- 32. Join Requests Table
+CREATE TABLE IF NOT EXISTS join_requests (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    team_id TEXT REFERENCES teams(id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    role TEXT NOT NULL DEFAULT 'Analyst',
+    status TEXT NOT NULL DEFAULT 'Pending',
+    reviewed_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+    created_at TEXT NOT NULL,
+    reviewed_at TEXT
+);
+
+-- 33. Membership Audit Table
+CREATE TABLE IF NOT EXISTS membership_audit (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    actor_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    action TEXT NOT NULL,
+    details TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_membership_audit_ws ON membership_audit(workspace_id, created_at);
+"#;

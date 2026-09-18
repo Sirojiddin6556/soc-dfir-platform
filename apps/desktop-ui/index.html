@@ -404,8 +404,9 @@
         <div id="collabPresenceView" style="display: none; flex-direction: column; flex: 1; overflow-y: auto; padding: 12px; gap: 10px;">
           <div style="font-weight: 700; font-size: 11px; color: var(--text-secondary); margin-bottom: 4px;">УЧАСТНИКИ ОНЛАЙН В КЕЙСЕ</div>
           <div id="presenceMembersList" style="display: flex; flex-direction: column; gap: 8px;"></div>
-          <div style="font-weight: 700; font-size: 11px; color: var(--text-secondary); margin-top: 10px; margin-bottom: 4px;">КОМАНДЫ WORKSPACE</div>
+          <div style="font-weight: 700; font-size: 11px; color: var(--text-secondary); margin-top: 10px; margin-bottom: 4px; display: flex; justify-content: space-between; align-items: center;"><span>КОМАНДЫ И ДОСТУП</span><div style="display: flex; gap: 4px;"><button class="btn" id="btnJoinCode" style="padding: 1px 5px; font-size: 10px;">Вступить</button><button class="btn btn-primary" id="btnCreateInvite" style="padding: 1px 5px; font-size: 10px;">+ Пригласить</button></div></div>
           <div id="workspaceTeamsList" style="display: flex; flex-direction: column; gap: 6px;"></div>
+          <div id="invitationsList" style="display: flex; flex-direction: column; gap: 4px;"></div>
         </div>
       </aside>
     </div>

@@ -31,6 +31,15 @@ impl<'a> CollabHandler<'a> {
             "chat.send" => self.handle_chat_send(params),
             "presence.list" => self.handle_presence_list(),
             "presence.update" => self.handle_presence_update(params),
+            m if m.starts_with("invite.")
+                || m.starts_with("workspace.")
+                || m.starts_with("member.")
+                || m.starts_with("case.")
+                || m == "ownership.transfer"
+                || m == "membership.audit" =>
+            {
+                crate::membership::MembershipHandler::new(self.storage).handle(m, params)
+            }
             _ => Err(ProblemDetails::bad_request(
                 &format!("Неизвестный метод совместной работы: {}", method),
                 vec!["method".to_string()],

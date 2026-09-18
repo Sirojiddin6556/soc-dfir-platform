@@ -14,6 +14,7 @@ use std::path::PathBuf;
 
 pub mod collaboration;
 pub mod host_inspector;
+pub mod membership;
 pub mod scanner;
 pub mod scenario_eval;
 
@@ -205,62 +206,34 @@ impl EngineApp {
                 }
             }
             "facts.list" => {
-                let case_id_opt = req
+                let cid = req
                     .params
                     .get("case_id")
-                    .and_then(|v| v.as_str().map(|s| s.to_string()));
-                match case_id_opt {
-                    Some(cid_str) => {
-                        if let Ok(cid) = EntityId::parse(&cid_str) {
-                            match self.storage.get_facts_for_case(cid) {
-                                Ok(facts) => {
-                                    let resp = IpcResponse {
-                                        api_version: 1,
-                                        request_id: req.request_id,
-                                        result: Some(serde_json::to_value(facts).unwrap()),
-                                        error: None,
-                                    };
-                                    serde_json::to_string(&resp).unwrap()
-                                }
-                                Err(e) => {
-                                    let resp: IpcResponse<()> = IpcResponse {
-                                        api_version: 1,
-                                        request_id: req.request_id,
-                                        result: None,
-                                        error: Some(ProblemDetails::bad_request(
-                                            &e.to_string(),
-                                            vec![],
-                                        )),
-                                    };
-                                    serde_json::to_string(&resp).unwrap()
-                                }
-                            }
-                        } else {
-                            let resp: IpcResponse<()> = IpcResponse {
-                                api_version: 1,
-                                request_id: req.request_id,
-                                result: None,
-                                error: Some(ProblemDetails::bad_request(
-                                    "Invalid case_id format",
-                                    vec!["case_id".to_string()],
-                                )),
-                            };
-                            serde_json::to_string(&resp).unwrap()
-                        }
-                    }
-                    None => {
-                        let resp: IpcResponse<()> = IpcResponse {
-                            api_version: 1,
-                            request_id: req.request_id,
-                            result: None,
-                            error: Some(ProblemDetails::bad_request(
-                                "Missing case_id parameter",
-                                vec!["case_id".to_string()],
-                            )),
-                        };
-                        serde_json::to_string(&resp).unwrap()
-                    }
-                }
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| EntityId::parse(s).ok());
+                let (res, err) = match cid {
+                    Some(id) => match self.storage.get_facts_for_case(id) {
+                        Ok(f) => (Some(serde_json::to_value(f).unwrap()), None),
+                        Err(e) => (
+                            None,
+                            Some(ProblemDetails::bad_request(&e.to_string(), vec![])),
+                        ),
+                    },
+                    None => (
+                        None,
+                        Some(ProblemDetails::bad_request(
+                            "Missing or invalid case_id",
+                            vec!["case_id".to_string()],
+                        )),
+                    ),
+                };
+                serde_json::to_string(&IpcResponse {
+                    api_version: 1,
+                    request_id: req.request_id,
+                    result: res,
+                    error: err,
+                })
+                .unwrap()
             }
             "scan.network" => {
                 let subnet = req
@@ -460,6 +433,12 @@ impl EngineApp {
                 || m.starts_with("team.")
                 || m.starts_with("chat.")
                 || m.starts_with("presence.")
+                || m.starts_with("invite.")
+                || m.starts_with("workspace.")
+                || m.starts_with("member.")
+                || m.starts_with("case.")
+                || m == "ownership.transfer"
+                || m == "membership.audit"
                 || m == "entity.get" =>
             {
                 let handler = collaboration::CollabHandler::new(&self.storage);

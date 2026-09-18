@@ -117,6 +117,11 @@ impl SqliteStorage {
                 params![t_soc.to_string(), u_siroj.to_string(), now],
             )?;
 
+            conn.execute(
+                "INSERT OR IGNORE INTO workspace_members (workspace_id, user_id, role, status, joined_at) VALUES (?1, ?2, 'Owner', 'Active', ?3)",
+                params![ws_id.to_string(), u_siroj.to_string(), now],
+            )?;
+
             // Empty Real Channels (ZERO messages in Live mode)
             let ch_gen = EntityId::new_v7();
             let ch_case = EntityId::new_v7();

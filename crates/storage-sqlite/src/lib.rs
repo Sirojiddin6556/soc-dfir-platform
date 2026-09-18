@@ -2,6 +2,7 @@
 
 pub mod audit;
 pub mod collaboration;
+pub mod membership;
 pub mod schema;
 
 use core_domain::artifact::{Artifact, CustodyEvent};
@@ -67,6 +68,7 @@ impl SqliteStorage {
         let conn = self.conn.lock().unwrap();
         conn.execute_batch(schema::MIGRATION_001_SQL)?;
         conn.execute_batch(schema::MIGRATION_002_SQL)?;
+        conn.execute_batch(schema::MIGRATION_003_SQL)?;
         Ok(())
     }
 

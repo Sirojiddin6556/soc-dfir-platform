@@ -242,3 +242,145 @@ impl OperationMode {
         matches!(self, Self::Demo | Self::Ctf)
     }
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MembershipStatus {
+    Invited,
+    Active,
+    Suspended,
+    Left,
+    Removed,
+}
+
+impl MembershipStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Invited => "Invited",
+            Self::Active => "Active",
+            Self::Suspended => "Suspended",
+            Self::Left => "Left",
+            Self::Removed => "Removed",
+        }
+    }
+
+    #[allow(clippy::should_implement_trait)]
+    pub fn from_str(s: &str) -> Self {
+        match s.to_lowercase().as_str() {
+            "invited" => Self::Invited,
+            "active" => Self::Active,
+            "suspended" => Self::Suspended,
+            "left" => Self::Left,
+            "removed" => Self::Removed,
+            _ => Self::Active,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum InvitationStatus {
+    Pending,
+    Accepted,
+    Declined,
+    Expired,
+    Revoked,
+}
+
+impl InvitationStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Pending => "Pending",
+            Self::Accepted => "Accepted",
+            Self::Declined => "Declined",
+            Self::Expired => "Expired",
+            Self::Revoked => "Revoked",
+        }
+    }
+
+    #[allow(clippy::should_implement_trait)]
+    pub fn from_str(s: &str) -> Self {
+        match s.to_lowercase().as_str() {
+            "pending" => Self::Pending,
+            "accepted" => Self::Accepted,
+            "declined" => Self::Declined,
+            "expired" => Self::Expired,
+            "revoked" => Self::Revoked,
+            _ => Self::Pending,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkspaceMember {
+    pub workspace_id: EntityId,
+    pub user_id: EntityId,
+    pub role: Role,
+    pub status: MembershipStatus,
+    pub joined_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Invitation {
+    pub id: EntityId,
+    pub workspace_id: EntityId,
+    pub team_id: Option<EntityId>,
+    pub code: String,
+    pub token_hash: String,
+    pub created_by: EntityId,
+    pub email: Option<String>,
+    pub role: Role,
+    pub expires_at: DateTime<Utc>,
+    pub max_uses: usize,
+    pub used_count: usize,
+    pub status: InvitationStatus,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CaseMember {
+    pub case_id: EntityId,
+    pub user_id: EntityId,
+    pub role: Role,
+    pub assigned_by: EntityId,
+    pub assigned_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum JoinRequestStatus {
+    Pending,
+    Approved,
+    Rejected,
+}
+
+impl JoinRequestStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Pending => "Pending",
+            Self::Approved => "Approved",
+            Self::Rejected => "Rejected",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JoinRequest {
+    pub id: EntityId,
+    pub workspace_id: EntityId,
+    pub team_id: Option<EntityId>,
+    pub user_id: EntityId,
+    pub role: Role,
+    pub status: JoinRequestStatus,
+    pub reviewed_by: Option<EntityId>,
+    pub created_at: DateTime<Utc>,
+    pub reviewed_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MembershipAuditEntry {
+    pub id: EntityId,
+    pub workspace_id: EntityId,
+    pub user_id: EntityId,
+    pub actor_id: EntityId,
+    pub action: String,
+    pub details: String,
+    pub created_at: DateTime<Utc>,
+}
