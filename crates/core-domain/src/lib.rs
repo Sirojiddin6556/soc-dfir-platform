@@ -4,6 +4,7 @@ pub mod artifact;
 pub mod audit;
 pub mod broker;
 pub mod case;
+pub mod collaboration;
 pub mod epistemic;
 pub mod error;
 pub mod evidence;
@@ -20,6 +21,10 @@ pub use artifact::{Artifact, CustodyEvent, CustodyEventType};
 pub use audit::AuditEvent;
 pub use broker::{BrokerCapability, PrivilegedOperation};
 pub use case::Case;
+pub use collaboration::{
+    Channel, ChannelType, ChatMessage, CollabNotification, EntityRef, Permission, ReferenceType,
+    Role, Team, TeamMember, User, UserPresence, UserSession, Workspace,
+};
 pub use epistemic::{AssertionType, Confidence, PainLevel, Severity, VerificationState};
 pub use error::DomainError;
 pub use evidence::{Evidence, EvidenceMember};

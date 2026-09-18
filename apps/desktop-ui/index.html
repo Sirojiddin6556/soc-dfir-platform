@@ -19,9 +19,11 @@
         <span class="badge badge-net" id="caseTimer" style="font-family: var(--font-mono)">00:34:17</span>
       </div>
       <div class="top-actions">
-        <input type="text" id="omniSearchInput" placeholder="Быстрый поиск (Ctrl+K)..." style="background: var(--bg-canvas); border: 1px solid var(--border-muted); color: var(--text-primary); padding: 4px 8px; border-radius: 4px; font-size: 11px; width: 210px;">
-        <button class="btn" id="btnIngestModal">+ Загрузить артефакт</button>
-        <button class="btn btn-primary" id="btnQuickScanGlobal">Экспресс-сканирование</button>
+        <input type="text" id="omniSearchInput" placeholder="Быстрый поиск (Ctrl+K)..." style="background: var(--bg-canvas); border: 1px solid var(--border-muted); color: var(--text-primary); padding: 4px 8px; border-radius: 4px; font-size: 11px; width: 170px;">
+        <button class="btn" id="btnIngestModal">+ Артефакт</button>
+        <button class="btn btn-primary" id="btnQuickScanGlobal">Скан</button>
+        <button class="btn" id="btnToggleTeamChat" style="display: flex; align-items: center; gap: 5px; border-color: var(--accent-primary);"><span style="color: var(--accent-success); font-size: 10px;">●</span> 💬 Чат <span class="badge badge-net" id="chatUnreadBadge" style="padding: 1px 4px;">3</span></button>
+        <button class="btn" id="btnUserProfile" style="display: flex; align-items: center; gap: 5px; background: rgba(56,139,253,0.15); border-color: var(--accent-primary);"><span style="border-radius: 50%; width: 16px; height: 16px; background: var(--accent-primary); color: #fff; display: inline-flex; align-items: center; justify-content: center; font-size: 9px; font-weight: bold;">С</span> Сироҷиддин</button>
       </div>
     </header>
 
@@ -393,6 +395,78 @@
           <div style="color: var(--text-muted); font-size: 11px;">Выберите сущность в топологии, графе или таймлайне для анализа форензик-атрибутов.</div>
         </div>
       </aside>
+
+      <!-- 4. Right Pane: Team Collaboration & Case Chat -->
+      <aside class="right-pane" id="collabPane" style="display: none; width: 380px; flex-direction: column; background: var(--bg-surface); border-left: 1px solid var(--border-default);">
+        <div class="inspector-header" style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border-muted); padding: 8px 12px;">
+          <div style="display: flex; gap: 4px;" id="collabTabs">
+            <button class="btn btn-primary" id="tabCaseChat" style="padding: 2px 8px; font-size: 11px;">Чат кейса</button>
+            <button class="btn" id="tabPresence" style="padding: 2px 8px; font-size: 11px;">Команда (<span id="onlineCountBadge">3</span>)</button>
+          </div>
+          <button class="btn" id="btnCloseCollab" style="padding: 2px 6px; font-size: 11px;">✕</button>
+        </div>
+        <!-- Chat View -->
+        <div id="collabChatView" style="display: flex; flex-direction: column; flex: 1; min-height: 0;">
+          <div id="collabMessagesList" style="flex: 1; overflow-y: auto; padding: 10px; display: flex; flex-direction: column; gap: 8px;"></div>
+          <!-- Quick Entity Inserts -->
+          <div style="padding: 4px 8px; background: var(--bg-surface-elevated); border-top: 1px solid var(--border-muted); display: flex; gap: 4px; overflow-x: auto; font-size: 10px;">
+            <button class="btn" id="btnInsertFinding" style="padding: 2px 5px; font-size: 10px;">+ Улика</button>
+            <button class="btn" id="btnInsertProcess" style="padding: 2px 5px; font-size: 10px;">+ Процесс</button>
+            <button class="btn" id="btnInsertMitre" style="padding: 2px 5px; font-size: 10px;">+ MITRE</button>
+          </div>
+          <!-- Chat Input -->
+          <div style="padding: 8px; border-top: 1px solid var(--border-default); display: flex; gap: 6px; background: var(--bg-surface);">
+            <input type="text" id="collabChatInput" placeholder="Сообщение... (/finding, /process, @имя)" style="flex: 1; padding: 6px 8px; background: var(--bg-canvas); border: 1px solid var(--border-muted); border-radius: 4px; color: var(--text-primary); font-size: 11px;">
+            <button class="btn btn-primary" id="btnCollabSend" style="padding: 6px 12px;">Отпр</button>
+          </div>
+        </div>
+        <!-- Presence View -->
+        <div id="collabPresenceView" style="display: none; flex-direction: column; flex: 1; overflow-y: auto; padding: 12px; gap: 10px;">
+          <div style="font-weight: 700; font-size: 11px; color: var(--text-secondary); margin-bottom: 4px;">УЧАСТНИКИ ОНЛАЙН В КЕЙСЕ</div>
+          <div id="presenceMembersList" style="display: flex; flex-direction: column; gap: 8px;"></div>
+          <div style="font-weight: 700; font-size: 11px; color: var(--text-secondary); margin-top: 10px; margin-bottom: 4px;">КОМАНДЫ WORKSPACE</div>
+          <div id="workspaceTeamsList" style="display: flex; flex-direction: column; gap: 6px;"></div>
+        </div>
+      </aside>
+    </div>
+
+    <!-- User Profile Modal -->
+    <div id="userProfileModal" class="modal-overlay" style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.6); backdrop-filter: blur(4px); z-index: 1000; align-items: center; justify-content: center;">
+      <div style="background: var(--bg-surface); border: 1px solid var(--border-default); border-radius: 8px; width: 440px; padding: 20px; box-shadow: 0 10px 30px rgba(0,0,0,0.5);">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px;">
+          <h3 style="font-size: 14px; font-weight: 700; margin: 0;">Мой профиль и аккаунт</h3>
+          <button class="btn" id="btnCloseProfileModal" style="padding: 2px 6px;">✕</button>
+        </div>
+        <div style="display: flex; gap: 14px; align-items: center; margin-bottom: 14px; padding-bottom: 14px; border-bottom: 1px solid var(--border-muted);">
+          <div style="width: 44px; height: 44px; border-radius: 50%; background: var(--accent-primary); color: #fff; display: flex; align-items: center; justify-content: center; font-size: 18px; font-weight: bold;">С</div>
+          <div>
+            <div style="font-weight: 700; font-size: 13px;" id="profileDisplayNameHeader">Сироҷиддин</div>
+            <div style="font-size: 11px; color: var(--text-muted);">@sirojiddin • <span class="badge badge-host" style="font-size: 9px;">Owner / SOC Lead</span></div>
+          </div>
+        </div>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; font-size: 11px;">
+          <div>
+            <label style="color: var(--text-secondary); display: block; margin-bottom: 3px;">Отображаемое имя:</label>
+            <input type="text" id="profileInputName" value="Сироҷиддин" style="width: 100%; padding: 4px 6px; background: var(--bg-canvas); border: 1px solid var(--border-muted); border-radius: 4px; color: var(--text-primary); font-size: 11px;">
+          </div>
+          <div>
+            <label style="color: var(--text-secondary); display: block; margin-bottom: 3px;">Email:</label>
+            <input type="email" id="profileInputEmail" value="sirojiddin@soc.local" style="width: 100%; padding: 4px 6px; background: var(--bg-canvas); border: 1px solid var(--border-muted); border-radius: 4px; color: var(--text-primary); font-size: 11px;">
+          </div>
+          <div>
+            <label style="color: var(--text-secondary); display: block; margin-bottom: 3px;">Отдел:</label>
+            <input type="text" id="profileInputDept" value="SOC" style="width: 100%; padding: 4px 6px; background: var(--bg-canvas); border: 1px solid var(--border-muted); border-radius: 4px; color: var(--text-primary); font-size: 11px;">
+          </div>
+          <div>
+            <label style="color: var(--text-secondary); display: block; margin-bottom: 3px;">Часовой пояс:</label>
+            <input type="text" id="profileInputTz" value="Asia/Tashkent" style="width: 100%; padding: 4px 6px; background: var(--bg-canvas); border: 1px solid var(--border-muted); border-radius: 4px; color: var(--text-primary); font-size: 11px;">
+          </div>
+        </div>
+        <div style="margin-top: 14px; display: flex; justify-content: flex-end; gap: 6px;">
+          <button class="btn" id="btnCancelProfile">Отмена</button>
+          <button class="btn btn-primary" id="btnSaveProfile">Сохранить</button>
+        </div>
+      </div>
     </div>
 
     <!-- Bottom Status Footer Contract -->

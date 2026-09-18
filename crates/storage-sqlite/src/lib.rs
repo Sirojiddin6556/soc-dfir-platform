@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 pub mod audit;
+pub mod collaboration;
 pub mod schema;
 
 use core_domain::artifact::{Artifact, CustodyEvent};
@@ -43,6 +44,7 @@ impl SqliteStorage {
             conn: Arc::new(Mutex::new(conn)),
         };
         storage.migrate()?;
+        storage.init_default_collaboration_data().ok();
         Ok(storage)
     }
 
@@ -53,12 +55,14 @@ impl SqliteStorage {
             conn: Arc::new(Mutex::new(conn)),
         };
         storage.migrate()?;
+        storage.init_default_collaboration_data().ok();
         Ok(storage)
     }
 
     pub fn migrate(&self) -> Result<(), SqliteStorageError> {
         let conn = self.conn.lock().unwrap();
         conn.execute_batch(schema::MIGRATION_001_SQL)?;
+        conn.execute_batch(schema::MIGRATION_002_SQL)?;
         Ok(())
     }
 

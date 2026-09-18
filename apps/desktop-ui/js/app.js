@@ -2,6 +2,7 @@ import { IpcClient } from './ipc.js';
 import { ScannerController, renderTimelineLanes, renderMitreGrid } from './scanner.js';
 import { renderAssetTab } from './asset_tabs.js';
 import { setupDrilldowns, updatePyramidAndFindings } from './drilldown.js';
+import { initCollaboration } from './collab.js';
 
 class CyberRangeCockpitApp {
   constructor() {
@@ -45,6 +46,7 @@ class CyberRangeCockpitApp {
     this.setupInteractiveElements();
     setupDrilldowns(this);
     this.scanner.init();
+    initCollaboration(this, this.ipc);
 
     // Auto-probe live workstation and evaluate correlation on startup
     try {

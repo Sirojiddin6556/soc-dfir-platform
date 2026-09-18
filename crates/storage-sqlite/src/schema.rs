@@ -280,3 +280,102 @@ CREATE TABLE IF NOT EXISTS audit_events (
 );
 CREATE INDEX IF NOT EXISTS idx_audit_events_case_ts ON audit_events(case_id, timestamp);
 "#;
+
+pub const MIGRATION_002_SQL: &str = r#"
+-- 20. Users Table
+CREATE TABLE IF NOT EXISTS users (
+    id TEXT PRIMARY KEY,
+    username TEXT NOT NULL UNIQUE,
+    display_name TEXT NOT NULL,
+    email TEXT NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'Analyst',
+    department TEXT NOT NULL DEFAULT 'SOC',
+    timezone TEXT NOT NULL DEFAULT 'Asia/Tashkent',
+    language TEXT NOT NULL DEFAULT 'ru',
+    avatar_url TEXT,
+    created_at TEXT NOT NULL
+);
+
+-- 21. User Sessions Table
+CREATE TABLE IF NOT EXISTS user_sessions (
+    session_id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    token TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_token ON user_sessions(token);
+
+-- 22. Workspaces Table
+CREATE TABLE IF NOT EXISTS workspaces (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    organization_name TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+-- 23. Teams Table
+CREATE TABLE IF NOT EXISTS teams (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    description TEXT,
+    created_at TEXT NOT NULL
+);
+
+-- 24. Team Members Table
+CREATE TABLE IF NOT EXISTS team_members (
+    team_id TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    role TEXT NOT NULL DEFAULT 'Analyst',
+    joined_at TEXT NOT NULL,
+    PRIMARY KEY (team_id, user_id)
+);
+
+-- 25. Channels Table
+CREATE TABLE IF NOT EXISTS channels (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    case_id TEXT REFERENCES cases(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    channel_type TEXT NOT NULL DEFAULT 'General',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_channels_case ON channels(case_id);
+
+-- 26. Messages Table
+CREATE TABLE IF NOT EXISTS messages (
+    id TEXT PRIMARY KEY,
+    channel_id TEXT NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+    author_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    author_name TEXT NOT NULL,
+    author_role TEXT NOT NULL,
+    body TEXT NOT NULL,
+    reply_to_id TEXT REFERENCES messages(id) ON DELETE SET NULL,
+    references_json TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_messages_channel_created ON messages(channel_id, created_at);
+
+-- 27. User Presence Table
+CREATE TABLE IF NOT EXISTS user_presence (
+    user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    is_online INTEGER NOT NULL DEFAULT 0,
+    active_case_id TEXT,
+    status_text TEXT NOT NULL DEFAULT '',
+    last_seen TEXT NOT NULL
+);
+
+-- 28. Notifications Table
+CREATE TABLE IF NOT EXISTS notifications (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    title TEXT NOT NULL,
+    body TEXT NOT NULL,
+    category TEXT NOT NULL DEFAULT 'General',
+    is_read INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id, created_at);
+"#;

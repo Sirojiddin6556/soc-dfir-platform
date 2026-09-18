@@ -12,6 +12,7 @@ use workflow_dag::{ResourceLimiter, WorkflowScheduler};
 
 use std::path::PathBuf;
 
+pub mod collaboration;
 pub mod host_inspector;
 pub mod scanner;
 pub mod scenario_eval;
@@ -327,138 +328,156 @@ impl EngineApp {
                 serde_json::to_string(&resp).unwrap()
             }
             "host.processes" => {
-                let host_id = req
+                let hid = req
                     .params
                     .get("host_id")
                     .and_then(|v| v.as_str())
                     .unwrap_or("PC-3002");
-                let val = host_inspector::handle_host_processes(host_id);
-                let resp = IpcResponse {
+                serde_json::to_string(&IpcResponse {
                     api_version: 1,
                     request_id: req.request_id,
-                    result: Some(val),
+                    result: Some(host_inspector::handle_host_processes(hid)),
                     error: None,
-                };
-                serde_json::to_string(&resp).unwrap()
+                })
+                .unwrap()
             }
             "host.sockets" => {
-                let host_id = req
+                let hid = req
                     .params
                     .get("host_id")
                     .and_then(|v| v.as_str())
                     .unwrap_or("PC-3002");
-                let val = host_inspector::handle_host_sockets(host_id);
-                let resp = IpcResponse {
+                serde_json::to_string(&IpcResponse {
                     api_version: 1,
                     request_id: req.request_id,
-                    result: Some(val),
+                    result: Some(host_inspector::handle_host_sockets(hid)),
                     error: None,
-                };
-                serde_json::to_string(&resp).unwrap()
+                })
+                .unwrap()
             }
             "host.services" => {
-                let host_id = req
+                let hid = req
                     .params
                     .get("host_id")
                     .and_then(|v| v.as_str())
                     .unwrap_or("PC-3002");
-                let val = host_inspector::handle_host_services(host_id);
-                let resp = IpcResponse {
+                serde_json::to_string(&IpcResponse {
                     api_version: 1,
                     request_id: req.request_id,
-                    result: Some(val),
+                    result: Some(host_inspector::handle_host_services(hid)),
                     error: None,
-                };
-                serde_json::to_string(&resp).unwrap()
+                })
+                .unwrap()
             }
             "host.persistence" => {
-                let host_id = req
+                let hid = req
                     .params
                     .get("host_id")
                     .and_then(|v| v.as_str())
                     .unwrap_or("PC-3002");
-                let val = host_inspector::handle_host_persistence(host_id);
-                let resp = IpcResponse {
+                serde_json::to_string(&IpcResponse {
                     api_version: 1,
                     request_id: req.request_id,
-                    result: Some(val),
+                    result: Some(host_inspector::handle_host_persistence(hid)),
                     error: None,
-                };
-                serde_json::to_string(&resp).unwrap()
+                })
+                .unwrap()
             }
             "host.software" => {
-                let host_id = req
+                let hid = req
                     .params
                     .get("host_id")
                     .and_then(|v| v.as_str())
                     .unwrap_or("PC-3002");
-                let val = host_inspector::handle_host_software(host_id);
-                let resp = IpcResponse {
+                serde_json::to_string(&IpcResponse {
                     api_version: 1,
                     request_id: req.request_id,
-                    result: Some(val),
+                    result: Some(host_inspector::handle_host_software(hid)),
                     error: None,
-                };
-                serde_json::to_string(&resp).unwrap()
+                })
+                .unwrap()
             }
             "scenario.evaluate" => {
-                let scenario_id = req
+                let sid = req
                     .params
                     .get("scenario_id")
                     .and_then(|v| v.as_str())
                     .unwrap_or("SCEN-APT29");
-                let hypothesis = req
+                let hyp = req
                     .params
                     .get("hypothesis")
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
-                let case_id = req
+                let cid = req
                     .params
                     .get("case_id")
                     .and_then(|v| v.as_str())
                     .and_then(|s| EntityId::parse(s).ok())
                     .unwrap_or_else(EntityId::new_v7);
-                let result = scenario_eval::evaluate_scenario(
+                let res = scenario_eval::evaluate_scenario(
                     &self.storage,
                     &self.verifier,
                     &self.scoring,
-                    scenario_id,
-                    hypothesis,
-                    case_id,
+                    sid,
+                    hyp,
+                    cid,
                 );
-                let resp = IpcResponse {
+                serde_json::to_string(&IpcResponse {
                     api_version: 1,
                     request_id: req.request_id,
-                    result: Some(result),
+                    result: Some(res),
                     error: None,
-                };
-                serde_json::to_string(&resp).unwrap()
+                })
+                .unwrap()
             }
             "host.correlate" | "correlation.evaluate" => {
-                let host_id = req
+                let hid = req
                     .params
                     .get("host_id")
                     .and_then(|v| v.as_str())
                     .unwrap_or("PC-3002");
-                let case_id = req
+                let cid = req
                     .params
                     .get("case_id")
                     .and_then(|v| v.as_str())
                     .and_then(|s| EntityId::parse(s).ok())
                     .unwrap_or_else(EntityId::new_v7);
                 let val = host_inspector::handle_host_correlation(
-                    host_id,
-                    case_id,
+                    hid,
+                    cid,
                     &self.storage,
                     &self.correlation,
                 );
-                let resp = IpcResponse {
+                serde_json::to_string(&IpcResponse {
                     api_version: 1,
                     request_id: req.request_id,
                     result: Some(val),
                     error: None,
-                };
-                serde_json::to_string(&resp).unwrap()
+                })
+                .unwrap()
+            }
+            m if m.starts_with("auth.")
+                || m.starts_with("team.")
+                || m.starts_with("chat.")
+                || m.starts_with("presence.") =>
+            {
+                let handler = collaboration::CollabHandler::new(&self.storage);
+                match handler.handle(m, req.params) {
+                    Ok(val) => serde_json::to_string(&IpcResponse {
+                        api_version: 1,
+                        request_id: req.request_id,
+                        result: Some(val),
+                        error: None,
+                    })
+                    .unwrap(),
+                    Err(err) => serde_json::to_string(&IpcResponse::<()> {
+                        api_version: 1,
+                        request_id: req.request_id,
+                        result: None,
+                        error: Some(err),
+                    })
+                    .unwrap(),
+                }
             }
 
             _ => {
