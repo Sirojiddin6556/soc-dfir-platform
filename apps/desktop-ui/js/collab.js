@@ -1,7 +1,7 @@
 /**
  * Team Collaboration & Investigation-Aware Chat Module
  */
-import { inspectFact } from './drilldown.js';
+let appInstance = null;
 
 let state = {
   currentUser: {
@@ -37,7 +37,8 @@ async function rpcCall(method, params = {}) {
   }
 }
 
-export async function initCollaboration() {
+export async function initCollaboration(app, ipc) {
+  appInstance = app;
   bindUiEvents();
 
   // 1. Authenticate / Login session
@@ -169,24 +170,31 @@ function renderMessages() {
 }
 
 function handleEntityPillClick(type, id) {
+  if (!appInstance) return;
   if (type === 'finding') {
-    // Open drilldown inspector for this finding
-    inspectFact({
-      id: id,
-      title: 'Улика ' + id,
-      rule_id: id,
-      mitre_technique: 'T1059.001',
-      mitre_tactic: 'Execution',
-      severity: 'High',
-      confidence: 0.95,
-      risk_score: 90.0,
-      verification_state: 'Confirmed',
-      pain_level: 'Tools',
-      data: { note: 'Открыто из чата расследования команды' }
+    appInstance.inspectEntity({
+      name: `Находка #${id}`,
+      type: 'Находка расследования',
+      assertion: 'Утверждение: Корреляция аномалии подтверждена',
+      verification: 'Статус: Подтверждено (1.0)',
+      details: `Сущность привязана в обсуждении расследования командой SOC.\nID: ${id}\nТактика MITRE: Execution (T1059.001)`
     });
   } else if (type === 'process') {
-    const navItem = document.querySelector('[data-view="infraDiscoveryView"]');
-    if (navItem) navItem.click();
+    appInstance.inspectEntity({
+      name: `Процесс #${id}`,
+      type: 'Процесс Windows',
+      assertion: 'Утверждение: Аномальное дерево процессов',
+      verification: 'Статус: Подтверждено',
+      details: `Исследуемый процесс в кейсе INC-LIVE-001.\nPID/Имя: ${id}`
+    });
+  } else {
+    appInstance.inspectEntity({
+      name: `Сущность ${type.toUpperCase()}: ${id}`,
+      type: 'Улика / Артефакт расследования',
+      assertion: 'Утверждение: Привязано к инциденту',
+      verification: 'Статус: Верифицировано',
+      details: `Тип ссылки: ${type}\nИдентификатор: ${id}`
+    });
   }
 }
 
