@@ -463,6 +463,104 @@ impl SqliteStorage {
         let count: i64 = conn.query_row("SELECT COUNT(*) FROM cve_entries", [], |r| r.get(0))?;
         Ok(count)
     }
+
+    pub fn list_artifacts_for_case(
+        &self,
+        case_id: EntityId,
+    ) -> Result<Vec<serde_json::Value>, SqliteStorageError> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, hash_blake3, hash_sha256, original_name, file_size, mime_type, \
+             acquisition_method, acquired_at FROM artifacts WHERE case_id = ?1 ORDER BY ingested_at DESC",
+        )?;
+        let rows = stmt.query_map(params![case_id.to_string()], |row| {
+            Ok(serde_json::json!({
+                "id":          row.get::<_, String>(0)?,
+                "hash_blake3": row.get::<_, String>(1)?,
+                "hash_sha256": row.get::<_, String>(2)?,
+                "name":        row.get::<_, String>(3)?,
+                "size":        row.get::<_, i64>(4)?,
+                "mime_type":   row.get::<_, String>(5)?,
+                "method":      row.get::<_, String>(6)?,
+                "acquired_at": row.get::<_, String>(7)?,
+            }))
+        })?;
+        let mut results = Vec::new();
+        for r in rows {
+            results.push(r.map_err(SqliteStorageError::Rusqlite)?);
+        }
+        Ok(results)
+    }
+
+    pub fn list_observations_for_artifact(
+        &self,
+        artifact_id: EntityId,
+    ) -> Result<Vec<serde_json::Value>, SqliteStorageError> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, source_tool, raw_event_type, source_timestamp, data_json \
+             FROM observations WHERE artifact_id = ?1 ORDER BY source_timestamp ASC LIMIT 500",
+        )?;
+        let rows = stmt.query_map(params![artifact_id.to_string()], |row| {
+            let data_str: String = row.get(4)?;
+            let data: serde_json::Value =
+                serde_json::from_str(&data_str).unwrap_or(serde_json::Value::Null);
+            Ok(serde_json::json!({
+                "id":          row.get::<_, String>(0)?,
+                "tool":        row.get::<_, String>(1)?,
+                "event_type":  row.get::<_, String>(2)?,
+                "timestamp":   row.get::<_, String>(3)?,
+                "data":        data,
+            }))
+        })?;
+        let mut results = Vec::new();
+        for r in rows {
+            results.push(r.map_err(SqliteStorageError::Rusqlite)?);
+        }
+        Ok(results)
+    }
+
+    pub fn list_custody_chain(
+        &self,
+        artifact_hash: &str,
+    ) -> Result<Vec<serde_json::Value>, SqliteStorageError> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, actor_id, event_type, details_json, previous_state_hash, timestamp \
+             FROM custody_events WHERE artifact_hash = ?1 ORDER BY timestamp ASC",
+        )?;
+        let rows = stmt.query_map(params![artifact_hash], |row| {
+            let details_str: String = row.get(3)?;
+            let details: serde_json::Value =
+                serde_json::from_str(&details_str).unwrap_or(serde_json::Value::Null);
+            Ok(serde_json::json!({
+                "id":         row.get::<_, String>(0)?,
+                "actor":      row.get::<_, String>(1)?,
+                "event_type": row.get::<_, String>(2)?,
+                "details":    details,
+                "prev_hash":  row.get::<_, String>(4)?,
+                "timestamp":  row.get::<_, String>(5)?,
+            }))
+        })?;
+        let mut results = Vec::new();
+        for r in rows {
+            results.push(r.map_err(SqliteStorageError::Rusqlite)?);
+        }
+        Ok(results)
+    }
+
+    pub fn delete_artifact(
+        &self,
+        artifact_id: EntityId,
+        case_id: EntityId,
+    ) -> Result<bool, SqliteStorageError> {
+        let conn = self.conn.lock().unwrap();
+        let deleted = conn.execute(
+            "DELETE FROM artifacts WHERE id = ?1 AND case_id = ?2",
+            params![artifact_id.to_string(), case_id.to_string()],
+        )?;
+        Ok(deleted > 0)
+    }
 }
 
 #[cfg(test)]

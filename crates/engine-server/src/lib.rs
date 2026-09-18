@@ -547,6 +547,132 @@ impl EngineApp {
                 .unwrap()
             }
 
+            "evidence.list" => {
+                let cid = req
+                    .params
+                    .get("case_id")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| EntityId::parse(s).ok());
+                let (res, err) = match cid {
+                    Some(id) => match self.storage.list_artifacts_for_case(id) {
+                        Ok(arts) => (Some(serde_json::to_value(arts).unwrap()), None),
+                        Err(e) => (
+                            None,
+                            Some(ProblemDetails::bad_request(&e.to_string(), vec![])),
+                        ),
+                    },
+                    None => (
+                        None,
+                        Some(ProblemDetails::bad_request(
+                            "Missing or invalid case_id",
+                            vec!["case_id".to_string()],
+                        )),
+                    ),
+                };
+                serde_json::to_string(&IpcResponse {
+                    api_version: 1,
+                    request_id: req.request_id,
+                    result: res,
+                    error: err,
+                })
+                .unwrap()
+            }
+            "evidence.observations" => {
+                let aid = req
+                    .params
+                    .get("artifact_id")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| EntityId::parse(s).ok());
+                let (res, err) = match aid {
+                    Some(id) => match self.storage.list_observations_for_artifact(id) {
+                        Ok(obs) => (Some(serde_json::to_value(obs).unwrap()), None),
+                        Err(e) => (
+                            None,
+                            Some(ProblemDetails::bad_request(&e.to_string(), vec![])),
+                        ),
+                    },
+                    None => (
+                        None,
+                        Some(ProblemDetails::bad_request(
+                            "Missing or invalid artifact_id",
+                            vec!["artifact_id".to_string()],
+                        )),
+                    ),
+                };
+                serde_json::to_string(&IpcResponse {
+                    api_version: 1,
+                    request_id: req.request_id,
+                    result: res,
+                    error: err,
+                })
+                .unwrap()
+            }
+            "evidence.custody" => {
+                let hash = req
+                    .params
+                    .get("artifact_hash")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let (res, err) = if hash.is_empty() {
+                    (
+                        None,
+                        Some(ProblemDetails::bad_request(
+                            "Missing artifact_hash",
+                            vec!["artifact_hash".to_string()],
+                        )),
+                    )
+                } else {
+                    match self.storage.list_custody_chain(hash) {
+                        Ok(chain) => (Some(serde_json::to_value(chain).unwrap()), None),
+                        Err(e) => (
+                            None,
+                            Some(ProblemDetails::bad_request(&e.to_string(), vec![])),
+                        ),
+                    }
+                };
+                serde_json::to_string(&IpcResponse {
+                    api_version: 1,
+                    request_id: req.request_id,
+                    result: res,
+                    error: err,
+                })
+                .unwrap()
+            }
+            "evidence.delete" => {
+                let aid = req
+                    .params
+                    .get("artifact_id")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| EntityId::parse(s).ok());
+                let cid = req
+                    .params
+                    .get("case_id")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| EntityId::parse(s).ok());
+                let (res, err) = match (aid, cid) {
+                    (Some(a), Some(c)) => match self.storage.delete_artifact(a, c) {
+                        Ok(deleted) => (Some(serde_json::json!({ "deleted": deleted })), None),
+                        Err(e) => (
+                            None,
+                            Some(ProblemDetails::bad_request(&e.to_string(), vec![])),
+                        ),
+                    },
+                    _ => (
+                        None,
+                        Some(ProblemDetails::bad_request(
+                            "Missing artifact_id or case_id",
+                            vec!["artifact_id".to_string(), "case_id".to_string()],
+                        )),
+                    ),
+                };
+                serde_json::to_string(&IpcResponse {
+                    api_version: 1,
+                    request_id: req.request_id,
+                    result: res,
+                    error: err,
+                })
+                .unwrap()
+            }
             _ => {
                 let resp: IpcResponse<()> = IpcResponse {
                     api_version: 1,
