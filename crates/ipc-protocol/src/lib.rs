@@ -50,6 +50,17 @@ impl ProblemDetails {
             invalid_params: Vec::new(),
         }
     }
+
+    pub fn unauthorized(detail: &str) -> Self {
+        Self {
+            type_uri: "https://soc-dfir.local/errors/unauthorized".to_string(),
+            title: "Unauthorized".to_string(),
+            status: 401,
+            detail: detail.to_string(),
+            instance: None,
+            invalid_params: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

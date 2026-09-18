@@ -44,7 +44,9 @@ impl SqliteStorage {
             conn: Arc::new(Mutex::new(conn)),
         };
         storage.migrate()?;
-        storage.init_default_collaboration_data().ok();
+        storage
+            .init_collaboration_data(core_domain::collaboration::OperationMode::Live)
+            .ok();
         Ok(storage)
     }
 
@@ -55,7 +57,9 @@ impl SqliteStorage {
             conn: Arc::new(Mutex::new(conn)),
         };
         storage.migrate()?;
-        storage.init_default_collaboration_data().ok();
+        storage
+            .init_collaboration_data(core_domain::collaboration::OperationMode::Live)
+            .ok();
         Ok(storage)
     }
 

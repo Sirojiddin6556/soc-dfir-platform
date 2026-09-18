@@ -19,6 +19,8 @@ let state = {
 
 async function rpcCall(method, params = {}) {
   try {
+    const token = (params && params.token) || (typeof localStorage !== 'undefined' ? localStorage.getItem('soc_session_token') : null);
+    const finalParams = token ? { ...params, token } : { ...params };
     const res = await fetch('http://127.0.0.1:8080/rpc', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -26,10 +28,16 @@ async function rpcCall(method, params = {}) {
         api_version: 1,
         request_id: 'collab-' + Date.now(),
         method,
-        params,
+        params: finalParams,
       }),
     });
     const data = await res.json();
+    if (data.error) {
+      if (data.error.status === 401 || data.error.code === 401) {
+        showLoginModal('Сессия недействительна. Пожалуйста, авторизуйтесь.');
+      }
+      return null;
+    }
     return data.result;
   } catch (err) {
     console.warn('[Collab] RPC error:', err);
@@ -37,33 +45,62 @@ async function rpcCall(method, params = {}) {
   }
 }
 
-export async function initCollaboration(app, ipc) {
-  appInstance = app;
-  bindUiEvents();
-
-  // 1. Authenticate / Login session
-  const authRes = await rpcCall('auth.login', { username: 'sirojiddin' });
-  if (authRes && authRes.user) {
-    state.currentUser = authRes.user;
-    updateUserBadge();
+export function showLoginModal(errorMsg = null) {
+  const modal = document.getElementById('loginModal');
+  const errEl = document.getElementById('loginErrorMsg');
+  if (modal) modal.style.display = 'flex';
+  if (errEl) {
+    if (errorMsg) {
+      errEl.textContent = errorMsg;
+      errEl.style.display = 'block';
+    } else {
+      errEl.style.display = 'none';
+    }
   }
+}
 
-  // 2. Load channels & history
+export function hideLoginModal() {
+  const modal = document.getElementById('loginModal');
+  const errEl = document.getElementById('loginErrorMsg');
+  if (modal) modal.style.display = 'none';
+  if (errEl) errEl.style.display = 'none';
+}
+
+export async function loadCollabData() {
   const channels = await rpcCall('chat.channels', {});
   if (channels && channels.length > 0) {
     state.channels = channels;
     state.activeChannelId = channels[channels.length - 1].id;
     await refreshMessages();
   }
-
-  // 3. Load presence & teams
   await refreshPresences();
   await refreshTeams();
+}
+
+export async function initCollaboration(app, ipc) {
+  appInstance = app;
+  bindUiEvents();
+
+  const token = typeof localStorage !== 'undefined' ? localStorage.getItem('soc_session_token') : null;
+  if (!token) {
+    showLoginModal();
+    return;
+  }
+
+  const sessionRes = await rpcCall('auth.session', {});
+  if (sessionRes && sessionRes.valid && sessionRes.user) {
+    state.currentUser = sessionRes.user;
+    updateUserBadge();
+    hideLoginModal();
+    await loadCollabData();
+  } else {
+    showLoginModal();
+  }
 
   // Poll presence & messages periodically
   setInterval(async () => {
     const pane = document.getElementById('collabPane');
-    if (pane && pane.style.display !== 'none') {
+    if (pane && pane.style.display !== 'none' && localStorage.getItem('soc_session_token')) {
       await refreshMessages();
       await refreshPresences();
     }
@@ -169,31 +206,24 @@ function renderMessages() {
   });
 }
 
-function handleEntityPillClick(type, id) {
+async function handleEntityPillClick(type, id) {
   if (!appInstance) return;
-  if (type === 'finding') {
+  const res = await rpcCall('entity.get', { type, id });
+  if (res && res.found) {
     appInstance.inspectEntity({
-      name: `Находка #${id}`,
-      type: 'Находка расследования',
-      assertion: 'Утверждение: Корреляция аномалии подтверждена',
-      verification: 'Статус: Подтверждено (1.0)',
-      details: `Сущность привязана в обсуждении расследования командой SOC.\nID: ${id}\nТактика MITRE: Execution (T1059.001)`
-    });
-  } else if (type === 'process') {
-    appInstance.inspectEntity({
-      name: `Процесс #${id}`,
-      type: 'Процесс Windows',
-      assertion: 'Утверждение: Аномальное дерево процессов',
-      verification: 'Статус: Подтверждено',
-      details: `Исследуемый процесс в кейсе INC-LIVE-001.\nPID/Имя: ${id}`
+      name: res.name || `${type.toUpperCase()} #${id}`,
+      type: res.type || type,
+      assertion: res.assertion || `Верифицированная запись из БД (${res.source})`,
+      verification: `Статус: ${res.verification || 'Подтверждено в БД'}`,
+      details: res.details || JSON.stringify(res.raw_data || {}, null, 2)
     });
   } else {
     appInstance.inspectEntity({
-      name: `Сущность ${type.toUpperCase()}: ${id}`,
-      type: 'Улика / Артефакт расследования',
-      assertion: 'Утверждение: Привязано к инциденту',
-      verification: 'Статус: Верифицировано',
-      details: `Тип ссылки: ${type}\nИдентификатор: ${id}`
+      name: `Сущность #${id} (${type})`,
+      type: `Неподтвержденная сущность`,
+      assertion: `Эпистемический статус: Факт/Улика не найдены в SQLite БД`,
+      verification: `Статус: Не подтверждено (Отсутствует в CAS/Facts)`,
+      details: `Запрос entity.get({ type: "${type}", id: "${id}" }) вернул отрицательный результат.\nСущность не зафиксирована в базе доказательств текущей сессии расследования.`
     });
   }
 }
@@ -387,5 +417,53 @@ function bindUiEvents() {
       updateUserBadge();
       profileModal.style.display = 'none';
     });
+  }
+
+  // Logout action
+  const btnLogout = document.getElementById('btnLogoutProfile');
+  if (btnLogout && profileModal) {
+    btnLogout.addEventListener('click', async () => {
+      const token = typeof localStorage !== 'undefined' ? localStorage.getItem('soc_session_token') : null;
+      if (token) {
+        await rpcCall('auth.logout', { token });
+      }
+      localStorage.removeItem('soc_session_token');
+      state.messages = [];
+      state.channels = [];
+      renderMessages();
+      profileModal.style.display = 'none';
+      showLoginModal();
+    });
+  }
+
+  // Login form submission
+  const btnSubmitLogin = document.getElementById('btnSubmitLogin');
+  const loginUsername = document.getElementById('loginInputUsername');
+  const loginPassword = document.getElementById('loginInputPassword');
+  if (btnSubmitLogin) {
+    const doLogin = async () => {
+      const username = loginUsername?.value.trim() || '';
+      const password = loginPassword?.value || '';
+      if (!username || !password) {
+        showLoginModal('Заполните имя пользователя и пароль');
+        return;
+      }
+      const res = await rpcCall('auth.login', { username, password });
+      if (res && res.session) {
+        localStorage.setItem('soc_session_token', res.session.token);
+        state.currentUser = res.user;
+        updateUserBadge();
+        hideLoginModal();
+        await loadCollabData();
+      } else {
+        showLoginModal('Неверный логин или пароль');
+      }
+    };
+    btnSubmitLogin.addEventListener('click', doLogin);
+    if (loginPassword) {
+      loginPassword.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') doLogin();
+      });
+    }
   }
 }

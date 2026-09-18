@@ -20,8 +20,10 @@ impl<'a> CollabHandler<'a> {
     ) -> Result<serde_json::Value, ProblemDetails> {
         match method {
             "auth.login" => self.handle_login(params),
+            "auth.logout" => self.handle_logout(params),
             "auth.session" => self.handle_session(params),
             "auth.update_profile" => self.handle_update_profile(params),
+            "entity.get" => self.handle_entity_get(params),
             "team.list" => self.handle_team_list(),
             "team.members" => self.handle_team_members(params),
             "chat.channels" => self.handle_chat_channels(),
@@ -40,30 +42,24 @@ impl<'a> CollabHandler<'a> {
         let username = params
             .get("username")
             .and_then(|u| u.as_str())
-            .unwrap_or("sirojiddin");
+            .ok_or_else(|| {
+                ProblemDetails::bad_request(
+                    "Имя пользователя обязательно",
+                    vec!["username".to_string()],
+                )
+            })?;
+        let password = params
+            .get("password")
+            .and_then(|p| p.as_str())
+            .unwrap_or("");
 
-        let user_opt = self.storage.get_user_by_username(username).map_err(|e| {
-            ProblemDetails::bad_request(&format!("Ошибка поиска пользователя: {}", e), vec![])
-        })?;
-
-        let user = match user_opt {
-            Some(u) => u,
-            None => {
-                // Return default admin/owner Sirojiddin if none found
-                User {
-                    id: EntityId::new_v7(),
-                    username: username.to_string(),
-                    display_name: "Сироҷиддин".to_string(),
-                    email: "sirojiddin@soc.local".to_string(),
-                    role: Role::Owner,
-                    department: "SOC".to_string(),
-                    timezone: "Asia/Tashkent".to_string(),
-                    language: "ru".to_string(),
-                    avatar_url: None,
-                    created_at: chrono::Utc::now(),
-                }
-            }
-        };
+        let user = self
+            .storage
+            .verify_user_password(username, password)
+            .map_err(|e| {
+                ProblemDetails::bad_request(&format!("Ошибка аутентификации: {}", e), vec![])
+            })?
+            .ok_or_else(|| ProblemDetails::unauthorized("Неверное имя пользователя или пароль"))?;
 
         let session = self
             .storage
@@ -78,28 +74,41 @@ impl<'a> CollabHandler<'a> {
         }))
     }
 
+    fn handle_logout(
+        &self,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value, ProblemDetails> {
+        let token = params.get("token").and_then(|t| t.as_str()).unwrap_or("");
+        self.storage
+            .delete_session(token)
+            .map_err(|e| ProblemDetails::bad_request(&format!("Ошибка выхода: {}", e), vec![]))?;
+        Ok(serde_json::json!({ "success": true }))
+    }
+
     fn handle_session(
         &self,
         params: serde_json::Value,
     ) -> Result<serde_json::Value, ProblemDetails> {
         let token = params.get("token").and_then(|t| t.as_str()).unwrap_or("");
-        let user_opt = self
+        let user = self
             .storage
             .get_user_by_token(token)
-            .map_err(|e| ProblemDetails::bad_request(&format!("Ошибка сессии: {}", e), vec![]))?;
+            .map_err(|e| ProblemDetails::bad_request(&format!("Ошибка сессии: {}", e), vec![]))?
+            .ok_or_else(|| ProblemDetails::unauthorized("Сессия не найдена или истекла"))?;
 
-        match user_opt {
-            Some(user) => Ok(serde_json::json!({ "user": user })),
-            None => {
-                // Fallback to default user
-                let fallback = self
-                    .storage
-                    .get_user_by_username("sirojiddin")
-                    .ok()
-                    .flatten();
-                Ok(serde_json::json!({ "user": fallback }))
-            }
-        }
+        Ok(serde_json::json!({ "user": user }))
+    }
+
+    fn handle_entity_get(
+        &self,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value, ProblemDetails> {
+        let ent_type = params.get("type").and_then(|t| t.as_str()).unwrap_or("");
+        let ent_id = params.get("id").and_then(|i| i.as_str()).unwrap_or("");
+        let res = self.storage.get_entity(ent_type, ent_id).map_err(|e| {
+            ProblemDetails::bad_request(&format!("Ошибка поиска сущности: {}", e), vec![])
+        })?;
+        Ok(res)
     }
 
     fn handle_update_profile(

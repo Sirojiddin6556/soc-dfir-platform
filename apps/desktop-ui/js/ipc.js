@@ -18,11 +18,13 @@ export class IpcClient {
 
   async call(method, params = {}) {
     const requestId = 'req_' + Math.random().toString(36).substring(2, 9);
+    const token = (params && params.token) || (typeof localStorage !== 'undefined' ? localStorage.getItem('soc_session_token') : null);
+    const finalParams = token ? { ...params, token } : { ...params };
     const payload = {
       api_version: this.apiVersion,
       request_id: requestId,
       method: method,
-      params: params
+      params: finalParams
     };
 
     try {
@@ -35,10 +37,16 @@ export class IpcClient {
       const data = await response.json();
       if (data.error) {
         console.error('IPC Error:', data.error);
-        throw new Error(data.error.detail || data.error.title || 'RPC Failed');
+        const err = new Error(data.error.detail || data.error.title || 'RPC Failed');
+        err.status = data.error.status;
+        err.code = data.error.code;
+        throw err;
       }
       return data.result;
     } catch (err) {
+      if (err.status === 401 || err.code === 401) {
+        throw err;
+      }
       console.warn(`[IPC Fallback] Live daemon unavailable at ${this.endpointUrl}, using deterministic local client:`, err.message);
       return this.fallbackDispatch(method, params);
     }

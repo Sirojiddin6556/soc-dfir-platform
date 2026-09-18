@@ -224,3 +224,21 @@ pub struct CollabNotification {
     pub is_read: bool,
     pub created_at: DateTime<Utc>,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum OperationMode {
+    #[default]
+    Live,
+    Demo,
+    Ctf,
+}
+
+impl OperationMode {
+    pub fn is_live(&self) -> bool {
+        matches!(self, Self::Live)
+    }
+
+    pub fn is_synthetic_allowed(&self) -> bool {
+        matches!(self, Self::Demo | Self::Ctf)
+    }
+}

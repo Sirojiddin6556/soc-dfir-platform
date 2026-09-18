@@ -459,25 +459,21 @@ impl EngineApp {
             m if m.starts_with("auth.")
                 || m.starts_with("team.")
                 || m.starts_with("chat.")
-                || m.starts_with("presence.") =>
+                || m.starts_with("presence.")
+                || m == "entity.get" =>
             {
                 let handler = collaboration::CollabHandler::new(&self.storage);
-                match handler.handle(m, req.params) {
-                    Ok(val) => serde_json::to_string(&IpcResponse {
-                        api_version: 1,
-                        request_id: req.request_id,
-                        result: Some(val),
-                        error: None,
-                    })
-                    .unwrap(),
-                    Err(err) => serde_json::to_string(&IpcResponse::<()> {
-                        api_version: 1,
-                        request_id: req.request_id,
-                        result: None,
-                        error: Some(err),
-                    })
-                    .unwrap(),
-                }
+                let (res, err) = match handler.handle(m, req.params) {
+                    Ok(val) => (Some(val), None),
+                    Err(e) => (None, Some(e)),
+                };
+                serde_json::to_string(&IpcResponse {
+                    api_version: 1,
+                    request_id: req.request_id,
+                    result: res,
+                    error: err,
+                })
+                .unwrap()
             }
 
             _ => {

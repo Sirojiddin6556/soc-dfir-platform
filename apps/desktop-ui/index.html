@@ -34,21 +34,17 @@
         <div class="nav-group-title">Операции</div>
         <div class="nav-item" data-view="dashboardView"><span class="badge badge-host">1</span> Главная / Дашборд</div>
         <div class="nav-item" data-view="casesView"><span class="badge badge-host">2</span> Обзор инцидентов</div>
-        
         <div class="nav-group-title">Телеметрия и Цели</div>
         <div class="nav-item active" data-view="infraDiscoveryView"><span class="badge badge-net">3</span> Инфраструктура</div>
         <div class="nav-item" data-view="assetDetailsView" style="padding-left: 24px;">↳ Детали актива</div>
-        
         <div class="nav-group-title">Анализ и Граф атак</div>
         <div class="nav-item" data-view="investigationGraphView"><span class="badge badge-attack">4</span> Расследование и Граф</div>
         <div class="nav-item" data-view="timelineView"><span class="badge badge-proc">5</span> Форензик-таймлайн</div>
         <div class="nav-item" data-view="evidenceView"><span class="badge badge-file">6</span> Улики и Хранилище CAS</div>
-        
         <div class="nav-group-title">База знаний ИБ</div>
         <div class="nav-item" data-view="softwareCveView"><span class="badge badge-user">7</span> Софт и База CVE</div>
         <div class="nav-item" data-view="mitreView"><span class="badge badge-attack">8</span> Матрица MITRE ATT&CK</div>
         <div class="nav-item" data-view="diagramsView"><span class="badge badge-net">9</span> Диаграммы и C4</div>
-        
         <div class="nav-group-title">Автоматизация и Полигон</div>
         <div class="nav-item" data-view="automationView"><span class="badge badge-proc">10</span> Автоматизация / DAG</div>
         <div class="nav-item" data-view="cyberRangeView"><span class="badge badge-attack">11</span> Киберполигон / CTF</div>
@@ -121,28 +117,15 @@
               <span class="badge badge-host" id="assetDetailRisk">РИСК: НИЗКИЙ (1.0)</span>
             </div>
             <div style="display: flex; gap: 4px; flex-wrap: wrap;">
-              <button class="btn" id="btnInspectProc">[Экспресс-аудит]</button>
-              <button class="btn" id="btnCaptureNet">[Захват трафика]</button>
-              <button class="btn" id="btnInspectPersist">[Анализ закрепления]</button>
-              <button class="btn" id="btnGenerateSbom">[Сгенерировать SBOM]</button>
-              <button class="btn" id="btnScanCve">[Сканировать CVE]</button>
-              <button class="btn btn-primary" id="btnOpenGraphFromAsset">[Открыть граф атаки]</button>
+              <button class="btn" id="btnInspectProc">[Экспресс-аудит]</button><button class="btn" id="btnCaptureNet">[Захват трафика]</button><button class="btn" id="btnInspectPersist">[Анализ закрепления]</button>
+              <button class="btn" id="btnGenerateSbom">[Сгенерировать SBOM]</button><button class="btn" id="btnScanCve">[Сканировать CVE]</button><button class="btn btn-primary" id="btnOpenGraphFromAsset">[Открыть граф атаки]</button>
             </div>
           </div>
           <!-- 12 Granular Forensic Tabs -->
           <div class="sub-tabs-bar" id="assetSubTabs">
-            <button class="sub-tab-btn active" data-asset-tab="tabOverview">Обзор</button>
-            <button class="sub-tab-btn" data-asset-tab="tabNetwork">Сеть</button>
-            <button class="sub-tab-btn" data-asset-tab="tabProcesses">Процессы</button>
-            <button class="sub-tab-btn" data-asset-tab="tabServices">Службы</button>
-            <button class="sub-tab-btn" data-asset-tab="tabPersistence">Закрепление</button>
-            <button class="sub-tab-btn" data-asset-tab="tabSoftware">ПО и SBOM</button>
-            <button class="sub-tab-btn" data-asset-tab="tabVulnerabilities">Уязвимости (CVE)</button>
-            <button class="sub-tab-btn" data-asset-tab="tabUsers">Пользователи</button>
-            <button class="sub-tab-btn" data-asset-tab="tabFirewall">Файрвол</button>
-            <button class="sub-tab-btn" data-asset-tab="tabFiles">Файлы</button>
-            <button class="sub-tab-btn" data-asset-tab="tabLogs">Журналы</button>
-            <button class="sub-tab-btn" data-asset-tab="tabEvidence">Улики (CAS)</button>
+            <button class="sub-tab-btn active" data-asset-tab="tabOverview">Обзор</button><button class="sub-tab-btn" data-asset-tab="tabNetwork">Сеть</button><button class="sub-tab-btn" data-asset-tab="tabProcesses">Процессы</button><button class="sub-tab-btn" data-asset-tab="tabServices">Службы</button>
+            <button class="sub-tab-btn" data-asset-tab="tabPersistence">Закрепление</button><button class="sub-tab-btn" data-asset-tab="tabSoftware">ПО и SBOM</button><button class="sub-tab-btn" data-asset-tab="tabVulnerabilities">Уязвимости (CVE)</button><button class="sub-tab-btn" data-asset-tab="tabUsers">Пользователи</button>
+            <button class="sub-tab-btn" data-asset-tab="tabFirewall">Файрвол</button><button class="sub-tab-btn" data-asset-tab="tabFiles">Файлы</button><button class="sub-tab-btn" data-asset-tab="tabLogs">Журналы</button><button class="sub-tab-btn" data-asset-tab="tabEvidence">Улики (CAS)</button>
           </div>
           <div id="assetTabContent" style="padding: 14px; overflow-y: auto; flex: 1;"></div>
         </div>
@@ -217,24 +200,21 @@
             <span style="font-size: 11px; color: var(--text-secondary);">Боевой режим мониторинга</span>
           </div>
           <div style="display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; margin-bottom: 14px;">
-            <div class="card" style="text-align: center; padding: 8px;"><div style="font-size: 18px; font-weight: 700; color: var(--accent-info);" id="metricHostsCount">1</div><div style="font-size: 10px; color: var(--text-muted);">Узлов</div></div>
-            <div class="card" style="text-align: center; padding: 8px;"><div style="font-size: 18px; font-weight: 700; color: var(--accent-success);" id="metricFindingsCount">0</div><div style="font-size: 10px; color: var(--text-muted);">Находок</div></div>
-            <div class="card" style="text-align: center; padding: 8px;"><div style="font-size: 18px; font-weight: 700; color: var(--accent-success);" id="metricCriticalCount">0</div><div style="font-size: 10px; color: var(--text-muted);">Критичных</div></div>
-            <div class="card" style="text-align: center; padding: 8px;"><div style="font-size: 18px; font-weight: 700; color: var(--accent-info);" id="metricEvidenceCount">0</div><div style="font-size: 10px; color: var(--text-muted);">Улик</div></div>
-            <div class="card" style="text-align: center; padding: 8px;"><div style="font-size: 18px; font-weight: 700; color: var(--accent-success);" id="metricCveCount">0</div><div style="font-size: 10px; color: var(--text-muted);">CVE</div></div>
-            <div class="card" style="text-align: center; padding: 8px;"><div style="font-size: 18px; font-weight: 700; color: var(--accent-success);" id="metricAttackCount">0</div><div style="font-size: 10px; color: var(--text-muted);">ATT&CK</div></div>
+            <div class="card" style="text-align: center; padding: 6px;"><div style="font-size: 16px; font-weight: 700; color: var(--accent-info);" id="metricHostsCount">1</div><div style="font-size: 10px; color: var(--text-muted);">Узлов</div></div>
+            <div class="card" style="text-align: center; padding: 6px;"><div style="font-size: 16px; font-weight: 700; color: var(--accent-success);" id="metricFindingsCount">0</div><div style="font-size: 10px; color: var(--text-muted);">Находок</div></div>
+            <div class="card" style="text-align: center; padding: 6px;"><div style="font-size: 16px; font-weight: 700; color: var(--accent-success);" id="metricCriticalCount">0</div><div style="font-size: 10px; color: var(--text-muted);">Критичных</div></div>
+            <div class="card" style="text-align: center; padding: 6px;"><div style="font-size: 16px; font-weight: 700; color: var(--accent-info);" id="metricEvidenceCount">0</div><div style="font-size: 10px; color: var(--text-muted);">Улик</div></div>
+            <div class="card" style="text-align: center; padding: 6px;"><div style="font-size: 16px; font-weight: 700; color: var(--accent-success);" id="metricCveCount">0</div><div style="font-size: 10px; color: var(--text-muted);">CVE</div></div>
+            <div class="card" style="text-align: center; padding: 6px;"><div style="font-size: 16px; font-weight: 700; color: var(--accent-success);" id="metricAttackCount">0</div><div style="font-size: 10px; color: var(--text-muted);">ATT&CK</div></div>
           </div>
-          <div class="card" style="margin-bottom: 14px; padding: 10px;">
-            <div style="display: flex; justify-content: space-between; font-size: 11px; margin-bottom: 4px;">
-              <span><strong>Прогресс инициализации и аудита</strong></span>
-              <span>100% Завершено (Базовая линия активна)</span>
-            </div>
-            <div style="width: 100%; height: 8px; background: var(--bg-pane); border-radius: 4px; overflow: hidden;"><div style="width: 100%; height: 100%; background: var(--accent-success);"></div></div>
+          <div class="card" style="margin-bottom: 14px; padding: 8px;">
+            <div style="display: flex; justify-content: space-between; font-size: 11px; margin-bottom: 4px;"><span><strong>Прогресс инициализации и аудита</strong></span><span>100% Завершено</span></div>
+            <div style="width: 100%; height: 6px; background: var(--bg-pane); border-radius: 3px; overflow: hidden;"><div style="width: 100%; height: 100%; background: var(--accent-success);"></div></div>
           </div>
           <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
             <div class="card">
               <h4 style="font-size: 12px; margin-bottom: 8px;">Последние события телеметрии</h4>
-              <div style="font-size: 11px; display: flex; flex-direction: column; gap: 6px;">
+              <div style="font-size: 11px; display: flex; flex-direction: column; gap: 4px;">
                 <div style="border-left: 3px solid var(--accent-success); padding-left: 6px;"><strong>Локальный брокер безопасности активен</strong> (PC-3002) — В НОРМЕ</div>
                 <div style="border-left: 3px solid var(--accent-info); padding-left: 6px;"><strong>Мониторинг форензик-артефактов готов</strong> (CAS) — ИНФО</div>
                 <div style="border-left: 3px solid var(--accent-success); padding-left: 6px;"><strong>Проверка автозагрузки Windows</strong> (PC-3002) — ЧИСТО</div>
@@ -243,7 +223,7 @@
             </div>
             <div class="card">
               <h4 style="font-size: 12px; margin-bottom: 8px;">Состояние периметра и Kill Chain</h4>
-              <div style="font-size: 11px; display: flex; flex-direction: column; gap: 6px;">
+              <div style="font-size: 11px; display: flex; flex-direction: column; gap: 4px;">
                 <div><span style="color: var(--accent-success)">✓</span> <strong>Первичный доступ:</strong> Сетевой периметр защищен</div>
                 <div><span style="color: var(--accent-success)">✓</span> <strong>Выполнение:</strong> Доверенные процессы Windows</div>
                 <div><span style="color: var(--accent-success)">✓</span> <strong>Закрепление:</strong> Подозрительных задач нет</div>
@@ -462,9 +442,32 @@
             <input type="text" id="profileInputTz" value="Asia/Tashkent" style="width: 100%; padding: 4px 6px; background: var(--bg-canvas); border: 1px solid var(--border-muted); border-radius: 4px; color: var(--text-primary); font-size: 11px;">
           </div>
         </div>
-        <div style="margin-top: 14px; display: flex; justify-content: flex-end; gap: 6px;">
-          <button class="btn" id="btnCancelProfile">Отмена</button>
-          <button class="btn btn-primary" id="btnSaveProfile">Сохранить</button>
+        <div style="margin-top: 14px; display: flex; justify-content: space-between; align-items: center;">
+          <button class="btn" id="btnLogoutProfile" style="border-color: var(--accent-critical); color: var(--accent-critical); font-size: 11px;">Выйти</button>
+          <div style="display: flex; gap: 6px;">
+            <button class="btn" id="btnCancelProfile">Отмена</button>
+            <button class="btn btn-primary" id="btnSaveProfile">Сохранить</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Login Modal -->
+    <div class="modal" id="loginModal" style="display: none;">
+      <div class="modal-content" style="max-width: 360px; padding: 18px;">
+        <div style="font-weight: 700; font-size: 13px; margin-bottom: 4px;">🛡️ Вход в SOC / DFIR Platform</div>
+        <div style="font-size: 11px; color: var(--text-muted); margin-bottom: 12px;">Локальная верификация аналитика (Argon2id)</div>
+        <div style="display: flex; flex-direction: column; gap: 8px; font-size: 11px;">
+          <div>
+            <label style="color: var(--text-secondary); display: block; margin-bottom: 2px;">Логин:</label>
+            <input type="text" id="loginInputUsername" value="sirojiddin" style="width: 100%; padding: 5px 8px; background: var(--bg-canvas); border: 1px solid var(--border-muted); border-radius: 4px; color: var(--text-primary); font-size: 12px;">
+          </div>
+          <div>
+            <label style="color: var(--text-secondary); display: block; margin-bottom: 2px;">Пароль:</label>
+            <input type="password" id="loginInputPassword" value="admin" style="width: 100%; padding: 5px 8px; background: var(--bg-canvas); border: 1px solid var(--border-muted); border-radius: 4px; color: var(--text-primary); font-size: 12px;">
+          </div>
+          <div id="loginErrorMsg" style="color: var(--accent-critical); font-size: 11px; display: none;"></div>
+          <button class="btn btn-primary" id="btnSubmitLogin" style="width: 100%; padding: 6px; margin-top: 4px;">Войти в систему</button>
         </div>
       </div>
     </div>
