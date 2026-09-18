@@ -4,7 +4,8 @@
   display: grid;
   grid-template-rows: 48px minmax(320px, 1fr) 280px;
   background:
-    radial-gradient(circle at center, rgba(35, 70, 110, 0.08), transparent 55%),
+    radial-gradient(ellipse at top, rgba(30, 58, 138, 0.15), transparent 60%),
+    radial-gradient(ellipse at bottom, rgba(15, 23, 42, 0.9), transparent 70%),
     var(--bg-canvas);
   overflow: hidden;
 }
@@ -13,39 +14,47 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 7px 14px;
+  padding: 7px 16px;
   border-bottom: 1px solid var(--border-muted);
   background: var(--bg-surface);
   user-select: none;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2);
 }
 
 .layer-toolbar button {
-  padding: 5px 11px;
+  padding: 6px 12px;
   background: var(--bg-canvas);
   color: var(--text-secondary);
   border: 1px solid var(--border-muted);
   border-radius: 6px;
   cursor: pointer;
   font-size: 11px;
-  font-weight: 500;
-  transition: all 0.15s;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
 }
 
 .layer-toolbar button:hover {
   background: var(--bg-surface-elevated);
   color: var(--text-primary);
+  border-color: var(--border-active);
 }
 
 .layer-toolbar button.active {
   color: var(--text-primary);
   border-color: var(--accent-info);
-  background: rgba(88, 166, 255, 0.12);
+  background: rgba(56, 189, 248, 0.14);
+  box-shadow: 0 0 10px rgba(56, 189, 248, 0.25);
 }
 
 .layer-toolbar button.danger.active {
-  color: #ff7b72;
-  border-color: #f85149;
-  background: rgba(248, 81, 73, 0.14);
+  color: #fff;
+  border-color: var(--accent-critical);
+  background: rgba(244, 63, 94, 0.2);
+  box-shadow: 0 0 12px rgba(244, 63, 94, 0.35);
 }
 
 .toolbar-spacer {
@@ -55,17 +64,21 @@
 #zoomLabel {
   font-family: var(--font-mono);
   font-size: 11px;
-  color: var(--text-muted);
-  min-width: 42px;
+  color: var(--text-secondary);
+  min-width: 44px;
   text-align: center;
+  font-weight: 600;
 }
 
 .investigation-canvas {
   min-height: 0;
   position: relative;
   overflow: hidden;
-  background-image: radial-gradient(var(--border-muted) 1px, transparent 1px);
-  background-size: 22px 22px;
+  background-color: #090d16;
+  background-image:
+    linear-gradient(rgba(38, 51, 77, 0.35) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(38, 51, 77, 0.35) 1px, transparent 1px);
+  background-size: 32px 32px;
 }
 
 #investigationGraph {
@@ -114,8 +127,9 @@
   justify-content: space-between;
   padding: 0 14px;
   border-bottom: 1px solid var(--border-muted);
-  background: var(--bg-surface);
+  background: var(--bg-surface-elevated);
   font-size: 11px;
+  font-weight: 600;
 }
 
 .timeline-panel select {
@@ -123,8 +137,9 @@
   color: var(--text-primary);
   border: 1px solid var(--border-muted);
   border-radius: 4px;
-  padding: 2px 6px;
+  padding: 3px 8px;
   font-size: 11px;
+  outline: none;
 }
 
 .timeline-events {
@@ -134,18 +149,23 @@
 
 .timeline-event {
   display: grid;
-  grid-template-columns: 60px minmax(0, 1fr);
+  grid-template-columns: 62px minmax(0, 1fr);
   gap: 10px;
-  padding: 8px 12px;
+  padding: 9px 14px;
   cursor: pointer;
-  border-bottom: 1px solid var(--border-muted);
+  border-bottom: 1px solid rgba(38, 51, 77, 0.4);
   font-size: 11px;
-  transition: background 0.1s;
+  transition: all 0.15s ease-out;
 }
 
 .timeline-event:hover,
 .timeline-event.active {
   background: var(--bg-surface-elevated);
+}
+
+.timeline-event.active {
+  border-left: 3px solid var(--accent-info) !important;
+  background: rgba(56, 189, 248, 0.08);
 }
 
 .timeline-time {

@@ -94,6 +94,18 @@
           <strong>Расследование пока пустое</strong>
           <span>Запустите сбор данных или загрузите артефакт.</span>
         </div>
+        <!-- Cyber HUD Overlay -->
+        <div id="graphTooltip" class="graph-tooltip"></div>
+        <div class="graph-legend">
+          <div class="legend-item"><span class="legend-dot" style="color: var(--accent-info); background: var(--accent-info);"></span><span>Хост</span></div>
+          <div class="legend-item"><span class="legend-dot" style="color: var(--accent-success); background: var(--accent-success);"></span><span>Процесс</span></div>
+          <div class="legend-item"><span class="legend-dot" style="color: var(--accent-critical); background: var(--accent-critical);"></span><span>Атака / TTP</span></div>
+          <div class="legend-item"><span class="legend-dot" style="color: var(--accent-purple); background: var(--accent-purple);"></span><span>Сеть</span></div>
+        </div>
+        <div class="graph-minimap">
+          <canvas id="minimapCanvas" class="minimap-canvas"></canvas>
+          <div id="minimapViewRect" class="minimap-viewrect"></div>
+        </div>
       </section>
 
       <!-- BOTTOM FORENSIC WORKSPACE -->
@@ -153,7 +165,7 @@
   <!-- STATUS BAR                                            -->
   <!-- ===================================================== -->
   <footer class="statusbar">
-    <span>● Расследование активно</span>
+    <span style="display: inline-flex; align-items: center;"><span class="status-beacon"></span>Расследование активно</span>
     <span>Риск: <strong id="riskLevel">LOW</strong></span>
     <span>Находки: <strong id="findingCount">0</strong></span>
     <span>Улики: <strong id="evidenceCount">0</strong></span>

@@ -175,22 +175,40 @@
 
 .global-nav button.active {
   color: var(--text-primary);
-  border-left-color: var(--accent-info);
-  background: rgba(88, 166, 255, 0.10);
+  border-left: 3px solid var(--accent-info);
+  background: linear-gradient(90deg, rgba(56, 189, 248, 0.16) 0%, transparent 100%);
   font-weight: 600;
+  box-shadow: inset 2px 0 8px rgba(56, 189, 248, 0.2);
 }
 
 .statusbar {
   display: flex;
   align-items: center;
   gap: 24px;
-  padding: 0 14px;
+  padding: 0 16px;
   background: var(--bg-surface);
   border-top: 1px solid var(--border-muted);
   font-size: 11px;
   color: var(--text-secondary);
   font-family: var(--font-mono);
   user-select: none;
+  box-shadow: 0 -1px 4px rgba(0, 0, 0, 0.2);
+}
+
+.status-beacon {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent-success);
+  box-shadow: 0 0 8px var(--accent-success);
+  margin-right: 6px;
+  animation: beacon-pulse 1.8s infinite ease-in-out;
+}
+
+@keyframes beacon-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.85); }
 }
 
 .statusbar strong {
