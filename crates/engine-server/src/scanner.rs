@@ -156,9 +156,7 @@ pub fn fingerprint_os(ports: &[u16]) -> (&'static str, &'static str) {
 /// Resolves IP to hostname using DNS or local environment
 pub fn resolve_hostname(ip: &str) -> String {
     if ip == "127.0.0.1" || ip == "localhost" {
-        return std::env::var("COMPUTERNAME")
-            .or_else(|_| std::env::var("HOSTNAME"))
-            .unwrap_or_else(|_| "PC-3002".to_string());
+        return platform_windows::local_hostname();
     }
     format!("HOST-{}", ip.replace(['.', ':'], "-"))
 }
@@ -373,7 +371,7 @@ pub async fn execute_network_scan(subnet: &str, mode: &str) -> serde_json::Value
 /// Correlates asset software stack against CVE vulnerability knowledge base with CPE 2.3 normalization
 pub fn execute_cve_scan(host_id: &str) -> serde_json::Value {
     let hostname = if host_id == "h_local" {
-        "PC-3002"
+        crate::default_host_id()
     } else {
         host_id
     };

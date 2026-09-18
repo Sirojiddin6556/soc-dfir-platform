@@ -132,47 +132,9 @@ pub fn enumerate_processes_deep(host_id: &str) -> Vec<ProcessObservation> {
         }
     }
 
-    // Fallback baseline for testing or when CIM is restricted
-    vec![
-        ProcessObservation {
-            host_id: host_id.to_string(),
-            pid: 4,
-            ppid: 0,
-            name: "System".to_string(),
-            executable_path: Some("C:\\Windows\\System32\\ntoskrnl.exe".to_string()),
-            command_line: None,
-            username: Some("NT AUTHORITY\\SYSTEM".to_string()),
-            session_id: 0,
-            started_at: Some(now.clone()),
-            sha256: None,
-            signer: Some("Microsoft Corporation".to_string()),
-            architecture: "x86_64".to_string(),
-            integrity_level: "System".to_string(),
-            collected_at: now.clone(),
-            collector_version: "0.2.0".to_string(),
-            source: "WindowsProcessCollector".to_string(),
-        },
-        ProcessObservation {
-            host_id: host_id.to_string(),
-            pid: std::process::id(),
-            ppid: 4,
-            name: "desktop-app.exe".to_string(),
-            executable_path: std::env::current_exe()
-                .ok()
-                .map(|p| p.to_string_lossy().to_string()),
-            command_line: Some("desktop-app.exe".to_string()),
-            username: Some(format!("{}\\Siroj", host_id)),
-            session_id: 1,
-            started_at: Some(now.clone()),
-            sha256: std::env::current_exe()
-                .ok()
-                .and_then(|p| compute_file_sha256(&p.to_string_lossy())),
-            signer: Some("Self-Signed (SOC Platform)".to_string()),
-            architecture: "x86_64".to_string(),
-            integrity_level: "Medium".to_string(),
-            collected_at: now,
-            collector_version: "0.2.0".to_string(),
-            source: "WindowsProcessCollector".to_string(),
-        },
-    ]
+    // Live collection failed or is unavailable on this platform. Return an
+    // honest empty result rather than fabricating forensic findings.
+    tracing::warn!("enumerate_processes_deep: live collection unavailable, returning empty result");
+    let _ = (host_id, now);
+    Vec::new()
 }

@@ -19,9 +19,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let base_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let cas_dir = base_dir.join("data").join("cas");
+    let db_path = base_dir.join("data").join("case.db");
     let ui_dir = base_dir.join("apps").join("desktop-ui");
 
-    let app = Arc::new(EngineApp::new_in_memory(cas_dir));
+    let app = Arc::new(EngineApp::new(cas_dir, db_path)?);
     let listener = TcpListener::bind("127.0.0.1:8080").await?;
     let addr = listener.local_addr()?;
     tracing::info!("Desktop Server Listening on http://{}", addr);

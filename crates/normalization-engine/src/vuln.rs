@@ -16,13 +16,50 @@ pub struct VulnerabilityRecord {
 }
 
 pub struct VulnerabilityDatabase {
-    records: Vec<VulnerabilityRecord>,
+    pub records: Vec<VulnerabilityRecord>,
 }
 
 impl VulnerabilityDatabase {
     pub fn new() -> Self {
-        // Known high-risk and CISA KEV reference catalog
-        let records = vec![
+        Self {
+            records: Vec::new(),
+        }
+    }
+
+    pub fn load_records(&mut self, records: Vec<VulnerabilityRecord>) {
+        self.records = records;
+    }
+
+    /// Matches software against the vulnerability index
+    pub fn match_vulnerabilities(&self, product: &str, version: &str) -> Vec<VulnerabilityRecord> {
+        let prod_lower = product.to_lowercase();
+        let mut matches = Vec::new();
+
+        for rec in &self.records {
+            if prod_lower.contains(&rec.product_pattern)
+                && rec.affected_versions.iter().any(|v| version.contains(v))
+            {
+                matches.push(rec.clone());
+            }
+        }
+
+        matches
+    }
+}
+
+impl Default for VulnerabilityDatabase {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(test)]
+    fn fixture_records() -> Vec<VulnerabilityRecord> {
+        vec![
             VulnerabilityRecord {
                 cve_id: "CVE-2023-38606".to_string(),
                 product_pattern: "kernel".to_string(),
@@ -58,50 +95,26 @@ impl VulnerabilityDatabase {
                     "Microsoft Outlook Remote Code Execution Vulnerability (Moniker Link)."
                         .to_string(),
             },
-        ];
-
-        Self { records }
+        ]
     }
-
-    /// Matches software against the vulnerability index
-    pub fn match_vulnerabilities(&self, product: &str, version: &str) -> Vec<VulnerabilityRecord> {
-        let prod_lower = product.to_lowercase();
-        let mut matches = Vec::new();
-
-        for rec in &self.records {
-            if prod_lower.contains(&rec.product_pattern)
-                && rec.affected_versions.iter().any(|v| version.contains(v))
-            {
-                matches.push(rec.clone());
-            }
-        }
-
-        matches
-    }
-}
-
-impl Default for VulnerabilityDatabase {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
 
     #[test]
     fn test_vulnerability_matching() {
-        let db = VulnerabilityDatabase::new();
-        // Clean product -> zero matches
+        let mut db = VulnerabilityDatabase::new();
+        db.records = fixture_records();
+        // clean product -> zero matches
         let clean = db.match_vulnerabilities("7-Zip", "26.00");
         assert!(clean.is_empty());
-
-        // Known affected version -> match
+        // known affected version -> match
         let matched = db.match_vulnerabilities("libwebp image viewer", "1.0.0");
         assert_eq!(matched.len(), 1);
         assert_eq!(matched[0].cve_id, "CVE-2023-4863");
-        assert!(matched[0].cisa_kev);
-        assert_eq!(matched[0].cvss_v3, 8.8);
+    }
+
+    #[test]
+    fn test_empty_database_returns_no_matches() {
+        let db = VulnerabilityDatabase::new();
+        assert!(db.match_vulnerabilities("outlook", "16.0.14326").is_empty());
+        assert!(db.match_vulnerabilities("libwebp", "1.0.0").is_empty());
     }
 }

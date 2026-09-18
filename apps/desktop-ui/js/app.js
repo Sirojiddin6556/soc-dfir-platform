@@ -27,8 +27,31 @@ class SocDfirApplication {
     this.setupGlobalSearch();
 
     try { await this.ensureLocalAuth(); } catch (e) { console.warn('[Auth]', e.message); }
+    try { await this.ensureActiveCase(); } catch (e) { console.warn('[Case]', e.message); }
     try { await this.workspace.init(); } catch (e) { console.warn('[Workspace]', e.message); }
     try { await this.presence.init(); } catch (e) { console.warn('[Presence]', e.message); }
+  }
+
+  /**
+   * Guarantees a real, persisted case exists and is selected before the
+   * workspace loads. Without this, the UI falls back to the placeholder
+   * case id baked into index.html, which does not exist in the database.
+   */
+  async ensureActiveCase() {
+    const cases = await this.ipc.call('cases.list', {});
+    let active = Array.isArray(cases) && cases.length > 0 ? cases[0] : null;
+
+    if (!active) {
+      active = await this.ipc.call('cases.create', {
+        title: `Расследование от ${new Date().toLocaleDateString('ru-RU')}`
+      });
+    }
+
+    const realId = active && (active.case_id || active.id);
+    const caseEl = document.getElementById('caseId');
+    if (caseEl && realId) {
+      caseEl.textContent = realId;
+    }
   }
 
   async ensureLocalAuth() {

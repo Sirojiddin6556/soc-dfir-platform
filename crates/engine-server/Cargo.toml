@@ -29,6 +29,8 @@ platform-windows = { path = "../platform-windows" }
 
 uuid = { workspace = true, features = ["v7"] }
 chrono.workspace = true
+blake3.workspace = true
+base64.workspace = true
 tokio = { workspace = true, features = ["full"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true

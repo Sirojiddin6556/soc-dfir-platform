@@ -159,50 +159,155 @@ export class InvestigationGraph {
     const parent = this.canvas ? this.canvas.parentElement : null;
     const width = parent ? parent.clientWidth : 800;
     const height = parent ? parent.clientHeight : 500;
-    const centerX = width / 2;
-    const centerY = height / 2;
 
     this.nodePositions.clear();
 
     const hostNodes = nodes.filter(n => n.type === 'host');
-    const procNodes = nodes.filter(n => n.type === 'process');
-    const netNodes = nodes.filter(n => n.type === 'network');
     const findNodes = nodes.filter(n => n.type === 'finding');
+    // Processes and network sockets share one set of concentric arcs fanning
+    // out to the right of the host. A single placement function for every
+    // non-host, non-finding node -- regardless of type or attack-path status
+    // -- means different layers/filters can never assign two node types to
+    // the same screen position, and confining the fan to the host's right
+    // side (instead of a full 360° circle) means a ring can never wrap back
+    // around and collide with the host itself.
+    const orbitNodes = nodes.filter(n => n.type !== 'host' && n.type !== 'finding');
 
+    const fixed = new Set();
+    const originX = Math.min(280, width * 0.22);
+    const originY = height / 2;
     hostNodes.forEach((n, i) => {
-      this.nodePositions.set(n.id, { x: centerX - 240 + i * 220, y: centerY - 140 });
+      this.nodePositions.set(n.id, { x: originX + i * 220, y: originY });
+      fixed.add(n.id);
     });
 
-    const attackProcs = procNodes.filter(p => p.in_attack_path);
-    const normalProcs = procNodes.filter(p => !p.in_attack_path);
+    // Seed positions on an even grid to the right of the host instead of an
+    // angular fan. A fan's rings necessarily converge back together near its
+    // two extreme angles (cos/sin both shrink the further out you go), which
+    // recreated the same "several nodes on top of each other" problem right
+    // at the top and bottom edges once enough nodes were on one host (e.g.
+    // the Сеть layer with every process *and* every socket). A grid has no
+    // such convergence point: spacing between any two neighbours stays
+    // uniform no matter how many nodes there are, so it only gets tighter
+    // (never collapses) as the node count grows. Alternate rows are
+    // staggered by half a cell purely so the result doesn't read as rigid
+    // vertical columns once the host-to-node lines are drawn through it.
+    const availableWidth = Math.max(200, width - originX - 60);
+    const availableHeight = Math.max(160, height - 60);
+    const n = orbitNodes.length;
+    const cols = Math.max(1, Math.round(Math.sqrt(n * (availableWidth / availableHeight))));
+    const rows = Math.max(1, Math.ceil(n / cols));
+    const cellW = availableWidth / cols;
+    const cellH = availableHeight / rows;
+    const gridStartX = originX + 50;
+    const gridStartY = originY - availableHeight / 2;
 
-    attackProcs.forEach((n, i) => {
-      this.nodePositions.set(n.id, { x: centerX - 20 + i * 140, y: centerY + 20 + (i % 2) * 50 });
-    });
-
-    normalProcs.forEach((n, i) => {
-      const angle = (i / Math.max(1, normalProcs.length)) * Math.PI * 2;
-      const radius = 180 + (i % 3) * 45;
-      this.nodePositions.set(n.id, {
-        x: centerX + Math.cos(angle) * radius,
-        y: centerY + Math.sin(angle) * radius
+    orbitNodes.forEach((node, i) => {
+      const col = i % cols;
+      const row = Math.floor(i / cols);
+      const staggerX = (row % 2) * (cellW / 2);
+      this.nodePositions.set(node.id, {
+        x: gridStartX + staggerX + col * cellW + cellW / 2,
+        y: gridStartY + row * cellH + cellH / 2
       });
     });
 
-    netNodes.forEach((n, i) => {
-      const angle = (i / Math.max(1, netNodes.length)) * Math.PI * 1.6;
-      this.nodePositions.set(n.id, {
-        x: centerX + 280 + Math.cos(angle) * 110,
-        y: centerY - 40 + Math.sin(angle) * 130
-      });
-    });
-
+    // Findings sit in a column to the left of the host, wrapping into extra
+    // columns (rather than a fixed 55px step) once there are too many to fit
+    // the canvas height -- otherwise the later findings in a case with many
+    // of them silently render below the visible area.
+    const findColCount = Math.max(1, Math.ceil((findNodes.length * 55) / availableHeight));
+    const findPerCol = Math.ceil(findNodes.length / findColCount);
+    const findRowGap = Math.min(55, availableHeight / Math.max(1, findPerCol));
     findNodes.forEach((n, i) => {
+      const col = Math.floor(i / findPerCol);
+      const row = i % findPerCol;
       this.nodePositions.set(n.id, {
-        x: centerX - 320 + (i % 2) * 40,
-        y: centerY + 60 + i * 55
+        x: Math.max(40, originX - 200 - col * 130),
+        y: Math.min(height - 40, originY + 100 + row * findRowGap)
       });
+      fixed.add(n.id);
     });
+
+    // The arc above is only a starting guess. However many nodes land on a
+    // host, a short collision-relaxation pass (the same idea as d3's
+    // forceCollide) pushes any two circles that are still touching apart
+    // until none overlap, so labels stay readable regardless of node count.
+    this.resolveCollisions(nodes, fixed, width, height);
+  }
+
+  nodeCollisionRadius(node) {
+    const base = node.type === 'host' ? 26 : (node.type === 'finding' ? 20 : 18);
+    // Padding approximates the label rendered under the circle so two nodes
+    // stop before their labels touch, not just before their circles do. The
+    // circle itself is small and constant, but labels like "IntelCpHDCPSvc.exe"
+    // or "TCP:49674" are wide, so scale the padding with label length instead
+    // of a flat constant -- otherwise long names still collide visually even
+    // when the circles themselves have cleared each other.
+    const label = String(node.label || node.id || '');
+    const subtitle = String(node.subtitle || '');
+    const textHalfWidth = (Math.max(label.length, subtitle.length) * 5.4) / 2;
+    return base + Math.max(34, textHalfWidth + 12);
+  }
+
+  resolveCollisions(nodes, fixed, width, height) {
+    const iterations = 120;
+    const padding = 6;
+
+    for (let pass = 0; pass < iterations; pass++) {
+      let moved = false;
+
+      for (let i = 0; i < nodes.length; i++) {
+        const posA = this.nodePositions.get(nodes[i].id);
+        if (!posA) continue;
+
+        for (let j = i + 1; j < nodes.length; j++) {
+          const posB = this.nodePositions.get(nodes[j].id);
+          if (!posB) continue;
+
+          const dx = posB.x - posA.x;
+          const dy = posB.y - posA.y;
+          let dist = Math.hypot(dx, dy);
+          const minDist = this.nodeCollisionRadius(nodes[i]) + this.nodeCollisionRadius(nodes[j]) + padding;
+
+          if (dist < minDist) {
+            moved = true;
+            if (dist < 0.001) {
+              dist = 0.001;
+            }
+            const overlap = (minDist - dist) / 2;
+            const ux = dx / dist;
+            const uy = dy / dist;
+            const aFixed = fixed.has(nodes[i].id);
+            const bFixed = fixed.has(nodes[j].id);
+
+            if (!aFixed && !bFixed) {
+              posA.x -= ux * overlap;
+              posA.y -= uy * overlap;
+              posB.x += ux * overlap;
+              posB.y += uy * overlap;
+            } else if (!aFixed) {
+              posA.x -= ux * overlap * 2;
+              posA.y -= uy * overlap * 2;
+            } else if (!bFixed) {
+              posB.x += ux * overlap * 2;
+              posB.y += uy * overlap * 2;
+            }
+          }
+        }
+      }
+
+      if (!moved) break;
+    }
+
+    const margin = 40;
+    for (const node of nodes) {
+      if (fixed.has(node.id)) continue;
+      const pos = this.nodePositions.get(node.id);
+      if (!pos) continue;
+      pos.x = Math.min(width - margin, Math.max(margin, pos.x));
+      pos.y = Math.min(height - margin, Math.max(margin, pos.y));
+    }
   }
 
   hitTest(x, y) {

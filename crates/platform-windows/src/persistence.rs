@@ -117,17 +117,13 @@ pub fn enumerate_registry_autoruns() -> Vec<RegistryAutorunObservation> {
         }
     }
 
-    // Fallback baseline for testing
-    vec![RegistryAutorunObservation {
-        hive: "HKLM".to_string(),
-        key: "HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run".to_string(),
-        value_name: "SecurityHealth".to_string(),
-        value_data: "%windir%\\system32\\SecurityHealthSystray.exe".to_string(),
-        resolved_executable: "C:\\Windows\\system32\\SecurityHealthSystray.exe".to_string(),
-        hash: None,
-        owner: Some("NT AUTHORITY\\SYSTEM".to_string()),
-        timestamp: now,
-    }]
+    // Live collection failed or is unavailable on this platform. Return an
+    // honest empty result rather than fabricating a forensic finding.
+    tracing::warn!(
+        "enumerate_registry_autoruns: live collection unavailable, returning empty result"
+    );
+    let _ = now;
+    Vec::new()
 }
 
 /// Enumerates real Scheduled Tasks with executable actions
@@ -193,17 +189,11 @@ pub fn enumerate_scheduled_tasks() -> Vec<ScheduledTaskObservation> {
         }
     }
 
-    // Fallback baseline for testing
-    vec![ScheduledTaskObservation {
-        task_name: "OneDrive Standalone Update Task".to_string(),
-        task_path: "\\Microsoft\\OneDrive".to_string(),
-        state: "Ready".to_string(),
-        action: Some(
-            "C:\\Users\\User\\AppData\\Local\\Microsoft\\OneDrive\\OneDriveStandaloneUpdater.exe"
-                .to_string(),
-        ),
-        arguments: None,
-        run_level: "LeastPrivilege".to_string(),
-        collected_at: now,
-    }]
+    // Live collection failed or is unavailable on this platform. Return an
+    // honest empty result rather than fabricating a forensic finding.
+    tracing::warn!(
+        "enumerate_scheduled_tasks: live collection unavailable, returning empty result"
+    );
+    let _ = now;
+    Vec::new()
 }

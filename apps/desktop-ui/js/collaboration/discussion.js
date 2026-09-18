@@ -30,9 +30,10 @@ export class ContextDiscussion {
   async loadForEntity(entity) {
     this.currentEntity = entity;
     try {
+      const caseId = document.getElementById('caseId')?.textContent.trim();
       const res = await this.ipc.call('chat.entity.thread', {
         entity_type: entity?.type || 'case',
-        entity_id: entity?.id || 'INC-LIVE-001'
+        entity_id: entity?.id || caseId
       });
       if (res && res.messages) {
         this.messages = res.messages;

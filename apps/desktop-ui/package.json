@@ -5,7 +5,7 @@
   "main": "index.html",
   "scripts": {
     "start": "npx serve .",
-    "test": "echo \"Frontend tests passed: WCAG AA verified, shape badges active, 3-pane layout loaded.\" && exit 0"
+    "test": "node scripts/check-syntax.mjs"
   },
   "keywords": ["soc", "dfir", "cyber-range", "mitre-attack"],
   "author": "Blue Team Engineering",

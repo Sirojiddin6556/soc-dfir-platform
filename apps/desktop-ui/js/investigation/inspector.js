@@ -1,6 +1,7 @@
 export class EntityInspector {
-  constructor(container) {
+  constructor(container, store) {
     this.container = container;
+    this.store = store;
     this.currentEntity = null;
     this.currentTab = 'context';
     this.initTabs();
@@ -75,16 +76,16 @@ export class EntityInspector {
         <span class="inspector-value">${h.criticality || 'Tier-1'}</span>
 
         <span class="inspector-label">Процессы:</span>
-        <span class="inspector-value">${h.processes_count || 218} активных</span>
+        <span class="inspector-value">${h.processes_count ?? 0} активных</span>
 
         <span class="inspector-label">Соединения:</span>
-        <span class="inspector-value">${h.sockets_count || 74} портов</span>
+        <span class="inspector-value">${h.sockets_count ?? 0} портов</span>
 
         <span class="inspector-label">Находки:</span>
-        <span class="inspector-value" style="color: var(--accent-critical); font-weight: bold;">${h.findings_count || 0}</span>
+        <span class="inspector-value" style="color: var(--accent-critical); font-weight: bold;">${h.findings_count ?? 0}</span>
 
         <span class="inspector-label">Улики / CAS:</span>
-        <span class="inspector-value">${h.evidence_count || 17} артефактов</span>
+        <span class="inspector-value">${h.evidence_count ?? 0} артефактов</span>
       </div>
 
       <div class="inspector-actions">
@@ -102,7 +103,7 @@ export class EntityInspector {
       <div class="inspector-header">
         <div>
           <div class="inspector-title">⚙️ ${p.label || p.name || p.id}</div>
-          <div class="inspector-subtitle">PID ${p.pid || p.id} • Хост ${p.host_id || 'PC-3002'}</div>
+          <div class="inspector-subtitle">PID ${p.pid || p.id} • Хост ${p.host_id || '—'}</div>
         </div>
         <span class="badge ${p.state === 'suspicious' || p.severity === 'high' ? 'badge-critical' : 'badge-proc'}">${p.state || 'active'}</span>
       </div>
@@ -112,13 +113,13 @@ export class EntityInspector {
         <span class="inspector-value">${p.pid || '—'} / ${p.ppid || '—'}</span>
 
         <span class="inspector-label">Путь:</span>
-        <span class="inspector-value">${p.path || p.executable_path || 'C:\\Windows\\System32\\...'}</span>
+        <span class="inspector-value">${p.path || p.executable_path || 'Неизвестно'}</span>
 
         <span class="inspector-label">Командная строка:</span>
-        <span class="inspector-value" style="font-size: 10px;">${p.command_line || 'powershell.exe -ExecutionPolicy Bypass'}</span>
+        <span class="inspector-value" style="font-size: 10px;">${p.command_line || '—'}</span>
 
         <span class="inspector-label">SHA-256:</span>
-        <span class="inspector-value" style="font-size: 9px;">${p.sha256 || 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'}</span>
+        <span class="inspector-value" style="font-size: 9px;">${p.sha256 || 'не вычислен'}</span>
 
         <span class="inspector-label">Верификация:</span>
         <span class="inspector-value" style="color: var(--accent-info);">${p.verification || 'corroborated'}</span>
@@ -145,13 +146,13 @@ export class EntityInspector {
 
       <div class="inspector-grid">
         <span class="inspector-label">Правило:</span>
-        <span class="inspector-value">${f.rule_id || 'CORR-WIN-001'}</span>
+        <span class="inspector-value">${f.rule_id || '—'}</span>
 
         <span class="inspector-label">Tactic / Technique:</span>
-        <span class="inspector-value">${f.mitre_tactic || 'Execution'} / ${f.mitre_technique || 'T1059.001'}</span>
+        <span class="inspector-value">${f.mitre_tactic || '—'} / ${f.mitre_technique || '—'}</span>
 
         <span class="inspector-label">Entity Key:</span>
-        <span class="inspector-value">${f.entity_key || f.host_id || 'PC-3002'}</span>
+        <span class="inspector-value">${f.entity_key || f.host_id || '—'}</span>
 
         <span class="inspector-label">Верификация:</span>
         <span class="inspector-value" style="color: var(--accent-success);">Подтверждено фактами</span>
@@ -174,34 +175,44 @@ export class EntityInspector {
       <div class="inspector-header">
         <div class="inspector-title">Улики объекта ${ent.label || ent.id}</div>
       </div>
-      <div style="font-size: 11px; display: flex; flex-direction: column; gap: 8px; margin-top: 8px;">
-        <div style="background: var(--bg-canvas); border: 1px solid var(--border-muted); padding: 8px; border-radius: 4px;">
-          <div style="font-weight: bold; color: var(--accent-info);">CAS Blob: sha256:7a3f...</div>
-          <div style="font-size: 10px; color: var(--text-muted); margin-top: 2px;">Захваченный процесс / memory dump slice</div>
-        </div>
-        <div style="background: var(--bg-canvas); border: 1px solid var(--border-muted); padding: 8px; border-radius: 4px;">
-          <div style="font-weight: bold; color: var(--accent-warning);">EVTX Observation: EventID 4688</div>
-          <div style="font-size: 10px; color: var(--text-muted); margin-top: 2px;">Создание процесса powershell.exe от WINWORD.EXE</div>
-        </div>
+      <div style="font-size: 11px; color: var(--text-muted); margin-top: 8px;">
+        Привязка объектов CAS/EVTX к конкретной сущности графа пока не реализована.
       </div>
     `;
   }
 
   renderRelationsTab(ent) {
+    const edges = (this.store && this.store.graph.edges) || [];
+    const related = edges.filter(e => e.source === ent.id || e.target === ent.id);
+
+    if (related.length === 0) {
+      this.container.innerHTML = `
+        <div class="inspector-header">
+          <div class="inspector-title">Связи и топология</div>
+        </div>
+        <div style="font-size: 11px; color: var(--text-muted); margin-top: 8px;">Связей для этого объекта не найдено.</div>
+      `;
+      return;
+    }
+
+    const rows = related.map(e => {
+      const outgoing = e.source === ent.id;
+      const otherId = outgoing ? e.target : e.source;
+      const arrow = outgoing ? '→' : '←';
+      const borderColor = e.in_attack_path ? 'var(--accent-critical)' : 'var(--accent-info)';
+      return `
+        <div style="padding: 6px; background: var(--bg-canvas); border-left: 2px solid ${borderColor}; border-radius: 2px;">
+          <span>${arrow} ${e.relation || 'связано с'} <strong>${otherId}</strong></span>
+        </div>
+      `;
+    }).join('');
+
     this.container.innerHTML = `
       <div class="inspector-header">
         <div class="inspector-title">Связи и топология</div>
       </div>
       <div style="font-size: 11px; display: flex; flex-direction: column; gap: 6px; margin-top: 8px;">
-        <div style="padding: 6px; background: var(--bg-canvas); border-left: 2px solid var(--accent-info); border-radius: 2px;">
-          <span>← Порожден процессом <strong>WINWORD.EXE (PID 3520)</strong></span>
-        </div>
-        <div style="padding: 6px; background: var(--bg-canvas); border-left: 2px solid var(--accent-purple); border-radius: 2px;">
-          <span>→ Сетевое соединение к <strong>185.231.72.14:443</strong></span>
-        </div>
-        <div style="padding: 6px; background: var(--bg-canvas); border-left: 2px solid var(--accent-critical); border-radius: 2px;">
-          <span>⚠ Вызвало срабатывание <strong>CORR-WIN-001 (High Risk)</strong></span>
-        </div>
+        ${rows}
       </div>
     `;
   }

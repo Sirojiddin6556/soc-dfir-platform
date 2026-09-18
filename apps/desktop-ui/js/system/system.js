@@ -26,9 +26,9 @@ export class SystemSpace {
             <div style="font-weight: bold; font-size: 13px; margin-bottom: 12px;">База данных и CAS</div>
             <div style="font-size: 11px; display: flex; flex-direction: column; gap: 6px;">
               <div>Движок СУБД: <strong>SQLite 3 with WAL</strong></div>
-              <div>Таблиц схемы: <strong>19 таблиц (Миграции 001-003)</strong></div>
-              <div>Размер CAS: <strong>1.2 ГБ</strong></div>
-              <div>Состояние сессий: <strong>Argon2id Active</strong></div>
+              <div>Миграции схемы: <strong>001-003</strong></div>
+              <div>Путь CAS: <strong>data/cas</strong></div>
+              <div>Хеширование сессий: <strong>Argon2id</strong></div>
             </div>
           </div>
         </div>

@@ -21,12 +21,13 @@ pub fn hash_password(password: &str) -> String {
 }
 
 pub fn verify_password(password: &str, stored_hash: &str) -> bool {
-    if let Ok(parsed) = PasswordHash::new(stored_hash) {
-        Argon2::default()
+    match PasswordHash::new(stored_hash) {
+        Ok(parsed) => Argon2::default()
             .verify_password(password.as_bytes(), &parsed)
-            .is_ok()
-    } else {
-        stored_hash == password || stored_hash == "sha256_mock_hash"
+            .is_ok(),
+        // Not a valid Argon2 hash -> never authenticate. In particular this
+        // refuses plaintext-equality and any placeholder/mock hash value.
+        Err(_) => false,
     }
 }
 

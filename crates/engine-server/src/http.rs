@@ -18,9 +18,10 @@ pub async fn bind_server(preferred_port: u16) -> Result<TcpListener, std::io::Er
 pub async fn run_server_loop(
     listener: TcpListener,
     cas_dir: PathBuf,
+    db_path: PathBuf,
     ui_dir: PathBuf,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let app = Arc::new(EngineApp::new_in_memory(cas_dir));
+    let app = Arc::new(EngineApp::new(cas_dir, db_path)?);
     tracing::info!(
         "Embedded Desktop Server listening on http://{}",
         listener.local_addr()?
@@ -43,10 +44,11 @@ pub async fn run_server_loop(
 pub async fn run_embedded_server(
     addr: &str,
     cas_dir: PathBuf,
+    db_path: PathBuf,
     ui_dir: PathBuf,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let listener = TcpListener::bind(addr).await?;
-    run_server_loop(listener, cas_dir, ui_dir).await
+    run_server_loop(listener, cas_dir, db_path, ui_dir).await
 }
 
 pub async fn handle_connection(

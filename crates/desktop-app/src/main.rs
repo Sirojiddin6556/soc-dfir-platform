@@ -35,6 +35,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let ui_dir = root_dir.join("apps").join("desktop-ui");
     let cas_dir = root_dir.join("data").join("cas");
+    let db_path = root_dir.join("data").join("case.db");
 
     // 2. Bind local HTTP / IPC server to port 8080 or dynamic fallback
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -53,7 +54,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ui_dir_clone = ui_dir.clone();
     std::thread::spawn(move || {
         rt.block_on(async move {
-            let _ = engine_server::run_server_loop(listener, cas_dir, ui_dir_clone).await;
+            if let Err(e) =
+                engine_server::run_server_loop(listener, cas_dir, db_path, ui_dir_clone).await
+            {
+                tracing::error!("Engine server loop terminated: {}", e);
+            }
         });
     });
 

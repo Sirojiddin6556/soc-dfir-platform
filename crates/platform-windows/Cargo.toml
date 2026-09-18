@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 core-domain = { path = "../core-domain" }
 thiserror.workspace = true
+tracing.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 chrono = { workspace = true }

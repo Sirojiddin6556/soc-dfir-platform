@@ -10,8 +10,9 @@ export class InvestigationWorkspace {
     this.store = new InvestigationStore();
     this.graph = new InvestigationGraph(document.getElementById('investigationGraph'));
     this.timeline = new InvestigationTimeline(document.getElementById('timelineEvents'));
-    this.inspector = new EntityInspector(document.getElementById('entityInspector'));
+    this.inspector = new EntityInspector(document.getElementById('entityInspector'), this.store);
     this.discussion = new ContextDiscussion(ipc);
+    this._entityLoadToken = 0;
   }
 
   async init() {
@@ -95,25 +96,44 @@ export class InvestigationWorkspace {
       btn.disabled = true;
       btn.textContent = '⏳ Сбор данных...';
       try {
+        const caseId = this.getCurrentCaseId();
         await this.ipc.call('scan.network', { subnet: '127.0.0.1', mode: 'quick' });
-        await this.ipc.call('host.correlate', { host_id: 'PC-3002' });
+        await this.ipc.call('host.correlate', { case_id: caseId, refresh: true });
         await this.refresh();
       } catch (err) {
         console.warn('Collection error:', err);
+        btn.textContent = '⚠ Ошибка сбора';
+        setTimeout(() => { btn.textContent = '▶ Запустить сбор'; }, 2500);
+        return;
       } finally {
         btn.disabled = false;
-        btn.textContent = '▶ Запустить сбор';
       }
+      btn.textContent = '▶ Запустить сбор';
     });
   }
 
   async loadEntity(entity) {
-    const result = await this.ipc.call('entity.get', {
-      type: entity.type,
-      id: entity.id
-    });
+    // Guards against two problems that otherwise make the context panel show
+    // data from the wrong entity ("windows mixing up"):
+    // 1. entity.get only has a real lookup for Finding/Evidence today; for
+    //    process/host/network it honestly answers {found:false, ...}. That
+    //    stub must not overwrite the richer data the graph node already has.
+    // 2. Clicking a second node before the first entity.get resolves must not
+    //    let the slower, stale response clobber the newer selection.
+    const token = ++this._entityLoadToken;
+    let result = null;
+    try {
+      result = await this.ipc.call('entity.get', {
+        type: entity.type,
+        id: entity.id
+      });
+    } catch (e) {
+      console.warn('[Investigation] entity.get failed:', e.message);
+    }
 
-    const fullEntity = result || entity;
+    if (token !== this._entityLoadToken) return;
+
+    const fullEntity = (result && result.found) ? { ...entity, ...result } : entity;
     this.inspector.render(fullEntity);
     await this.discussion.loadForEntity(fullEntity);
   }
@@ -139,17 +159,18 @@ export class InvestigationWorkspace {
     const riskEl = document.getElementById('riskLevel');
 
     if (findingsEl) findingsEl.textContent = this.store.findings.length;
-    if (evidenceEl) evidenceEl.textContent = this.store.evidence.length || 17;
-    if (hostsEl) hostsEl.textContent = this.store.assets.length || 1;
+    if (evidenceEl) evidenceEl.textContent = this.store.evidence.length;
+    if (hostsEl) hostsEl.textContent = this.store.assets.length;
 
-    if (riskEl && this.store.case) {
-      riskEl.textContent = this.store.case.risk || 'HIGH';
-      riskEl.style.color = (this.store.case.risk === 'HIGH' || this.store.case.risk === 'CRITICAL') ? 'var(--accent-critical)' : 'var(--accent-info)';
+    if (riskEl) {
+      const risk = this.store.case && this.store.case.risk;
+      riskEl.textContent = risk || '—';
+      riskEl.style.color = (risk === 'HIGH' || risk === 'CRITICAL') ? 'var(--accent-critical)' : 'var(--accent-info)';
     }
   }
 
   getCurrentCaseId() {
-    return document.getElementById('caseId')?.textContent.trim() || 'INC-LIVE-001';
+    return document.getElementById('caseId')?.textContent.trim() || null;
   }
 
   show() {

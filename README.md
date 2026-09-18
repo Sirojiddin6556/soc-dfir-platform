@@ -44,21 +44,38 @@ soc-dfir-platform/
 ├── apps/
 │   └── desktop-ui/           # Локальный Forensic UI (HTML5, Vanilla JS, CSS Glassmorphism)
 ├── crates/
-│   ├── core-domain/          # Эпистемическая модель: Fact, Inference, Hypothesis, Observation
-│   ├── platform-windows/     # Сбор телеметрии Windows (WinAPI, WMI, реестр, сокеты)
-│   ├── platform-linux/       # Сбор телеметрии Linux (/proc, netlink, sysfs)
-│   ├── privilege-broker/     # Безопасный брокер привилегированных вызовов
-│   ├── normalization-engine/ # Парсинг EVTX/PCAP, генерация CPE 2.3/PURL, сопоставление CVE
-│   ├── correlation-engine/   # Детерминированный корреляционный движок и правила находок
-│   ├── graph-engine/         # Граф атак и взаимосвязей сущностей
-│   ├── timeline-engine/      # Временные дорожки событий и артефактов
-│   ├── storage-cas/          # Контентно-адресуемое хранилище артефактов (BLAKE3)
-│   ├── storage-sqlite/       # Реляционное хранилище расследований (19 таблиц SQLite WAL)
-│   ├── ipc-protocol/         # JSON-RPC 2.0 протокол взаимодействия UI и движка
-│   ├── engine-server/        # Фоновый сервис ядра расследований и диспетчер IPC
-│   └── desktop-app/          # Нативный десктопный бинарник (WebView2)
-└── docs/                     # Детальная инженерная документация
+│   ├── core-domain/           # Эпистемическая модель: Fact, Inference, Hypothesis, Observation
+│   ├── platform-windows/      # Сбор телеметрии Windows (PowerShell/WMI, реестр, сокеты)
+│   ├── platform-linux/        # Сбор телеметрии Linux (/proc, netlink, sysfs)
+│   ├── privilege-broker/      # Типизированный брокер привилегированных операций + аудит-лог
+│   ├── normalization-engine/  # Парсинг EVTX/PCAP, генерация CPE 2.3/PURL, сопоставление CVE
+│   ├── correlation-engine/    # Детерминированный корреляционный движок и правила находок
+│   ├── graph-engine/          # Граф атак и взаимосвязей сущностей
+│   ├── timeline-engine/       # Временные дорожки событий и артефактов
+│   ├── taxonomy-projection/   # Проекция находок на таксономию/Pyramid of Pain
+│   ├── evidence-engine/       # Работа с криминалистическими объектами улик
+│   ├── tool-adapters/         # Парсеры внешних форматов (EVTX/PCAP) для инструментов
+│   ├── workflow-dag/          # Планировщик задач с DAG-зависимостями и лимитами ресурсов
+│   ├── storage-cas/           # Контентно-адресуемое хранилище артефактов (BLAKE3)
+│   ├── storage-sqlite/        # Реляционное хранилище расследований (SQLite WAL)
+│   ├── ipc-protocol/          # JSON-RPC 2.0 протокол взаимодействия UI и движка
+│   ├── engine-server/         # Диспетчер IPC, корреляция, кейс-менеджмент, коллаборация
+│   ├── desktop-app/           # Нативный десктопный бинарник (Tao/Wry WebView)
+│   ├── scenario-engine/       # Загрузка и проверка подписи сценариев Cyber Range
+│   ├── scenario-verifier/     # Сверка результатов игрока со сценарием
+│   ├── scoring-engine/        # Пояснимый скоринг сценариев (§17.2)
+│   ├── diagram-engine/        # Построение диаграмм атак
+│   └── report-engine/         # Формирование сводки инцидента по фактам и графу
+└── docs/                      # Детальная инженерная документация
 ```
+
+> Часть возможностей out of scope для текущей версии: снятие дампа памяти
+> процесса и захват сетевого трафика (`AcquireMemorySample`/`CapturePcap`)
+> сознательно возвращают явную ошибку "не реализовано" вместо имитации
+> результата — захват пакетов требует установленного Npcap. Приложение
+> работает с одним локальным хостом; вход выполняется под единственной
+> предустановленной учётной записью (`sirojiddin`/`admin`) — полноценные
+> роли, шифрование и мультихост запланированы отдельным этапом.
 
 ---
 

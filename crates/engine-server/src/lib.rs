@@ -13,11 +13,21 @@ use workflow_dag::{ResourceLimiter, WorkflowScheduler};
 use std::path::PathBuf;
 
 pub mod collaboration;
+pub mod evidence;
 pub mod host_inspector;
 pub mod investigation;
 pub mod membership;
 pub mod scanner;
 pub mod scenario_eval;
+pub mod scope;
+
+/// Real hostname of the machine this engine is running on, resolved once and
+/// cached. Used as the default `host_id` wherever a request omits one --
+/// never a placeholder like a hardcoded machine name.
+pub fn default_host_id() -> &'static str {
+    static HOSTNAME: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    HOSTNAME.get_or_init(platform_windows::local_hostname)
+}
 
 pub struct EngineApp {
     pub storage: SqliteStorage,
@@ -32,8 +42,28 @@ pub struct EngineApp {
 }
 
 impl EngineApp {
+    /// Opens (or creates) a persistent, on-disk case database under `db_path` so
+    /// cases, facts and evidence survive process restarts. This is the
+    /// constructor production entry points (desktop-app, engine-server bin) must use.
+    pub fn new(
+        cas_root: PathBuf,
+        db_path: PathBuf,
+    ) -> Result<Self, storage_sqlite::SqliteStorageError> {
+        if let Some(parent) = db_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let storage = SqliteStorage::open(db_path)?;
+        Ok(Self::from_storage(storage, cas_root))
+    }
+
+    /// Ephemeral, in-memory database. Use only for tests -- all data is lost
+    /// when the process exits.
     pub fn new_in_memory(cas_root: PathBuf) -> Self {
         let storage = SqliteStorage::open_in_memory().expect("Failed to init in-memory DB");
+        Self::from_storage(storage, cas_root)
+    }
+
+    fn from_storage(storage: SqliteStorage, cas_root: PathBuf) -> Self {
         let cas = ContentAddressedStorage::new(cas_root);
         let limiter = ResourceLimiter::new(8, 4, 4, 2, 2);
         let scheduler = WorkflowScheduler::new(limiter);
@@ -162,6 +192,26 @@ impl EngineApp {
                     serde_json::to_string(&resp).unwrap()
                 }
             },
+            "evidence.ingest" => {
+                let (res, err) = match evidence::handle_evidence_ingest(
+                    req.params,
+                    &self.storage,
+                    &self.cas,
+                    &self.correlation,
+                )
+                .await
+                {
+                    Ok(val) => (Some(val), None),
+                    Err(e) => (None, Some(e)),
+                };
+                serde_json::to_string(&IpcResponse {
+                    api_version: 1,
+                    request_id: req.request_id,
+                    result: res,
+                    error: err,
+                })
+                .unwrap()
+            }
             "broker.execute" => {
                 let op: Result<core_domain::broker::PrivilegedOperation, _> =
                     serde_json::from_value(req.params);
@@ -276,7 +326,7 @@ impl EngineApp {
                     .params
                     .get("host_id")
                     .and_then(|v| v.as_str())
-                    .unwrap_or("PC-3002");
+                    .unwrap_or(default_host_id());
                 let val = host_inspector::handle_host_overview(host_id);
                 let resp = IpcResponse {
                     api_version: 1,
@@ -291,7 +341,7 @@ impl EngineApp {
                     .params
                     .get("host_id")
                     .and_then(|v| v.as_str())
-                    .unwrap_or("PC-3002");
+                    .unwrap_or(default_host_id());
                 let snap = host_inspector::get_or_collect_snapshot(host_id);
                 let resp = IpcResponse {
                     api_version: 1,
@@ -306,7 +356,7 @@ impl EngineApp {
                     .params
                     .get("host_id")
                     .and_then(|v| v.as_str())
-                    .unwrap_or("PC-3002");
+                    .unwrap_or(default_host_id());
                 serde_json::to_string(&IpcResponse {
                     api_version: 1,
                     request_id: req.request_id,
@@ -320,7 +370,7 @@ impl EngineApp {
                     .params
                     .get("host_id")
                     .and_then(|v| v.as_str())
-                    .unwrap_or("PC-3002");
+                    .unwrap_or(default_host_id());
                 serde_json::to_string(&IpcResponse {
                     api_version: 1,
                     request_id: req.request_id,
@@ -334,7 +384,7 @@ impl EngineApp {
                     .params
                     .get("host_id")
                     .and_then(|v| v.as_str())
-                    .unwrap_or("PC-3002");
+                    .unwrap_or(default_host_id());
                 serde_json::to_string(&IpcResponse {
                     api_version: 1,
                     request_id: req.request_id,
@@ -348,7 +398,7 @@ impl EngineApp {
                     .params
                     .get("host_id")
                     .and_then(|v| v.as_str())
-                    .unwrap_or("PC-3002");
+                    .unwrap_or(default_host_id());
                 serde_json::to_string(&IpcResponse {
                     api_version: 1,
                     request_id: req.request_id,
@@ -362,7 +412,7 @@ impl EngineApp {
                     .params
                     .get("host_id")
                     .and_then(|v| v.as_str())
-                    .unwrap_or("PC-3002");
+                    .unwrap_or(default_host_id());
                 serde_json::to_string(&IpcResponse {
                     api_version: 1,
                     request_id: req.request_id,
@@ -409,13 +459,31 @@ impl EngineApp {
                     .params
                     .get("host_id")
                     .and_then(|v| v.as_str())
-                    .unwrap_or("PC-3002");
-                let cid = req
+                    .unwrap_or(default_host_id());
+                let raw_case_id = req.params.get("case_id").and_then(|v| v.as_str());
+                let cid = match raw_case_id.map(EntityId::parse) {
+                    Some(Ok(id)) => id,
+                    _ => {
+                        let resp: IpcResponse<()> = IpcResponse {
+                            api_version: 1,
+                            request_id: req.request_id,
+                            result: None,
+                            error: Some(ProblemDetails::bad_request(
+                                "Missing or invalid case_id -- create or select a case first",
+                                vec!["case_id".to_string()],
+                            )),
+                        };
+                        return serde_json::to_string(&resp).unwrap();
+                    }
+                };
+                if req
                     .params
-                    .get("case_id")
-                    .and_then(|v| v.as_str())
-                    .and_then(|s| EntityId::parse(s).ok())
-                    .unwrap_or_else(EntityId::new_v7);
+                    .get("refresh")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+                {
+                    host_inspector::refresh_snapshot(hid);
+                }
                 let val = host_inspector::handle_host_correlation(
                     hid,
                     cid,

@@ -447,3 +447,16 @@ CREATE TABLE IF NOT EXISTS membership_audit (
 );
 CREATE INDEX IF NOT EXISTS idx_membership_audit_ws ON membership_audit(workspace_id, created_at);
 "#;
+
+pub const MIGRATION_004_SQL: &str = r#"
+-- 34. Scan Scope Allowlist
+CREATE TABLE IF NOT EXISTS scope_allowlist (
+    id TEXT PRIMARY KEY,
+    case_id TEXT NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
+    pattern TEXT NOT NULL,           -- CIDR, single IP, or hostname
+    pattern_type TEXT NOT NULL DEFAULT 'ip',  -- 'ip', 'cidr', 'hostname'
+    added_by TEXT NOT NULL,
+    added_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_scope_case ON scope_allowlist(case_id);
+"#;

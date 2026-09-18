@@ -23,8 +23,21 @@ export function filterGraphByLayer(graph, layer) {
     }
 
     case 'network': {
-      const allowedNodeTypes = ['host', 'process', 'network', 'ip', 'socket'];
-      const nodes = graph.nodes.filter(n => allowedNodeTypes.includes(n.type));
+      // A process only belongs on the network layer if it actually owns a
+      // socket -- otherwise every process on the host (most of which never
+      // touch the network) showed up here just because its type matched,
+      // which is why this view looked like "all entities" instead of the
+      // network topology.
+      const connectedProcIds = new Set(
+        graph.edges.filter(e => e.relation === 'connects_to').map(e => e.source)
+      );
+      const nodes = graph.nodes.filter(n =>
+        n.type === 'host' ||
+        n.type === 'network' ||
+        n.type === 'ip' ||
+        n.type === 'socket' ||
+        (n.type === 'process' && connectedProcIds.has(n.id))
+      );
       const nodeIds = new Set(nodes.map(n => n.id));
       const edges = graph.edges.filter(e => ['connects_to', 'resolves_to', 'runs'].includes(e.relation) && nodeIds.has(e.source) && nodeIds.has(e.target));
       return { nodes, edges };

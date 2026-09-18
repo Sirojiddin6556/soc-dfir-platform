@@ -107,15 +107,10 @@ pub fn enumerate_installed_software() -> Vec<SoftwareObservation> {
         }
     }
 
-    // Fallback baseline for testing
-    vec![SoftwareObservation {
-        product: "SOC DFIR Platform Engine".to_string(),
-        version: "0.2.0".to_string(),
-        publisher: "SOC Blue Team".to_string(),
-        install_location: "C:\\Program Files\\SOC-DFIR".to_string(),
-        install_date: "2026-09-18".to_string(),
-        architecture: "x64".to_string(),
-        source: "PlatformSelf".to_string(),
-        confidence: 1.0,
-    }]
+    // Live collection failed or is unavailable on this platform. Return an
+    // honest empty result rather than fabricating a forensic finding.
+    tracing::warn!(
+        "enumerate_installed_software: live collection unavailable, returning empty result"
+    );
+    Vec::new()
 }

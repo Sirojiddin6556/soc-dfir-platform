@@ -266,29 +266,23 @@ mod tests {
         buf[rec_start + 8..rec_start + 16].copy_from_slice(&rec_id.to_le_bytes());
         let filetime = 133500000000000000u64; // valid FILETIME
         buf[rec_start + 16..rec_start + 24].copy_from_slice(&filetime.to_le_bytes());
-        // Body fragment with EventID 1 (Sysmon Process Create)
-        let fragment = b"<Event><System><EventID>1</EventID><Computer>WORKSTATION-01</Computer></System></Event>";
-        let copy_len = std::cmp::min(fragment.len(), 40);
-        buf[rec_start + 24..rec_start + 24 + copy_len].copy_from_slice(&fragment[..copy_len]);
-
         buf
     }
 
+    /// Real binary EVTX (BinXML) is not decodable by this crate. Ingesting one
+    /// must fail loudly rather than return fabricated event fields.
     #[tokio::test]
-    async fn test_real_binary_evtx_parsing() {
+    async fn test_real_binary_evtx_is_rejected_not_fabricated() {
         let evtx_bytes = build_synthetic_binary_evtx();
         let temp_file = std::env::temp_dir().join(format!("real_{}.evtx", uuid::Uuid::now_v7()));
         tokio::fs::write(&temp_file, &evtx_bytes).await.unwrap();
 
         let adapter = EvtxAdapter;
-        let res = adapter.parse_artifact(&temp_file).await.unwrap();
-        assert_eq!(res.tool_name, "evtx_parser");
-
-        let parsed: Vec<evtx::ParsedEvtxRecord> =
-            serde_json::from_slice(&res.stdout_bytes).unwrap();
-        assert_eq!(parsed.len(), 1);
-        assert_eq!(parsed[0].record_id, 101);
-        assert_eq!(parsed[0].event_id, 1);
+        let res = adapter.parse_artifact(&temp_file).await;
+        assert!(matches!(res, Err(ToolAdapterError::MalformedFormat(_))));
+        if let Err(ToolAdapterError::MalformedFormat(msg)) = res {
+            assert!(msg.contains("BinXML"));
+        }
 
         let _ = tokio::fs::remove_file(temp_file).await;
     }

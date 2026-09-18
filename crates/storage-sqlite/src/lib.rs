@@ -25,6 +25,9 @@ pub enum SqliteStorageError {
     #[error("Serialization error: {0}")]
     Json(#[from] serde_json::Error),
 
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
+
     #[error("Entity not found: {0}")]
     NotFound(String),
 }

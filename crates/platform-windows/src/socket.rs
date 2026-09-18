@@ -105,18 +105,9 @@ pub fn enumerate_sockets_deep() -> Vec<SocketObservation> {
         }
     }
 
-    // Fallback baseline for testing
-    vec![SocketObservation {
-        protocol: "TCP".to_string(),
-        local_address: "127.0.0.1".to_string(),
-        local_port: 8080,
-        remote_address: "0.0.0.0".to_string(),
-        remote_port: 0,
-        state: "Listen".to_string(),
-        pid: std::process::id(),
-        process_name: Some("desktop-app.exe".to_string()),
-        first_seen: now.clone(),
-        last_seen: now.clone(),
-        collected_at: now,
-    }]
+    // Live collection failed or is unavailable on this platform. Return an
+    // honest empty result rather than fabricating a forensic finding.
+    tracing::warn!("enumerate_sockets_deep: live collection unavailable, returning empty result");
+    let _ = now;
+    Vec::new()
 }

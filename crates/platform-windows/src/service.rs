@@ -116,19 +116,9 @@ pub fn enumerate_services_deep() -> Vec<ServiceObservation> {
         }
     }
 
-    // Fallback baseline for testing
-    vec![ServiceObservation {
-        service_name: "EventLog".to_string(),
-        display_name: "Windows Event Log".to_string(),
-        state: "Running".to_string(),
-        start_type: "Auto".to_string(),
-        binary_path: "C:\\WINDOWS\\System32\\svchost.exe -k LocalServiceNetworkRestricted -p"
-            .to_string(),
-        account: "NT AUTHORITY\\LocalService".to_string(),
-        pid: Some(1040),
-        executable_hash: None,
-        path_quoted: false,
-        unquoted_risk: false,
-        collected_at: now,
-    }]
+    // Live collection failed or is unavailable on this platform. Return an
+    // honest empty result rather than fabricating a forensic finding.
+    tracing::warn!("enumerate_services_deep: live collection unavailable, returning empty result");
+    let _ = now;
+    Vec::new()
 }

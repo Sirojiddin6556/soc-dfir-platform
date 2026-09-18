@@ -21,6 +21,30 @@ pub use snapshot::{collect_windows_snapshot, WindowsHostSnapshot};
 pub use socket::{enumerate_sockets_deep, SocketObservation};
 pub use software::{enumerate_installed_software, SoftwareObservation};
 
+/// Returns the real hostname of the machine this process is running on,
+/// instead of a placeholder identifier.
+pub fn local_hostname() -> String {
+    if let Ok(name) = std::env::var("COMPUTERNAME") {
+        if !name.trim().is_empty() {
+            return name;
+        }
+    }
+    if let Ok(name) = std::env::var("HOSTNAME") {
+        if !name.trim().is_empty() {
+            return name;
+        }
+    }
+    if let Ok(output) = Command::new("hostname").output() {
+        if output.status.success() {
+            let name = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !name.is_empty() {
+                return name;
+            }
+        }
+    }
+    "unknown-host".to_string()
+}
+
 #[derive(Error, Debug)]
 pub enum WindowsPlatformError {
     #[error("API call failed: {0}")]
@@ -238,12 +262,9 @@ impl WindowsPlatformHooks {
             }
 
             if rules.is_empty() {
-                rules.push(WindowsFirewallRule {
-                    name: "Core Networking - DNS (UDP-Out)".to_string(),
-                    direction: "Outbound".to_string(),
-                    action: "Allow".to_string(),
-                    enabled: true,
-                });
+                tracing::warn!(
+                    "query_firewall_rules: neither PowerShell nor netsh returned parseable rules"
+                );
             }
 
             Ok(rules)

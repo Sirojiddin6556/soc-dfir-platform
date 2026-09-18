@@ -253,7 +253,9 @@ pub fn handle_host_correlation(
     let mut ttps_count = 0;
     let mut tools_count = 0;
     let mut artifacts_count = 0;
-    let mut ips_count = 4;
+    let mut ips_count = 0;
+    let mut domains_count = 0;
+    let mut hashes_count = 0;
     let mut max_risk = 1.0f32;
 
     let mut findings_json = Vec::new();
@@ -276,7 +278,9 @@ pub fn handle_host_correlation(
                 artifacts_count += 1
             }
             Some(PainLevel::IpAddresses) => ips_count += 1,
-            _ => {}
+            Some(PainLevel::DomainNames) => domains_count += 1,
+            Some(PainLevel::HashValues) => hashes_count += 1,
+            None => {}
         }
 
         if let (Some(tech), Some(tac)) = (
@@ -334,9 +338,9 @@ pub fn handle_host_correlation(
             "ttps": ttps_count,
             "tools": tools_count,
             "artifacts": artifacts_count,
-            "domains": 1,
+            "domains": domains_count,
             "ips": ips_count,
-            "hashes": 0
+            "hashes": hashes_count
         }
     })
 }

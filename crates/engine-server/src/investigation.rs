@@ -51,14 +51,26 @@ impl<'a> InvestigationHandler<'a> {
         &self,
         params: serde_json::Value,
     ) -> Result<serde_json::Value, ProblemDetails> {
-        let case_id = params
+        let cid = params
             .get("case_id")
             .and_then(|c| c.as_str())
-            .unwrap_or("INC-LIVE-001");
-        let cid = EntityId::parse(case_id).unwrap_or_else(|_| EntityId::new_v7());
+            .and_then(|s| EntityId::parse(s).ok())
+            .ok_or_else(|| {
+                ProblemDetails::bad_request(
+                    "Missing or invalid case_id -- create or select a case first",
+                    vec!["case_id".to_string()],
+                )
+            })?;
+        let case = self
+            .storage
+            .get_case(cid)
+            .map_err(|e| ProblemDetails::bad_request(&e.to_string(), vec![]))?
+            .ok_or_else(|| {
+                ProblemDetails::bad_request("Case not found", vec!["case_id".to_string()])
+            })?;
 
         // 1. Live telemetry snapshot from primary workstation
-        let host_id = "PC-3002";
+        let host_id = crate::default_host_id();
         let snap = host_inspector::get_or_collect_snapshot(host_id);
 
         // 2. Correlation evaluation
@@ -100,9 +112,17 @@ impl<'a> InvestigationHandler<'a> {
         // Processes Nodes
         for p in snap.processes.iter().take(30) {
             let pid_str = format!("proc-{}", p.pid);
+            // Only flag genuinely notable process types here. "svchost.exe"
+            // used to match too and got flagged on almost every process on a
+            // healthy Windows host, which is why the Атака/ATT&CK layers
+            // showed nearly every entity instead of only the relevant ones --
+            // svchost.exe is one of the most common, ordinarily benign
+            // Windows processes and its name alone says nothing about intent.
+            // Genuine detections still show up as their own "finding" nodes
+            // from the correlation engine (CORR-WIN-001..004) regardless of
+            // this flag.
             let is_suspicious = p.name.to_lowercase().contains("powershell")
-                || p.name.to_lowercase().contains("cmd")
-                || p.name.to_lowercase().contains("svchost");
+                || p.name.to_lowercase().contains("cmd");
 
             nodes.push(json!({
                 "id": pid_str,
@@ -114,6 +134,7 @@ impl<'a> InvestigationHandler<'a> {
                 "verification": "corroborated",
                 "host_id": host_id,
                 "in_attack_path": is_suspicious,
+                "pid": p.pid,
                 "ppid": p.ppid,
                 "path": p.executable_path,
                 "command_line": p.command_line,
@@ -160,10 +181,13 @@ impl<'a> InvestigationHandler<'a> {
 
         // Findings Nodes
         for (i, f) in findings_arr.iter().enumerate() {
-            let f_id = f
-                .get("finding_id")
-                .and_then(|s| s.as_str())
-                .unwrap_or("FIND-01");
+            // Facts don't carry a "finding_id" field -- that lookup always
+            // missed and fell back to the same literal "FIND-01" for every
+            // finding, giving every finding node an identical id. Since
+            // nodePositions is keyed by id, all findings then collapsed onto
+            // the same single position on the graph. "id" is the fact's real,
+            // unique EntityId and is always present.
+            let f_id = f.get("id").and_then(|s| s.as_str()).unwrap_or("FIND-01");
             let node_f_id = format!("finding-{}", f_id);
             let title = f.get("title").and_then(|s| s.as_str()).unwrap_or("Угроза");
             let tech = f.get("mitre_technique").and_then(|s| s.as_str());
@@ -237,7 +261,7 @@ impl<'a> InvestigationHandler<'a> {
                 "title": format!("ОБНАРУЖЕНО: {}", title),
                 "detail": f.get("description").and_then(|s| s.as_str()).unwrap_or(""),
                 "severity": "critical",
-                "entity_id": format!("finding-{}", f.get("finding_id").and_then(|s| s.as_str()).unwrap_or(""))
+                "entity_id": format!("finding-{}", f.get("id").and_then(|s| s.as_str()).unwrap_or(""))
             }));
         }
 
@@ -267,12 +291,12 @@ impl<'a> InvestigationHandler<'a> {
 
         Ok(json!({
             "case": {
-                "id": case_id,
-                "title": "Активное боевое расследование (Live Host PC-3002)",
-                "status": "Investigating",
+                "id": cid,
+                "title": case.title,
+                "status": case.status,
                 "risk": risk_level,
                 "risk_score": risk_score,
-                "started_at": now.to_rfc3339()
+                "started_at": case.created_at.to_rfc3339()
             },
             "assets": assets,
             "processes": snap.processes,

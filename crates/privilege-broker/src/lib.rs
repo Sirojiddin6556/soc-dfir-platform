@@ -16,6 +16,9 @@ pub enum BrokerError {
 
     #[error("Execution error: {0}")]
     ExecutionFailed(String),
+
+    #[error("Operation not implemented: {0}")]
+    NotImplemented(String),
 }
 
 pub struct PrivilegeBroker {
@@ -134,7 +137,14 @@ impl PrivilegeBroker {
                         "Max capture buffer is 10 GB".to_string(),
                     ));
                 }
-                Ok(b"{\"status\": \"capturing\"}".to_vec())
+                // Real packet capture requires an OS packet-capture driver
+                // (Npcap on Windows / libpcap on Linux) that this deployment
+                // does not have installed. Fail loudly instead of pretending
+                // to capture traffic.
+                Err(BrokerError::NotImplemented(
+                    "Packet capture requires Npcap/libpcap, which is not installed on this host"
+                        .to_string(),
+                ))
             }
             PrivilegedOperation::ReadFirewallRules { .. } => {
                 #[cfg(target_os = "windows")]
@@ -169,6 +179,19 @@ impl PrivilegeBroker {
                 ports,
                 rate_limit,
             } => {
+                // Target must be localhost or it must be checked against an external scope allowlist.
+                // The broker does not have DB access — it enforces a structural rule: only loopback
+                // is permitted without an explicit caller-supplied allowlist.
+                let is_local =
+                    target_ip.starts_with("127.") || target_ip == "localhost" || target_ip == "::1";
+                if !is_local {
+                    return Err(BrokerError::InvalidParameter(
+                        "RunTargetedScan: non-loopback targets require scope authorization. \
+                         Use scan.network via the engine-server scope gate instead."
+                            .to_string(),
+                    ));
+                }
+
                 if rate_limit > 10000 {
                     return Err(BrokerError::InvalidParameter(
                         "Rate limit exceeds 10000 pkts/sec safety boundary".to_string(),
@@ -201,7 +224,71 @@ impl PrivilegeBroker {
                 });
                 serde_json::to_vec(&res).map_err(|e| BrokerError::ExecutionFailed(e.to_string()))
             }
-            _ => Ok(b"{\"status\": \"completed\"}".to_vec()),
+            PrivilegedOperation::CollectRegistryKeys { hive, subpath } => {
+                let hive_prefix = match hive {
+                    core_domain::broker::RegistryHive::HkeyLocalMachine => "HKLM:",
+                    core_domain::broker::RegistryHive::HkeyCurrentUser => "HKCU:",
+                    core_domain::broker::RegistryHive::HkeyUsers => "HKU:",
+                };
+
+                // Allow-list the subpath so it can never break out of the
+                // PowerShell string literal it is interpolated into.
+                if subpath.is_empty()
+                    || !subpath.chars().all(|c| {
+                        c.is_ascii_alphanumeric() || matches!(c, '\\' | '_' | '.' | ' ' | '-')
+                    })
+                {
+                    return Err(BrokerError::InvalidParameter(
+                        "Registry subpath contains disallowed characters".to_string(),
+                    ));
+                }
+
+                let full_path = format!("{}\\{}", hive_prefix, subpath.trim_start_matches('\\'));
+
+                #[cfg(target_os = "windows")]
+                {
+                    let ps_cmd = format!(
+                        "Get-ItemProperty -Path '{}' -ErrorAction Stop | Select-Object * -ExcludeProperty PS* | ConvertTo-Json -Compress",
+                        full_path
+                    );
+                    let output = std::process::Command::new("powershell.exe")
+                        .args(["-NoProfile", "-NonInteractive", "-Command", &ps_cmd])
+                        .output()
+                        .map_err(|e| BrokerError::ExecutionFailed(e.to_string()))?;
+
+                    if !output.status.success() {
+                        return Err(BrokerError::ExecutionFailed(format!(
+                            "Registry path not accessible or does not exist: {}",
+                            full_path
+                        )));
+                    }
+
+                    let json_str = String::from_utf8_lossy(&output.stdout);
+                    let values: serde_json::Value =
+                        serde_json::from_str(json_str.trim()).unwrap_or(serde_json::Value::Null);
+
+                    serde_json::to_vec(&serde_json::json!({
+                        "path": full_path,
+                        "values": values
+                    }))
+                    .map_err(|e| BrokerError::ExecutionFailed(e.to_string()))
+                }
+                #[cfg(not(target_os = "windows"))]
+                {
+                    Err(BrokerError::ExecutionFailed(format!(
+                        "Registry collection is only supported on Windows (requested {})",
+                        full_path
+                    )))
+                }
+            }
+            PrivilegedOperation::AcquireMemorySample { .. } => {
+                // Real memory acquisition (full physical or per-process dump)
+                // is not implemented in this build. Failing loudly here is
+                // safer than a broker silently claiming a dump was taken.
+                Err(BrokerError::NotImplemented(
+                    "Memory acquisition is not implemented in this build".to_string(),
+                ))
+            }
         }
     }
 }
@@ -265,6 +352,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_broker_registry_collection_real_key() {
+        let broker = PrivilegeBroker::new(vec![BrokerCapability::ReadRegistry]);
+        let op = PrivilegedOperation::CollectRegistryKeys {
+            hive: core_domain::broker::RegistryHive::HkeyLocalMachine,
+            subpath: "Software\\Microsoft\\Windows NT\\CurrentVersion".to_string(),
+        };
+        let res = broker.execute_operation(op).await.unwrap();
+        let str_res = String::from_utf8_lossy(&res);
+        assert!(str_res.contains("CurrentVersion"));
+    }
+
+    #[tokio::test]
+    async fn test_broker_registry_rejects_invalid_subpath() {
+        let broker = PrivilegeBroker::new(vec![BrokerCapability::ReadRegistry]);
+        let op = PrivilegedOperation::CollectRegistryKeys {
+            hive: core_domain::broker::RegistryHive::HkeyLocalMachine,
+            subpath: "Software; Remove-Item C:\\".to_string(),
+        };
+        let err = broker.execute_operation(op).await.unwrap_err();
+        assert!(matches!(err, BrokerError::InvalidParameter(_)));
+    }
+
+    #[tokio::test]
+    async fn test_broker_memory_acquisition_not_implemented() {
+        let broker = PrivilegeBroker::new(vec![BrokerCapability::AcquireMemory]);
+        let op = PrivilegedOperation::AcquireMemorySample {
+            target: core_domain::broker::MemoryTarget::ProcessPid(std::process::id()),
+            chunk_size_mb: 16,
+        };
+        let err = broker.execute_operation(op).await.unwrap_err();
+        assert!(matches!(err, BrokerError::NotImplemented(_)));
+    }
+
+    #[tokio::test]
+    async fn test_broker_capture_pcap_not_implemented() {
+        let broker = PrivilegeBroker::new(vec![BrokerCapability::CapturePcap]);
+        let op = PrivilegedOperation::CapturePcap {
+            interface_id: "eth0".to_string(),
+            duration_secs: 5,
+            max_bytes: 1024,
+            bpf_filter: None,
+        };
+        let err = broker.execute_operation(op).await.unwrap_err();
+        assert!(matches!(err, BrokerError::NotImplemented(_)));
+    }
+
+    #[tokio::test]
     async fn test_broker_run_targeted_scan() {
         let broker = PrivilegeBroker::new(vec![BrokerCapability::NetworkScan]);
         let scan_op = PrivilegedOperation::RunTargetedScan {
@@ -302,5 +436,17 @@ mod tests {
         assert_eq!(audits.len(), 2);
         assert_eq!(audits[0].outcome, "Success");
         assert_eq!(audits[1].outcome, "Denied");
+    }
+
+    #[tokio::test]
+    async fn test_broker_rejects_remote_target() {
+        let broker = PrivilegeBroker::new(vec![BrokerCapability::NetworkScan]);
+        let op = PrivilegedOperation::RunTargetedScan {
+            target_ip: "192.168.1.1".to_string(),
+            ports: vec![80],
+            rate_limit: 100,
+        };
+        let err = broker.execute_operation(op).await.unwrap_err();
+        assert!(matches!(err, BrokerError::InvalidParameter(_)));
     }
 }
