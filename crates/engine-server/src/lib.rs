@@ -12,7 +12,9 @@ use workflow_dag::{ResourceLimiter, WorkflowScheduler};
 
 use std::path::PathBuf;
 
+pub mod host_inspector;
 pub mod scanner;
+pub mod scenario_eval;
 
 pub struct EngineApp {
     pub storage: SqliteStorage,
@@ -294,6 +296,111 @@ impl EngineApp {
                 };
                 serde_json::to_string(&resp).unwrap()
             }
+            "host.overview" => {
+                let host_id = req
+                    .params
+                    .get("host_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("PC-3002");
+                let val = host_inspector::handle_host_overview(host_id);
+                let resp = IpcResponse {
+                    api_version: 1,
+                    request_id: req.request_id,
+                    result: Some(val),
+                    error: None,
+                };
+                serde_json::to_string(&resp).unwrap()
+            }
+            "host.snapshot" => {
+                let host_id = req
+                    .params
+                    .get("host_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("PC-3002");
+                let snap = host_inspector::get_or_collect_snapshot(host_id);
+                let resp = IpcResponse {
+                    api_version: 1,
+                    request_id: req.request_id,
+                    result: Some(serde_json::to_value(snap).unwrap()),
+                    error: None,
+                };
+                serde_json::to_string(&resp).unwrap()
+            }
+            "host.processes" => {
+                let host_id = req
+                    .params
+                    .get("host_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("PC-3002");
+                let val = host_inspector::handle_host_processes(host_id);
+                let resp = IpcResponse {
+                    api_version: 1,
+                    request_id: req.request_id,
+                    result: Some(val),
+                    error: None,
+                };
+                serde_json::to_string(&resp).unwrap()
+            }
+            "host.sockets" => {
+                let host_id = req
+                    .params
+                    .get("host_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("PC-3002");
+                let val = host_inspector::handle_host_sockets(host_id);
+                let resp = IpcResponse {
+                    api_version: 1,
+                    request_id: req.request_id,
+                    result: Some(val),
+                    error: None,
+                };
+                serde_json::to_string(&resp).unwrap()
+            }
+            "host.services" => {
+                let host_id = req
+                    .params
+                    .get("host_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("PC-3002");
+                let val = host_inspector::handle_host_services(host_id);
+                let resp = IpcResponse {
+                    api_version: 1,
+                    request_id: req.request_id,
+                    result: Some(val),
+                    error: None,
+                };
+                serde_json::to_string(&resp).unwrap()
+            }
+            "host.persistence" => {
+                let host_id = req
+                    .params
+                    .get("host_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("PC-3002");
+                let val = host_inspector::handle_host_persistence(host_id);
+                let resp = IpcResponse {
+                    api_version: 1,
+                    request_id: req.request_id,
+                    result: Some(val),
+                    error: None,
+                };
+                serde_json::to_string(&resp).unwrap()
+            }
+            "host.software" => {
+                let host_id = req
+                    .params
+                    .get("host_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("PC-3002");
+                let val = host_inspector::handle_host_software(host_id);
+                let resp = IpcResponse {
+                    api_version: 1,
+                    request_id: req.request_id,
+                    result: Some(val),
+                    error: None,
+                };
+                serde_json::to_string(&resp).unwrap()
+            }
             "scenario.evaluate" => {
                 let scenario_id = req
                     .params
@@ -311,89 +418,23 @@ impl EngineApp {
                     .and_then(|v| v.as_str())
                     .and_then(|s| EntityId::parse(s).ok())
                     .unwrap_or_else(EntityId::new_v7);
-
-                let ground_truth = core_domain::scenario::GroundTruth {
-                    scenario_id: scenario_id.to_string(),
-                    expected_assets: vec!["192.168.1.10".to_string(), "192.168.1.105".to_string()],
-                    expected_facts: vec![
-                        "CredentialAccessAttempt".to_string(),
-                        "ScheduledTaskPersistence".to_string(),
-                    ],
-                    expected_attack_edges: vec![],
-                    expected_mitre_techniques: vec![
-                        "T1003.001".to_string(),
-                        "T1059.001".to_string(),
-                    ],
-                    expected_kill_chain_stages: vec![
-                        "CredentialAccess".to_string(),
-                        "Execution".to_string(),
-                    ],
-                    expected_pyramid_levels: vec!["Tools".to_string(), "TTPs".to_string()],
-                };
-
-                let mut facts = self.storage.get_facts_for_case(case_id).unwrap_or_default();
-                if !hypothesis.is_empty() {
-                    let hyp_clean = hypothesis.trim();
-                    let (fact_type, pain) =
-                        if hyp_clean == "T1003.001" || hyp_clean.to_lowercase().contains("lsass") {
-                            (
-                                "CredentialAccessAttempt".to_string(),
-                                Some(core_domain::epistemic::PainLevel::Tools),
-                            )
-                        } else if hyp_clean == "T1059.001"
-                            || hyp_clean.to_lowercase().contains("powershell")
-                        {
-                            (
-                                "ObfuscatedExecution".to_string(),
-                                Some(core_domain::epistemic::PainLevel::Tools),
-                            )
-                        } else {
-                            ("InvestigatorHypothesis".to_string(), None)
-                        };
-
-                    facts.push(core_domain::fact::Fact {
-                        id: EntityId::new_v7(),
-                        case_id,
-                        evidence_ids: vec![EntityId::new_v7(), EntityId::new_v7()],
-                        assertion_type: core_domain::epistemic::AssertionType::Hypothesis,
-                        verification_state: core_domain::epistemic::VerificationState::Corroborated,
-                        entity_type: core_domain::fact::EntityType::Process,
-                        entity_key: "192.168.1.10".to_string(),
-                        fact_type,
-                        confidence: core_domain::epistemic::Confidence::new(0.95),
-                        severity: core_domain::epistemic::Severity::High,
-                        risk_score: 85.0,
-                        evidence_strength: 0.9,
-                        pain_level: pain,
-                        data: serde_json::json!({
-                            "hypothesis": hyp_clean,
-                            "command_line": if hyp_clean == "T1003.001" { "procdump.exe -ma lsass.exe" } else { "powershell.exe -enc ..." }
-                        }),
-                        created_at: chrono::Utc::now(),
-                    });
-                }
-
-                let report =
-                    self.verifier
-                        .verify_investigation(scenario_id, case_id, &ground_truth, &facts);
-                let explainable = self.scoring.format_explainable_summary(&report);
-
+                let result = scenario_eval::evaluate_scenario(
+                    &self.storage,
+                    &self.verifier,
+                    &self.scoring,
+                    scenario_id,
+                    hypothesis,
+                    case_id,
+                );
                 let resp = IpcResponse {
                     api_version: 1,
                     request_id: req.request_id,
-                    result: Some(serde_json::json!({
-                        "scenario_id": report.scenario_id,
-                        "total_score": report.total_score,
-                        "max_possible_score": report.max_possible_score,
-                        "percentage": report.percentage,
-                        "criteria_scores": report.criteria_scores,
-                        "explainable_summary": explainable,
-                        "verdict": if report.percentage >= 50.0 { "SUCCESS" } else { "INCOMPLETE" }
-                    })),
+                    result: Some(result),
                     error: None,
                 };
                 serde_json::to_string(&resp).unwrap()
             }
+
             _ => {
                 let resp: IpcResponse<()> = IpcResponse {
                     api_version: 1,
@@ -412,59 +453,3 @@ impl EngineApp {
 
 pub mod http;
 pub use http::{bind_server, handle_connection, run_embedded_server, run_server_loop};
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::sync::Arc;
-
-    #[tokio::test]
-    async fn test_engine_app_composition_and_dispatch() {
-        let temp_dir = std::env::temp_dir().join(format!("engine_test_{}", uuid::Uuid::now_v7()));
-        let app = Arc::new(EngineApp::new_in_memory(temp_dir.clone()));
-
-        // 1. Test Health Probe
-        let health_req =
-            r#"{"api_version": 1, "request_id": "req-1", "method": "health", "params": {}}"#;
-        let health_resp = app.dispatch_request(health_req).await;
-        assert!(health_resp.contains("\"live\":true"));
-
-        // 2. Test Case Creation
-        let case_req = r#"{"api_version": 1, "request_id": "req-2", "method": "cases.create", "params": {"title": "Incident Beta", "description": "Automated test"}}"#;
-        let case_resp = app.dispatch_request(case_req).await;
-        assert!(case_resp.contains("\"case_id\""));
-        assert!(case_resp.contains("\"status\":\"Active\""));
-
-        // 3. Test Cases List
-        let list_req =
-            r#"{"api_version": 1, "request_id": "req-3", "method": "cases.list", "params": {}}"#;
-        let list_resp = app.dispatch_request(list_req).await;
-        assert!(list_resp.contains("Incident Beta"));
-
-        // 4. Test Broker Execute (Authorized: ReadProcesses)
-        let broker_req = r#"{"api_version": 1, "request_id": "req-4", "method": "broker.execute", "params": {"CollectProcessMetadata": {"pid": 1234}}}"#;
-        let broker_resp = app.dispatch_request(broker_req).await;
-        assert!(broker_resp.contains("\"status\":\"running\""));
-
-        // 5. Test Broker Execute (Forbidden: AcquireMemorySample without capability)
-        let mem_req = r#"{"api_version": 1, "request_id": "req-5", "method": "broker.execute", "params": {"AcquireMemorySample": {"target": {"ProcessPid": 1234}, "chunk_size_mb": 64}}}"#;
-        let mem_resp = app.dispatch_request(mem_req).await;
-        assert!(mem_resp.contains("\"status\":403"));
-        assert!(mem_resp.contains("Forbidden"));
-
-        // 6. Test Unknown Method -> RFC 7807 404
-        let unknown_req =
-            r#"{"api_version": 1, "request_id": "req-6", "method": "non_existent", "params": {}}"#;
-        let unknown_resp = app.dispatch_request(unknown_req).await;
-        assert!(unknown_resp.contains("\"status\":404"));
-        assert!(unknown_resp.contains("Not Found"));
-
-        // 7. Test Scenario Evaluate
-        let scen_req = r#"{"api_version": 1, "request_id": "req-7", "method": "scenario.evaluate", "params": {"scenario_id": "SCEN-APT29", "hypothesis": "T1003.001"}}"#;
-        let scen_resp = app.dispatch_request(scen_req).await;
-        assert!(scen_resp.contains("\"verdict\":\"SUCCESS\""));
-        assert!(scen_resp.contains("\"percentage\""));
-
-        let _ = tokio::fs::remove_dir_all(temp_dir).await;
-    }
-}

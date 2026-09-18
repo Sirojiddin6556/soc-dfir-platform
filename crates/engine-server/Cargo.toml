@@ -24,6 +24,8 @@ diagram-engine = { path = "../diagram-engine" }
 report-engine = { path = "../report-engine" }
 privilege-broker = { path = "../privilege-broker" }
 ipc-protocol = { path = "../ipc-protocol" }
+platform-windows = { path = "../platform-windows" }
+
 
 uuid = { workspace = true, features = ["v7"] }
 chrono.workspace = true

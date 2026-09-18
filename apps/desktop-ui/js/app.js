@@ -215,8 +215,9 @@ class CyberRangeCockpitApp {
     const container = document.getElementById('assetTabContent');
     const h = this.selectedHost;
     if (!container || !h) return;
-    renderAssetTab(container, h, this.currentAssetTab);
+    renderAssetTab(container, h, this.currentAssetTab, this.ipc);
   }
+
 
   renderTimeline() {
     const lanesEl = document.getElementById('timelineLanes');

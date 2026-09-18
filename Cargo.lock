@@ -587,6 +587,7 @@ dependencies = [
  "graph-engine",
  "ipc-protocol",
  "normalization-engine",
+ "platform-windows",
  "privilege-broker",
  "report-engine",
  "scenario-engine",
@@ -1876,10 +1877,14 @@ dependencies = [
 name = "platform-windows"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "core-domain",
+ "hex",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror 1.0.69",
+ "uuid",
 ]
 
 [[package]]

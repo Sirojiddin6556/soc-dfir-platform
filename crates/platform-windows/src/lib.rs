@@ -4,6 +4,23 @@ use serde::{Deserialize, Serialize};
 use std::process::Command;
 use thiserror::Error;
 
+pub mod persistence;
+pub mod process;
+pub mod service;
+pub mod snapshot;
+pub mod socket;
+pub mod software;
+
+pub use persistence::{
+    enumerate_registry_autoruns, enumerate_scheduled_tasks, RegistryAutorunObservation,
+    ScheduledTaskObservation,
+};
+pub use process::{enumerate_processes_deep, ProcessObservation};
+pub use service::{enumerate_services_deep, ServiceObservation};
+pub use snapshot::{collect_windows_snapshot, WindowsHostSnapshot};
+pub use socket::{enumerate_sockets_deep, SocketObservation};
+pub use software::{enumerate_installed_software, SoftwareObservation};
+
 #[derive(Error, Debug)]
 pub enum WindowsPlatformError {
     #[error("API call failed: {0}")]
@@ -241,6 +258,15 @@ impl WindowsPlatformHooks {
             }])
         }
     }
+
+    /// Aggregates a complete deep host snapshot (processes, sockets, services, autoruns, tasks, software)
+    pub fn collect_snapshot(
+        &self,
+        host_id: &str,
+    ) -> Result<WindowsHostSnapshot, WindowsPlatformError> {
+        let rules = self.query_firewall_rules().unwrap_or_default();
+        Ok(collect_windows_snapshot(host_id, rules))
+    }
 }
 
 impl Default for WindowsPlatformHooks {
@@ -271,5 +297,18 @@ mod tests {
         let hooks = WindowsPlatformHooks::new();
         let rules = hooks.query_firewall_rules().unwrap();
         assert!(!rules.is_empty());
+    }
+
+    #[test]
+    fn test_windows_deep_snapshot() {
+        let hooks = WindowsPlatformHooks::new();
+        let snap = hooks.collect_snapshot("PC-3002").unwrap();
+        assert_eq!(snap.host_ip, "127.0.0.1");
+        assert!(!snap.processes.is_empty());
+        assert!(!snap.sockets.is_empty());
+        assert!(!snap.services.is_empty());
+        assert!(!snap.autoruns.is_empty());
+        assert!(!snap.scheduled_tasks.is_empty());
+        assert!(!snap.software.is_empty());
     }
 }

@@ -44,6 +44,35 @@ export class IpcClient {
     }
   }
 
+  async getHostOverview(hostId = 'PC-3002') {
+    return this.call('host.overview', { host_id: hostId });
+  }
+
+  async getHostSnapshot(hostId = 'PC-3002') {
+    return this.call('host.snapshot', { host_id: hostId });
+  }
+
+  async getHostProcesses(hostId = 'PC-3002') {
+    return this.call('host.processes', { host_id: hostId });
+  }
+
+  async getHostSockets(hostId = 'PC-3002') {
+    return this.call('host.sockets', { host_id: hostId });
+  }
+
+  async getHostServices(hostId = 'PC-3002') {
+    return this.call('host.services', { host_id: hostId });
+  }
+
+  async getHostPersistence(hostId = 'PC-3002') {
+    return this.call('host.persistence', { host_id: hostId });
+  }
+
+  async getHostSoftware(hostId = 'PC-3002') {
+    return this.call('host.software', { host_id: hostId });
+  }
+
+
   fallbackDispatch(method, params) {
     switch (method) {
       case 'health':
@@ -108,8 +137,67 @@ export class IpcClient {
           calculated_risk: 1.0,
           vulnerabilities: []
         };
+      case 'host.overview':
+        return {
+          host: 'PC-3002',
+          host_ip: '127.0.0.1',
+          os: 'Windows 11 Enterprise (x86_64)',
+          counts: { processes: 45, sockets: 18, services: 32, scheduled_tasks: 14, autoruns: 6, software: 24 }
+        };
+      case 'host.processes':
+        return {
+          host: 'PC-3002',
+          count: 5,
+          processes: [
+            { pid: 4, ppid: 0, name: 'System', executable_path: 'C:\\Windows\\System32\\ntoskrnl.exe', command_line: '', username: 'NT AUTHORITY\\SYSTEM', session_id: 0, integrity_level: 'System' },
+            { pid: 820, ppid: 4, name: 'smss.exe', executable_path: 'C:\\Windows\\System32\\smss.exe', command_line: '', username: 'NT AUTHORITY\\SYSTEM', session_id: 0, integrity_level: 'System' },
+            { pid: 1040, ppid: 820, name: 'services.exe', executable_path: 'C:\\Windows\\System32\\services.exe', command_line: '', username: 'NT AUTHORITY\\SYSTEM', session_id: 0, integrity_level: 'System' },
+            { pid: 3410, ppid: 1040, name: 'svchost.exe', executable_path: 'C:\\Windows\\System32\\svchost.exe', command_line: 'svchost.exe -k netsvcs', username: 'NT AUTHORITY\\SYSTEM', session_id: 0, integrity_level: 'System' },
+            { pid: 5120, ppid: 3410, name: 'desktop-app.exe', executable_path: 'C:\\Program Files\\SOC-DFIR\\desktop-app.exe', command_line: 'desktop-app.exe', username: 'PC-3002\\Siroj', session_id: 1, integrity_level: 'Medium' }
+          ]
+        };
+      case 'host.sockets':
+        return {
+          host: 'PC-3002',
+          count: 3,
+          sockets: [
+            { protocol: 'TCP', local_address: '127.0.0.1', local_port: 8080, remote_address: '0.0.0.0', remote_port: 0, state: 'Listen', pid: 5120, process_name: 'desktop-app.exe' },
+            { protocol: 'TCP', local_address: '0.0.0.0', local_port: 135, remote_address: '0.0.0.0', remote_port: 0, state: 'Listen', pid: 1040, process_name: 'svchost.exe' },
+            { protocol: 'TCP', local_address: '0.0.0.0', local_port: 445, remote_address: '0.0.0.0', remote_port: 0, state: 'Listen', pid: 4, process_name: 'System' }
+          ]
+        };
+      case 'host.services':
+        return {
+          host: 'PC-3002',
+          count: 3,
+          services: [
+            { service_name: 'EventLog', display_name: 'Windows Event Log', state: 'Running', start_type: 'Auto', binary_path: 'C:\\WINDOWS\\System32\\svchost.exe -k LocalServiceNetworkRestricted', path_quoted: false, unquoted_risk: false },
+            { service_name: 'LanmanServer', display_name: 'Server', state: 'Running', start_type: 'Auto', binary_path: 'C:\\WINDOWS\\system32\\svchost.exe -k netsvcs -p', path_quoted: false, unquoted_risk: false },
+            { service_name: 'SOCEngine', display_name: 'SOC DFIR Live Daemon', state: 'Running', start_type: 'Auto', binary_path: '"C:\\Program Files\\SOC-DFIR\\desktop-app.exe" --daemon', path_quoted: true, unquoted_risk: false }
+          ]
+        };
+      case 'host.persistence':
+        return {
+          host: 'PC-3002',
+          autoruns: [
+            { hive: 'HKLM', key: 'HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run', value_name: 'SecurityHealth', value_data: '%windir%\\system32\\SecurityHealthSystray.exe', resolved_executable: 'C:\\Windows\\system32\\SecurityHealthSystray.exe' }
+          ],
+          scheduled_tasks: [
+            { task_name: 'OneDrive Standalone Update', task_path: '\\Microsoft\\OneDrive', state: 'Ready', action: 'OneDriveStandaloneUpdater.exe' }
+          ]
+        };
+      case 'host.software':
+        return {
+          host: 'PC-3002',
+          count: 2,
+          software: [
+            { product: 'SOC DFIR Platform Engine', version: '0.2.0', publisher: 'SOC Blue Team', architecture: 'x64' },
+            { product: 'Microsoft Windows 11 Enterprise', version: '10.0.26100', publisher: 'Microsoft Corporation', architecture: 'x64' }
+          ]
+        };
       default:
         return { status: 'ok', method, params };
     }
   }
+
 }
