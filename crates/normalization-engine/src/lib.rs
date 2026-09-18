@@ -4,6 +4,12 @@ use core_domain::id::EntityId;
 use core_domain::observation::{Observation, RawToolResult};
 use thiserror::Error;
 
+pub mod cpe;
+pub mod vuln;
+
+pub use cpe::{resolve_cpe_and_purl, NormalizedSoftwareId};
+pub use vuln::{VulnerabilityDatabase, VulnerabilityRecord};
+
 #[derive(Error, Debug)]
 pub enum NormalizationError {
     #[error("Failed to parse tool output: {0}")]

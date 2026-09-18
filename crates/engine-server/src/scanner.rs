@@ -370,13 +370,63 @@ pub async fn execute_network_scan(subnet: &str, mode: &str) -> serde_json::Value
     })
 }
 
-/// Correlates asset software stack against CVE vulnerability knowledge base
+/// Correlates asset software stack against CVE vulnerability knowledge base with CPE 2.3 normalization
 pub fn execute_cve_scan(host_id: &str) -> serde_json::Value {
+    let hostname = if host_id == "h_local" {
+        "PC-3002"
+    } else {
+        host_id
+    };
+    let snap = crate::host_inspector::get_or_collect_snapshot(hostname);
+    let vuln_db = normalization_engine::VulnerabilityDatabase::new();
+
+    let mut scanned_software = Vec::new();
+    let mut vulnerabilities = Vec::new();
+
+    for sw in &snap.software {
+        let norm =
+            normalization_engine::resolve_cpe_and_purl(&sw.product, &sw.publisher, &sw.version);
+        let matches = vuln_db.match_vulnerabilities(&sw.product, &sw.version);
+
+        for m in &matches {
+            vulnerabilities.push(json!({
+                "cve": m.cve_id,
+                "name": format!("{} - {}", sw.product, m.description),
+                "cvss": m.cvss_v3,
+                "severity": m.severity,
+                "epss": m.epss_score,
+                "cisa_kev": m.cisa_kev,
+                "cpe": norm.cpe23,
+                "purl": norm.purl
+            }));
+        }
+
+        scanned_software.push(json!({
+            "name": sw.product,
+            "ver": sw.version,
+            "publisher": sw.publisher,
+            "cpe": norm.cpe23,
+            "purl": norm.purl,
+            "status": if matches.is_empty() { "SECURE (CVE-FREE)" } else { "AFFECTED" }
+        }));
+    }
+
+    let calculated_risk = if vulnerabilities.is_empty() {
+        1.0
+    } else {
+        vulnerabilities
+            .iter()
+            .map(|v| v.get("cvss").and_then(|c| c.as_f64()).unwrap_or(5.0) as f32)
+            .fold(1.0f32, f32::max)
+    };
+
     json!({
         "host_id": host_id,
-        "hostname": if host_id == "h_local" { "PC-3002" } else { host_id },
-        "calculated_risk": 1.0,
-        "vulnerabilities": []
+        "hostname": hostname,
+        "software_scanned": scanned_software.len(),
+        "calculated_risk": calculated_risk,
+        "scanned_software": scanned_software,
+        "vulnerabilities": vulnerabilities
     })
 }
 

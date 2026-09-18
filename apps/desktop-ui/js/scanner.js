@@ -217,14 +217,20 @@ export class ScannerController {
       const res = await this.ipc.call('scan.cve', { host_id: host.id });
       if (res && res.vulnerabilities) {
         host.vulnerabilities = res.vulnerabilities;
-        if (res.calculated_risk) {
-          host.risk = `КРИТИЧЕСКИЙ (${res.calculated_risk})`;
+        if (res.calculated_risk && res.calculated_risk > 5.0) {
+          host.risk = `ВЫСОКИЙ (${res.calculated_risk})`;
+        } else {
+          host.risk = `НИЗКИЙ (${res.calculated_risk || 1.0})`;
+        }
+        if (res.scanned_software && Array.isArray(res.scanned_software)) {
+          host.software = res.scanned_software;
         }
         this.app.renderAssetDetails();
         const vulnTabBtn = document.querySelector('[data-asset-tab="tabVulnerabilities"]');
         if (vulnTabBtn) vulnTabBtn.click();
       }
     } catch (err) {
+
       console.error('[CVE Scanner] Ошибка:', err);
     } finally {
       if (btn) {

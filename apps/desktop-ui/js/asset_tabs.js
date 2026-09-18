@@ -310,36 +310,68 @@ function renderPersistenceTab(container, h, snap) {
 }
 
 function renderSoftwareTab(container, h, snap) {
-  const soft = snap?.software || (h.software || []).map(s => ({ product: s.name, version: s.ver, publisher: 'SOC Platform', architecture: 'x64' }));
+  const soft = snap?.software || (h.software || []).map(s => ({ product: s.name || s.product, version: s.ver || s.version, publisher: s.publisher || 'SOC Platform', architecture: s.architecture || 'x64', cpe: s.cpe }));
   container.innerHTML = `
     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-      <h4 style="font-size: 12px; margin: 0;">Установленное ПО и компоненты (${soft.length})</h4>
-      <span class="badge badge-host" style="font-size: 10px;">Registry Uninstall</span>
+      <h4 style="font-size: 12px; margin: 0;">Установленное ПО и спецификации CPE 2.3 (${soft.length})</h4>
+      <span class="badge badge-host" style="font-size: 10px;">Registry Uninstall & CPE Normalizer</span>
     </div>
     <div style="max-height: 380px; overflow-y: auto;">
       <table class="data-table">
-        <thead><tr><th>Продукт / Пакет</th><th>Версия</th><th>Издатель</th><th>Архитектура</th></tr></thead>
+        <thead><tr><th>Продукт / Пакет</th><th>Версия</th><th>Издатель</th><th>Спецификация CPE 2.3</th></tr></thead>
         <tbody>
-          ${soft.map(s => `
+          ${soft.map(s => {
+            const cleanProd = s.product || s.name || 'Component';
+            const cleanVer = s.version || s.ver || '1.0';
+            const cleanPub = s.publisher || 'Unknown';
+            const cpe = s.cpe || `cpe:2.3:a:${cleanPub.toLowerCase().replace(/[\s.]+/g, '_')}:${cleanProd.toLowerCase().replace(/[\s.]+/g, '_')}:${cleanVer}:*:*:*:*:*:*:*`;
+            return `
             <tr>
-              <td><strong>${s.product}</strong></td>
-              <td><code>${s.version}</code></td>
-              <td>${s.publisher || 'Unknown'}</td>
-              <td><span class="badge badge-net">${s.architecture || 'x64'}</span></td>
+              <td><strong>${cleanProd}</strong></td>
+              <td><code>${cleanVer}</code></td>
+              <td>${cleanPub}</td>
+              <td><code style="font-size: 10px; color: var(--accent-info);">${cpe}</code></td>
             </tr>
-          `).join('')}
+          `;}).join('')}
         </tbody>
       </table>
     </div>`;
 }
 
 function renderVulnerabilitiesTab(container, h, snap) {
-  container.innerHTML = `
-    <h4 style="font-size: 12px; margin-bottom: 8px;">Скоррелированные уязвимости (CVE)</h4>
-    <div style="color: var(--text-muted); font-size: 12px; padding: 12px; background: var(--bg-canvas); border: 1px solid var(--border-muted); border-radius: 4px;">
-      На хосте <strong>${snap?.host || h.hostname}</strong> уязвимостей CVE не зафиксировано. Статус безопасности: <span style="color: var(--accent-success); font-weight: 700;">SECURE (CVE-FREE)</span>.
-    </div>`;
+  const vulns = h.vulnerabilities || [];
+  if (vulns.length > 0) {
+    container.innerHTML = `
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+        <h4 style="font-size: 12px; margin: 0;">Скоррелированные уязвимости (${vulns.length})</h4>
+        <span class="badge badge-attack" style="font-size: 10px;">CVE / CVSS / EPSS / KEV</span>
+      </div>
+      <div style="max-height: 380px; overflow-y: auto;">
+        <table class="data-table">
+          <thead><tr><th>CVE ID</th><th>Уязвимый компонент</th><th>CVSS v3</th><th>EPSS</th><th>CISA KEV</th><th>Спецификация CPE</th></tr></thead>
+          <tbody>
+            ${vulns.map(v => `
+              <tr>
+                <td><strong style="color: var(--accent-critical)">${v.cve}</strong></td>
+                <td>${v.name}</td>
+                <td><span class="badge badge-attack">${v.cvss} (${v.severity || 'High'})</span></td>
+                <td>${v.epss ? (v.epss * 100).toFixed(1) + '%' : '—'}</td>
+                <td>${v.cisa_kev ? '<span class="badge badge-attack">CISA KEV</span>' : '<span style="color: var(--text-muted)">Нет</span>'}</td>
+                <td><code style="font-size: 10px;">${v.cpe || '—'}</code></td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>`;
+  } else {
+    container.innerHTML = `
+      <h4 style="font-size: 12px; margin-bottom: 8px;">Скоррелированные уязвимости (CVE)</h4>
+      <div style="color: var(--text-muted); font-size: 12px; padding: 12px; background: var(--bg-canvas); border: 1px solid var(--border-muted); border-radius: 4px;">
+        На хосте <strong>${snap?.host || h.hostname}</strong> уязвимостей CVE не зафиксировано. Статус безопасности: <span style="color: var(--accent-success); font-weight: 700;">SECURE (CVE-FREE)</span>.
+      </div>`;
+  }
 }
+
 
 function renderUsersTab(container, h, snap) {
   const users = snap?.users || ['PC-3002\\Siroj', 'PC-3002\\Administrator', 'NT AUTHORITY\\SYSTEM'];
