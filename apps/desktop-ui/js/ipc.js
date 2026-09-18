@@ -203,6 +203,27 @@ export class IpcClient {
             { product: 'Microsoft Windows 11 Enterprise', version: '10.0.26100', publisher: 'Microsoft Corporation', architecture: 'x64' }
           ]
         };
+      case 'investigation.snapshot':
+        return {
+          case: { id: 'INC-LIVE-001', title: 'Боевой мониторинг', risk: 'HIGH' },
+          assets: [],
+          processes: [],
+          connections: [],
+          findings: [],
+          evidence: [],
+          timeline: [],
+          mitre: [],
+          metrics: { assets: 0, evidence: 0, findings: 0 },
+          graph: { nodes: [], edges: [] }
+        };
+      case 'chat.entity.thread':
+        return { messages: [] };
+      case 'chat.history':
+        return [];
+      case 'presence.list':
+        return [];
+      case 'entity.get':
+        return params || {};
       default:
         return { status: 'ok', method, params };
     }

@@ -23,14 +23,16 @@ export class InvestigationWorkspace {
   }
 
   async refresh() {
-    const snapshot = await this.ipc.call('investigation.snapshot', {
-      case_id: this.getCurrentCaseId()
-    });
-
-    if (!snapshot) return;
-
-    this.store.update(snapshot);
-    this.render();
+    try {
+      const snapshot = await this.ipc.call('investigation.snapshot', {
+        case_id: this.getCurrentCaseId()
+      });
+      if (!snapshot) return;
+      this.store.update(snapshot);
+      this.render();
+    } catch (e) {
+      console.warn('[Investigation] refresh failed:', e.message);
+    }
   }
 
   render() {

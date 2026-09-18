@@ -29,20 +29,21 @@ export class ContextDiscussion {
 
   async loadForEntity(entity) {
     this.currentEntity = entity;
-    const res = await this.ipc.call('chat.entity.thread', {
-      entity_type: entity?.type || 'case',
-      entity_id: entity?.id || 'INC-LIVE-001'
-    });
-
-    if (res && res.messages) {
-      this.messages = res.messages;
-      this.render();
-    } else {
-      // Fallback: fetch case history
-      const history = await this.ipc.call('chat.history', { limit: 15 });
-      this.messages = history || [];
-      this.render();
+    try {
+      const res = await this.ipc.call('chat.entity.thread', {
+        entity_type: entity?.type || 'case',
+        entity_id: entity?.id || 'INC-LIVE-001'
+      });
+      if (res && res.messages) {
+        this.messages = res.messages;
+      } else {
+        const history = await this.ipc.call('chat.history', { limit: 15 });
+        this.messages = Array.isArray(history) ? history : [];
+      }
+    } catch {
+      this.messages = [];
     }
+    this.render();
   }
 
   async sendMessage() {
@@ -55,12 +56,14 @@ export class ContextDiscussion {
     const ent = this.currentEntity;
     const refs = ent ? [{ ref_type: 'Finding', ref_id: ent.id, title: ent.label || ent.id }] : [];
 
-    await this.ipc.call('chat.send', {
-      body,
-      author_name: 'Сироҷиддин',
-      author_role: 'Owner',
-      references: refs
-    });
+    try {
+      await this.ipc.call('chat.send', {
+        body,
+        author_name: 'Сироҷиддин',
+        author_role: 'Owner',
+        references: refs
+      });
+    } catch { /* silent */ }
 
     await this.loadForEntity(this.currentEntity);
   }

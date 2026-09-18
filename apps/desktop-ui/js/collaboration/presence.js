@@ -10,11 +10,13 @@ export class TeamPresence {
   }
 
   async refresh() {
-    const list = await this.ipc.call('presence.list', {});
-    if (list) {
-      this.presences = list;
-      this.render();
-    }
+    try {
+      const list = await this.ipc.call('presence.list', {});
+      if (list) {
+        this.presences = list;
+      }
+    } catch { /* team server offline */ }
+    this.render();
   }
 
   render() {

@@ -26,11 +26,9 @@ class SocDfirApplication {
     this.setupLiveTimer();
     this.setupGlobalSearch();
 
-    // Auto-login local analyst if needed
-    await this.ensureLocalAuth();
-
-    await this.workspace.init();
-    await this.presence.init();
+    try { await this.ensureLocalAuth(); } catch (e) { console.warn('[Auth]', e.message); }
+    try { await this.workspace.init(); } catch (e) { console.warn('[Workspace]', e.message); }
+    try { await this.presence.init(); } catch (e) { console.warn('[Presence]', e.message); }
   }
 
   async ensureLocalAuth() {
