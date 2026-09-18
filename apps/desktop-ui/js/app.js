@@ -308,18 +308,34 @@ class CyberRangeCockpitApp {
     const ctx = canvas.getContext('2d');
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-    ctx.strokeStyle = '#30363d';
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.moveTo(150, 150); ctx.lineTo(380, 150);
-    ctx.moveTo(380, 150); ctx.lineTo(610, 150);
-    ctx.stroke();
+    const centerX = canvas.width / 2;
+    const centerY = canvas.height / 2;
+    const host = this.hosts[0] || { hostname: 'PC-3002', ip: '127.0.0.1', ports: [135, 445, 8080] };
+    const ports = host.ports && host.ports.length > 0 ? host.ports : [135, 445, 8080];
+    const services = host.services || [];
 
-    const hostName = this.hosts[0]?.hostname || 'PC-3002';
-    this.drawNode(ctx, 150, 150, `Хост: ${hostName}`, '#58a6ff', 'circle');
-    this.drawNode(ctx, 380, 150, 'Engine Server :8080', '#2ea043', 'square');
-    this.drawNode(ctx, 610, 150, 'CAS Storage: Ready', '#58a6ff', 'diamond');
+    // Draw radial service connections
+    const radius = Math.min(centerX, centerY) * 0.65;
+    ports.forEach((p, i) => {
+      const angle = (i * (2 * Math.PI / ports.length)) - (Math.PI / 2);
+      const px = centerX + radius * Math.cos(angle);
+      const py = centerY + radius * Math.sin(angle);
+
+      ctx.strokeStyle = '#30363d';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(centerX, centerY);
+      ctx.lineTo(px, py);
+      ctx.stroke();
+
+      const svc = typeof services[i] === 'object' ? (services[i].service || `Port ${p}`) : (services[i] || `Port ${p}`);
+      this.drawNode(ctx, px, py, `${svc} (:${p})`, '#2ea043', 'square');
+    });
+
+    // Draw central host node on top
+    this.drawNode(ctx, centerX, centerY, `${host.hostname} (${host.ip})`, '#58a6ff', 'circle');
   }
+
 
   drawNode(ctx, x, y, label, color, shape) {
     ctx.fillStyle = color;
