@@ -1,0 +1,41 @@
+.graph-tooltip {
+  position: absolute;
+  background: var(--bg-surface-elevated);
+  border: 1px solid var(--border-active);
+  border-radius: 6px;
+  padding: 8px 12px;
+  font-size: 11px;
+  color: var(--text-primary);
+  pointer-events: none;
+  z-index: 100;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+  display: none;
+}
+
+.graph-legend {
+  position: absolute;
+  bottom: 12px;
+  left: 12px;
+  background: rgba(22, 27, 34, 0.85);
+  backdrop-filter: blur(4px);
+  border: 1px solid var(--border-muted);
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 10px;
+  display: flex;
+  gap: 12px;
+  color: var(--text-secondary);
+  pointer-events: none;
+}
+
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.legend-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}

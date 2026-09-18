@@ -1,0 +1,213 @@
+.soc-app {
+  height: 100vh;
+  display: grid;
+  grid-template-rows: 54px minmax(0, 1fr) 30px;
+  background: var(--bg-canvas);
+  overflow: hidden;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 16px;
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border-muted);
+  user-select: none;
+}
+
+.topbar-left,
+.topbar-right,
+.case-context,
+.team-presence {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.product {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+}
+
+.product-icon {
+  font-size: 20px;
+  color: var(--accent-info);
+}
+
+.case-context {
+  font-size: 12px;
+  color: var(--text-secondary);
+  padding-left: 12px;
+  border-left: 1px solid var(--border-muted);
+}
+
+.case-context strong {
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+}
+
+.status-live {
+  padding: 2px 7px;
+  border: 1px solid var(--accent-critical);
+  border-radius: 4px;
+  color: var(--accent-critical);
+  font-weight: 700;
+  font-size: 10px;
+  letter-spacing: 1px;
+  background: rgba(248, 81, 73, 0.12);
+  animation: pulse-live 2s infinite ease-in-out;
+}
+
+@keyframes pulse-live {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
+#caseTimer {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.icon-button {
+  background: var(--bg-surface-elevated);
+  border: 1px solid var(--border-muted);
+  color: var(--text-primary);
+  border-radius: 6px;
+  padding: 5px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.icon-button:hover {
+  background: var(--border-muted);
+}
+
+#unreadCount {
+  background: var(--accent-info);
+  color: #fff;
+  border-radius: 10px;
+  padding: 1px 6px;
+  font-size: 10px;
+  font-weight: bold;
+}
+
+.global-search {
+  width: 220px;
+  background: var(--bg-canvas);
+  color: var(--text-primary);
+  border: 1px solid var(--border-muted);
+  border-radius: 5px;
+  padding: 6px 9px;
+  font-size: 12px;
+}
+
+.global-search:focus {
+  outline: none;
+  border-color: var(--accent-info);
+}
+
+.primary-action {
+  background: #238636;
+  color: white;
+  border: 1px solid #2ea043;
+  border-radius: 5px;
+  padding: 6px 12px;
+  font-weight: 600;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.primary-action:hover {
+  background: #2ea043;
+}
+
+.primary-action:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.workspace-layout {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 184px minmax(0, 1fr) 400px;
+  overflow: hidden;
+}
+
+.global-nav {
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-surface);
+  border-right: 1px solid var(--border-muted);
+  padding-top: 10px;
+  gap: 2px;
+}
+
+.global-nav button {
+  height: 46px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: transparent;
+  color: var(--text-secondary);
+  border: 0;
+  border-left: 3px solid transparent;
+  padding: 0 16px;
+  font-size: 12px;
+  cursor: pointer;
+  text-align: left;
+  transition: all 0.15s;
+}
+
+.global-nav button:hover {
+  background: var(--bg-surface-elevated);
+  color: var(--text-primary);
+}
+
+.global-nav button.active {
+  color: var(--text-primary);
+  border-left-color: var(--accent-info);
+  background: rgba(88, 166, 255, 0.10);
+  font-weight: 600;
+}
+
+.statusbar {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  padding: 0 14px;
+  background: var(--bg-surface);
+  border-top: 1px solid var(--border-muted);
+  font-size: 11px;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  user-select: none;
+}
+
+.statusbar strong {
+  color: var(--text-primary);
+}
+
+.statusbar-spacer {
+  flex: 1;
+}
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.7);
+  backdrop-filter: blur(4px);
+  z-index: 2000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}

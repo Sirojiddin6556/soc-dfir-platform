@@ -3,497 +3,167 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Платформа SOC / DFIR и Киберполигон</title>
+  <title>SOC/DFIR Platform</title>
   <link rel="stylesheet" href="css/theme.css">
-  <link rel="stylesheet" href="css/layout.css">
+  <link rel="stylesheet" href="css/shell.css">
+  <link rel="stylesheet" href="css/investigation.css">
+  <link rel="stylesheet" href="css/graph.css">
+  <link rel="stylesheet" href="css/inspector.css">
+  <link rel="stylesheet" href="css/timeline.css">
 </head>
 <body>
-  <div class="app-container">
-    <!-- Top Header Contract: Case Workspace Header -->
-    <header class="top-bar">
-      <div class="brand">
-        <div class="brand-dot"></div>
-        <span>ПЛАТФОРМА SOC/DFIR</span>
-        <span class="badge badge-host" id="activeCaseBadge">Кейс: INC-LIVE-001</span>
-        <span class="badge badge-attack" style="background: rgba(46,160,67,0.2); color: var(--accent-success); border-color: var(--accent-success);">БОЕВОЙ РЕЖИМ (LIVE)</span>
-        <span class="badge badge-net" id="caseTimer" style="font-family: var(--font-mono)">00:34:17</span>
+
+<div id="socApp" class="soc-app">
+
+  <!-- ===================================================== -->
+  <!-- TOP BAR                                               -->
+  <!-- ===================================================== -->
+  <header class="topbar">
+    <div class="topbar-left">
+      <div class="product">
+        <span class="product-icon">⬡</span>
+        <strong>SOC/DFIR ПЛАТФОРМА</strong>
       </div>
-      <div class="top-actions">
-        <input type="text" id="omniSearchInput" placeholder="Быстрый поиск (Ctrl+K)..." style="background: var(--bg-canvas); border: 1px solid var(--border-muted); color: var(--text-primary); padding: 4px 8px; border-radius: 4px; font-size: 11px; width: 170px;">
-        <button class="btn" id="btnIngestModal">+ Артефакт</button>
-        <button class="btn btn-primary" id="btnQuickScanGlobal">Скан</button>
-        <button class="btn" id="btnToggleTeamChat" style="display: flex; align-items: center; gap: 5px; border-color: var(--accent-primary);"><span style="color: var(--accent-success); font-size: 10px;">●</span> 💬 Чат <span class="badge badge-net" id="chatUnreadBadge" style="padding: 1px 4px;">3</span></button>
-        <button class="btn" id="btnUserProfile" style="display: flex; align-items: center; gap: 5px; background: rgba(56,139,253,0.15); border-color: var(--accent-primary);"><span style="border-radius: 50%; width: 16px; height: 16px; background: var(--accent-primary); color: #fff; display: inline-flex; align-items: center; justify-content: center; font-size: 9px; font-weight: bold;">С</span> Сироҷиддин</button>
-      </div>
-    </header>
-
-    <!-- Main 3-Pane Body -->
-    <div class="main-content">
-      <!-- 1. Left Sidebar: 13 Primary Navigation Sections -->
-      <aside class="left-pane" id="mainSidebar">
-        <div class="nav-group-title">Операции</div>
-        <div class="nav-item" data-view="dashboardView"><span class="badge badge-host">1</span> Главная / Дашборд</div>
-        <div class="nav-item" data-view="casesView"><span class="badge badge-host">2</span> Обзор инцидентов</div>
-        <div class="nav-group-title">Телеметрия и Цели</div>
-        <div class="nav-item active" data-view="infraDiscoveryView"><span class="badge badge-net">3</span> Инфраструктура</div>
-        <div class="nav-item" data-view="assetDetailsView" style="padding-left: 24px;">↳ Детали актива</div>
-        <div class="nav-group-title">Анализ и Граф атак</div>
-        <div class="nav-item" data-view="investigationGraphView"><span class="badge badge-attack">4</span> Расследование и Граф</div>
-        <div class="nav-item" data-view="timelineView"><span class="badge badge-proc">5</span> Форензик-таймлайн</div>
-        <div class="nav-item" data-view="evidenceView"><span class="badge badge-file">6</span> Улики и Хранилище CAS</div>
-        <div class="nav-group-title">База знаний ИБ</div>
-        <div class="nav-item" data-view="softwareCveView"><span class="badge badge-user">7</span> Софт и База CVE</div>
-        <div class="nav-item" data-view="mitreView"><span class="badge badge-attack">8</span> Матрица MITRE ATT&CK</div>
-        <div class="nav-item" data-view="diagramsView"><span class="badge badge-net">9</span> Диаграммы и C4</div>
-        <div class="nav-group-title">Автоматизация и Полигон</div>
-        <div class="nav-item" data-view="automationView"><span class="badge badge-proc">10</span> Автоматизация / DAG</div>
-        <div class="nav-item" data-view="cyberRangeView"><span class="badge badge-attack">11</span> Киберполигон / CTF</div>
-        <div class="nav-item" data-view="reportsView"><span class="badge badge-file">12</span> Отчеты об инцидентах</div>
-        <div class="nav-item" data-view="settingsView"><span class="badge badge-host">13</span> Настройки платформы</div>
-      </aside>
-
-      <!-- 2. Center Pane: Dynamic Views & Canvases -->
-      <main class="center-pane" id="centerWorkspace">
-        <!-- View 3: Infrastructure Discovery -->
-        <div id="infraDiscoveryView" class="tab-content" style="display: flex; flex-direction: column;">
-          <div class="action-bar-top">
-            <div style="font-weight: 700; font-size: 12px; display: flex; align-items: center; gap: 8px;">
-              <span>ОБНАРУЖЕНИЕ ИНФРАСТРУКТУРЫ</span>
-              <span class="badge badge-net" id="infraHostsCount">14 Узлов обнаружено</span>
-            </div>
-            <div style="display: flex; gap: 6px;">
-              <button class="btn btn-primary" id="btnQuickScan">[Быстрый скан]</button>
-              <button class="btn" id="btnStandardScan">[Стандартный]</button>
-              <button class="btn" id="btnDeepScan">[Глубокий]</button>
-              <button class="btn btn-danger" id="btnStopScan" disabled>[Стоп]</button>
-              <button class="btn" id="btnExportTopology">[Экспорт]</button>
-            </div>
-          </div>
-          <!-- Remote Service Scanner Input -->
-          <div style="padding: 6px 14px; background: var(--bg-surface-elevated); border-bottom: 1px solid var(--border-muted); display: flex; gap: 8px; align-items: center;">
-            <span style="font-size: 11px; font-weight: 600; color: var(--text-secondary); white-space: nowrap;">Удаленный сервис:</span>
-            <input type="text" id="remoteTargetInput" placeholder="IP или домен (напр. 192.168.1.50, 10.0.10.15 или remote.corp.local)" style="flex: 1; padding: 4px 8px; background: var(--bg-canvas); border: 1px solid var(--border-muted); border-radius: 4px; color: var(--text-primary); font-size: 11px; font-family: var(--font-mono);">
-            <button class="btn btn-primary" id="btnScanRemote">[Сканировать сервис]</button>
-          </div>
-          <!-- Live Scan Visualizer Bar -->
-          <div id="scanProgressBarContainer" style="display: none; padding: 8px 14px; background: var(--bg-surface); border-bottom: 1px solid var(--border-default); font-size: 11px;">
-            <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
-              <span id="scanProgressLabel" style="font-weight: 600; color: var(--accent-primary); display: flex; align-items: center; gap: 6px;">
-                <span class="pulse-dot" style="display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--accent-primary);"></span>
-                СКАНИРОВАНИЕ СЕТЕВОЙ ИНФРАСТРУКТУРЫ...
-              </span>
-              <span id="scanProgressPercent" style="color: var(--text-muted); font-weight: 700;">0%</span>
-            </div>
-            <div style="width: 100%; height: 6px; background: var(--bg-pane); border-radius: 3px; overflow: hidden; border: 1px solid var(--border-default);">
-              <div id="scanProgressBar" style="width: 0%; height: 100%; background: var(--accent-primary); transition: width 0.15s ease;"></div>
-            </div>
-            <div id="scanProgressLog" style="margin-top: 5px; font-family: monospace; color: var(--text-muted); font-size: 10px;">Инициализация сканирующего движка...</div>
-          </div>
-          <div class="split-view">
-            <!-- Left: Subnets & Hosts List -->
-            <div class="split-sidebar">
-              <div class="inspector-label" style="margin-bottom: 6px;">Подсети</div>
-              <div id="subnetList" style="margin-bottom: 12px;"></div>
-              <div class="inspector-label" style="margin-bottom: 6px;">Обнаруженные узлы</div>
-              <div id="hostList"></div>
-            </div>
-            <!-- Center: Topology & Assets Canvas -->
-            <div class="split-main">
-              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
-                <h4 style="font-size: 13px;">Карта сетевой топологии</h4>
-                <span style="font-size: 11px; color: var(--text-muted);">Кликните на карточку узла для перехода в Детали актива</span>
-              </div>
-              <div id="topologyGrid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 10px;"></div>
-            </div>
-          </div>
-        </div>
-
-        <!-- View 3b: Asset Details (12 Tabs Specification) -->
-        <div id="assetDetailsView" class="tab-content" style="display: none; flex-direction: column;">
-          <div class="action-bar-top">
-            <div>
-              <span style="font-size: 13px; font-weight: 700;" id="assetDetailHostname">PC-3002</span>
-              <span class="badge badge-host" id="assetDetailIp">127.0.0.1</span>
-              <span class="badge badge-host" id="assetDetailRisk">РИСК: НИЗКИЙ (1.0)</span>
-            </div>
-            <div style="display: flex; gap: 4px; flex-wrap: wrap;">
-              <button class="btn" id="btnInspectProc">[Экспресс-аудит]</button><button class="btn" id="btnCaptureNet">[Захват трафика]</button><button class="btn" id="btnInspectPersist">[Анализ закрепления]</button>
-              <button class="btn" id="btnGenerateSbom">[Сгенерировать SBOM]</button><button class="btn" id="btnScanCve">[Сканировать CVE]</button><button class="btn btn-primary" id="btnOpenGraphFromAsset">[Открыть граф атаки]</button>
-            </div>
-          </div>
-          <!-- 12 Granular Forensic Tabs -->
-          <div class="sub-tabs-bar" id="assetSubTabs">
-            <button class="sub-tab-btn active" data-asset-tab="tabOverview">Обзор</button><button class="sub-tab-btn" data-asset-tab="tabNetwork">Сеть</button><button class="sub-tab-btn" data-asset-tab="tabProcesses">Процессы</button><button class="sub-tab-btn" data-asset-tab="tabServices">Службы</button>
-            <button class="sub-tab-btn" data-asset-tab="tabPersistence">Закрепление</button><button class="sub-tab-btn" data-asset-tab="tabSoftware">ПО и SBOM</button><button class="sub-tab-btn" data-asset-tab="tabVulnerabilities">Уязвимости (CVE)</button><button class="sub-tab-btn" data-asset-tab="tabUsers">Пользователи</button>
-            <button class="sub-tab-btn" data-asset-tab="tabFirewall">Файрвол</button><button class="sub-tab-btn" data-asset-tab="tabFiles">Файлы</button><button class="sub-tab-btn" data-asset-tab="tabLogs">Журналы</button><button class="sub-tab-btn" data-asset-tab="tabEvidence">Улики (CAS)</button>
-          </div>
-          <div id="assetTabContent" style="padding: 14px; overflow-y: auto; flex: 1;"></div>
-        </div>
-
-        <!-- View 4: Attack Graph Canvas -->
-        <div id="investigationGraphView" class="tab-content" style="display: none; flex-direction: column;">
-          <div class="action-bar-top">
-            <div style="font-weight: 700; font-size: 12px; display: flex; align-items: center; gap: 8px;">
-              <span>ВИЗУАЛИЗАТОР ГРАФА АТАКИ</span>
-              <span class="badge badge-attack">ЦЕПОЧКА ЗАРАЖЕНИЯ APT29</span>
-            </div>
-            <div style="display: flex; gap: 6px; align-items: center;">
-              <label style="font-size: 11px; color: var(--text-secondary);">Детализация: </label>
-              <input type="range" id="lodSlider" min="1" max="4" value="2" style="width: 80px;">
-              <button class="btn" id="btnCenterGraph">Центрировать</button>
-              <button class="btn btn-primary" id="btnExportGraph">Экспорт PNG</button>
-            </div>
-          </div>
-          <div class="canvas-container" style="flex: 1; position: relative;">
-            <canvas id="graphCanvas"></canvas>
-          </div>
-        </div>
-
-        <!-- View 5: Forensic Timeline -->
-        <div id="timelineView" class="tab-content" style="display: none; padding: 14px; overflow-y: auto;">
-          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
-            <h3 style="font-size: 13px;">Хронологический многодорожечный таймлайн</h3>
-            <span class="badge badge-proc">3 активные дорожки</span>
-          </div>
-          <div id="timelineLanes"></div>
-        </div>
-
-        <!-- View 6: Evidence & Chain of Custody -->
-        <div id="evidenceView" class="tab-content" style="display: none; padding: 14px; overflow-y: auto;">
-          <h3 style="font-size: 13px; margin-bottom: 10px;">Артефакты контентно-адресуемого хранилища (CAS)</h3>
-          <table class="data-table" style="margin-bottom: 20px;">
-            <thead>
-              <tr><th>Артефакт</th><th>Размер</th><th>Время загрузки</th><th>BLAKE3 путь</th><th>SHA-256 хэш</th></tr>
-            </thead>
-            <tbody id="evidenceTableBody"></tbody>
-          </table>
-          <h3 style="font-size: 13px; margin-bottom: 10px;">Неизменяемый журнал цепочки владения (Merkle Chain of Custody)</h3>
-          <div id="custodyChainLog"></div>
-        </div>
-
-        <!-- View 8: MITRE ATT&CK Matrix -->
-        <div id="mitreView" class="tab-content" style="display: none; padding: 14px; overflow-y: auto;">
-          <h3 style="font-size: 13px; margin-bottom: 10px;">Тепловая карта MITRE ATT&CK Enterprise v14.1</h3>
-          <div id="mitreGrid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 10px;"></div>
-        </div>
-
-        <!-- View 11: CTF / Cyber Range -->
-        <div id="cyberRangeView" class="tab-content" style="display: none; padding: 14px; overflow-y: auto;">
-          <h3 style="font-size: 13px; margin-bottom: 10px;">Сценарий киберполигона и карточка верификации гипотез</h3>
-          <div style="background-color: var(--bg-surface); padding: 14px; border-radius: 6px; border: 1px solid var(--border-muted); max-width: 680px; margin-bottom: 14px;">
-            <div style="font-weight: 700; margin-bottom: 6px;">Целевая миссия: APT29 Боковое перемещение и кража учетных данных</div>
-            <p style="color: var(--text-secondary); margin-bottom: 10px; font-size: 12px;">Введите выявленную технику TTP и затронутый хост для математической сверки с эталоном.</p>
-            <label class="inspector-label" for="hypothesisInput">Выявленная техника (напр. T1003.001)</label>
-            <input type="text" id="hypothesisInput" placeholder="T1003.001" style="width: 100%; padding: 6px; margin: 4px 0 10px 0; background: var(--bg-canvas); border: 1px solid var(--border-muted); color: var(--text-primary); border-radius: 4px; font-size: 12px;">
-            <button class="btn btn-primary" id="btnVerifyHypothesis">Отправить гипотезу на сверку с эталоном</button>
-            <div id="verificationResult" style="margin-top: 10px;"></div>
-          </div>
-        </div>
-
-        <!-- View 1: Home / Dashboard -->
-        <div id="dashboardView" class="tab-content" style="display: none; padding: 14px; overflow-y: auto;">
-          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
-            <div>
-              <span style="font-size: 14px; font-weight: 700;">АКТИВНЫЙ ИНЦИДЕНТ: INC-LIVE-001</span>
-              <span class="badge badge-host" style="margin-left: 8px;">РИСК: НИЗКИЙ (1.0)</span>
-            </div>
-            <span style="font-size: 11px; color: var(--text-secondary);">Боевой режим мониторинга</span>
-          </div>
-          <div style="display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; margin-bottom: 14px;">
-            <div class="card" style="text-align: center; padding: 6px;"><div style="font-size: 16px; font-weight: 700; color: var(--accent-info);" id="metricHostsCount">1</div><div style="font-size: 10px; color: var(--text-muted);">Узлов</div></div>
-            <div class="card" style="text-align: center; padding: 6px;"><div style="font-size: 16px; font-weight: 700; color: var(--accent-success);" id="metricFindingsCount">0</div><div style="font-size: 10px; color: var(--text-muted);">Находок</div></div>
-            <div class="card" style="text-align: center; padding: 6px;"><div style="font-size: 16px; font-weight: 700; color: var(--accent-success);" id="metricCriticalCount">0</div><div style="font-size: 10px; color: var(--text-muted);">Критичных</div></div>
-            <div class="card" style="text-align: center; padding: 6px;"><div style="font-size: 16px; font-weight: 700; color: var(--accent-info);" id="metricEvidenceCount">0</div><div style="font-size: 10px; color: var(--text-muted);">Улик</div></div>
-            <div class="card" style="text-align: center; padding: 6px;"><div style="font-size: 16px; font-weight: 700; color: var(--accent-success);" id="metricCveCount">0</div><div style="font-size: 10px; color: var(--text-muted);">CVE</div></div>
-            <div class="card" style="text-align: center; padding: 6px;"><div style="font-size: 16px; font-weight: 700; color: var(--accent-success);" id="metricAttackCount">0</div><div style="font-size: 10px; color: var(--text-muted);">ATT&CK</div></div>
-          </div>
-          <div class="card" style="margin-bottom: 14px; padding: 8px;">
-            <div style="display: flex; justify-content: space-between; font-size: 11px; margin-bottom: 4px;"><span><strong>Прогресс инициализации и аудита</strong></span><span>100% Завершено</span></div>
-            <div style="width: 100%; height: 6px; background: var(--bg-pane); border-radius: 3px; overflow: hidden;"><div style="width: 100%; height: 100%; background: var(--accent-success);"></div></div>
-          </div>
-          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
-            <div class="card">
-              <h4 style="font-size: 12px; margin-bottom: 8px;">Последние события телеметрии</h4>
-              <div style="font-size: 11px; display: flex; flex-direction: column; gap: 4px;">
-                <div style="border-left: 3px solid var(--accent-success); padding-left: 6px;"><strong>Локальный брокер безопасности активен</strong> (PC-3002) — В НОРМЕ</div>
-                <div style="border-left: 3px solid var(--accent-info); padding-left: 6px;"><strong>Мониторинг форензик-артефактов готов</strong> (CAS) — ИНФО</div>
-                <div style="border-left: 3px solid var(--accent-success); padding-left: 6px;"><strong>Проверка автозагрузки Windows</strong> (PC-3002) — ЧИСТО</div>
-                <div style="border-left: 3px solid var(--accent-success); padding-left: 6px;"><strong>Службы операционной системы в норме</strong> (PC-3002) — В НОРМЕ</div>
-              </div>
-            </div>
-            <div class="card">
-              <h4 style="font-size: 12px; margin-bottom: 8px;">Состояние периметра и Kill Chain</h4>
-              <div style="font-size: 11px; display: flex; flex-direction: column; gap: 4px;">
-                <div><span style="color: var(--accent-success)">✓</span> <strong>Первичный доступ:</strong> Сетевой периметр защищен</div>
-                <div><span style="color: var(--accent-success)">✓</span> <strong>Выполнение:</strong> Доверенные процессы Windows</div>
-                <div><span style="color: var(--accent-success)">✓</span> <strong>Закрепление:</strong> Подозрительных задач нет</div>
-                <div><span style="color: var(--accent-success)">✓</span> <strong>Сетевой трафик:</strong> Легитимные сокеты</div>
-                <div><span style="color: var(--accent-success)">✓</span> <strong>Эксфильтрация:</strong> Утечек не зафиксировано</div>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <!-- View 2: Cases Overview -->
-        <div id="casesView" class="tab-content" style="display: none; padding: 14px; overflow-y: auto;">
-          <h3 style="font-size: 13px; margin-bottom: 8px;">Реестр инцидентов расследования</h3>
-          <table class="data-table" style="margin-bottom: 16px;">
-            <thead><tr><th>Кейс</th><th>Название</th><th>Критичность</th><th>Аналитик</th><th>Узлов</th><th>Статус</th></tr></thead>
-            <tbody>
-              <tr class="case-row" data-case-id="INC-LIVE-001" style="cursor: pointer;"><td><strong>INC-LIVE-001</strong></td><td>Боевой мониторинг рабочей станции и инфраструктуры</td><td><span class="badge badge-host">НИЗКИЙ / ШТАТНО</span></td><td>SOC Tier-1</td><td>1</td><td><span class="badge badge-net">АКТИВЕН / МОНИТОРИНГ</span></td></tr>
-              <tr class="case-row" data-case-id="INC-LIVE-002" style="cursor: pointer;"><td>INC-LIVE-002</td><td>Периметральный аудит внешних портов</td><td><span class="badge badge-host">НИЗКИЙ / ШТАТНО</span></td><td>AutoTriage</td><td>1</td><td><span class="badge badge-host">В РАБОТЕ</span></td></tr>
-            </tbody>
-          </table>
-
-          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-            <h3 style="font-size: 13px; margin: 0;">Реестр выявленных находок и алертов</h3>
-            <div id="findingsFilterBar" style="display: flex; gap: 6px;">
-              <button class="btn btn-sm btn-filter-findings active" data-filter="all" id="btnFilterAll">Все (0)</button>
-              <button class="btn btn-sm btn-filter-findings" data-filter="critical" id="btnFilterCritical" style="color: var(--accent-critical); font-weight: 700;">Критичные (0)</button>
-              <button class="btn btn-sm btn-filter-findings" data-filter="high" id="btnFilterHigh" style="color: var(--accent-warning);">Высокие (0)</button>
-              <button class="btn btn-sm btn-filter-findings" data-filter="other" id="btnFilterOther">Прочие (0)</button>
-            </div>
-          </div>
-          <table class="data-table" id="findingsDataTable">
-            <thead>
-              <tr><th>Находка / Аномалия</th><th>Узел</th><th>Критичность</th><th>TTP</th><th>Источник</th><th>Статус</th></tr>
-            </thead>
-            <tbody id="findingsTableBody">
-              <tr class="finding-row"><td colspan="6" style="text-align: center; color: var(--text-muted); padding: 14px;">Боевой режим: Активных находок и аномалий не обнаружено. Базовая линия хоста чиста.</td></tr>
-            </tbody>
-          </table>
-        </div>
-
-        <!-- View 7: Software & CVE Inventory -->
-        <div id="softwareCveView" class="tab-content" style="display: none; padding: 14px; overflow-y: auto;">
-          <h3 style="font-size: 13px; margin-bottom: 10px;">Инвентарь ПО и скоррелированные уязвимости CVE</h3>
-          <table class="data-table">
-            <thead>
-              <tr><th>Узел</th><th>Продукт</th><th>Версия</th><th>CVE</th><th>CVSS</th><th>EPSS</th><th>KEV</th></tr>
-            </thead>
-            <tbody>
-              <tr class="cve-row" data-cve="CVE-FREE" style="cursor: pointer;">
-                <td><strong>PC-3002</strong></td><td>SOC DFIR Engine</td><td>0.1.0</td><td><span class="badge badge-host">CVE-FREE</span></td><td><strong style="color: var(--accent-success)">0.0</strong></td><td>0%</td><td><span class="badge badge-host">НЕТ</span></td>
-              </tr>
-              <tr class="cve-row" data-cve="CVE-FREE" style="cursor: pointer;">
-                <td><strong>PC-3002</strong></td><td>Windows 11 Enterprise</td><td>10.0.22631</td><td><span class="badge badge-host">ПАТЧИ УСТАНОВЛЕНЫ</span></td><td><strong style="color: var(--accent-success)">0.0</strong></td><td>0%</td><td><span class="badge badge-host">НЕТ</span></td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-
-        <!-- View 9: Diagrams & Visual Intelligence -->
-        <div id="diagramsView" class="tab-content" style="display: none; padding: 14px; overflow-y: auto;">
-          <div class="action-bar-top" style="margin-bottom: 12px;">
-            <span style="font-weight: 700; font-size: 12px;">ВИЗУАЛЬНЫЕ МОДЕЛИ КИБЕРБЕЗОПАСНОСТИ</span>
-            <span style="font-size: 11px; color: var(--text-muted);">Кликните на уровень пирамиды для инспекции индикаторов</span>
-          </div>
-          <div class="card" style="padding: 16px; margin-bottom: 14px;">
-            <h4 style="font-size: 12px; margin-bottom: 12px; text-align: center;">ПИРАМИДА БОЛИ (PYRAMID OF PAIN)</h4>
-            <div style="display: flex; flex-direction: column; align-items: center; gap: 5px; max-width: 520px; margin: 0 auto;">
-              <div class="card pyramid-tier" data-tier="TTPs" style="width: 35%; text-align: center; background: rgba(88,166,255,0.1); border-color: var(--border-default); cursor: pointer; padding: 6px;"><strong>TTPs (0)</strong></div>
-              <div class="card pyramid-tier" data-tier="Tools" style="width: 48%; text-align: center; background: rgba(88,166,255,0.1); border-color: var(--border-default); cursor: pointer; padding: 6px;"><strong>Инструменты / Tools (0)</strong></div>
-              <div class="card pyramid-tier" data-tier="Artifacts" style="width: 62%; text-align: center; background: rgba(88,166,255,0.1); border-color: var(--border-default); cursor: pointer; padding: 6px;"><strong>Сетевые и хостовые артефакты (0)</strong></div>
-              <div class="card pyramid-tier" data-tier="Domains" style="width: 75%; text-align: center; background: rgba(88,166,255,0.15); border-color: var(--accent-info); cursor: pointer; padding: 6px;"><strong>Доменные имена (1)</strong></div>
-              <div class="card pyramid-tier" data-tier="IPs" style="width: 88%; text-align: center; background: rgba(88,166,255,0.2); border-color: var(--accent-info); cursor: pointer; padding: 6px;"><strong>IP-адреса (4)</strong></div>
-              <div class="card pyramid-tier" data-tier="Hashes" style="width: 100%; text-align: center; background: var(--bg-surface); cursor: pointer; padding: 6px;"><strong>Хэши файлов BLAKE3/SHA-256 (0)</strong></div>
-            </div>
-            <div id="pyramidDetailsBox" style="margin-top: 14px; width: 100%; max-width: 520px; margin-left: auto; margin-right: auto; padding: 10px; background: var(--bg-canvas); border: 1px solid var(--border-default); border-radius: 4px; font-size: 11px;">
-              <div style="font-weight: 700; color: var(--accent-info); margin-bottom: 4px;" id="pyramidBoxTitle">Индикаторы уровня: выберите уровень пирамиды</div>
-              <div id="pyramidBoxContent" style="color: var(--text-secondary); white-space: pre-line;">Кликните на любой уровень пирамиды выше (TTPs, Инструменты, Артефакты, Домены, IP, Хэши) для отображения конкретных сущностей и перехода к расследованию.</div>
-            </div>
-          </div>
-        </div>
-
-        <!-- View 10: Automation / Workflow DAG -->
-        <div id="automationView" class="tab-content" style="display: none; padding: 14px; overflow-y: auto;">
-          <div class="action-bar-top" style="margin-bottom: 12px; padding: 8px 12px;">
-            <div style="display: flex; gap: 6px;">
-              <button class="btn btn-primary">[ Экспресс-мониторинг ]</button>
-              <button class="btn">[ Полный аудит ]</button>
-            </div>
-            <div style="font-size: 11px; display: flex; align-items: center; gap: 10px;">
-              <span>Воркфлоу: <strong>Боевой мониторинг инфраструктуры</strong></span>
-              <span class="badge badge-host" style="color: var(--accent-success);">✓ АКТИВЕН</span>
-              <span>Задачи: <strong>41 / 41</strong></span>
-            </div>
-          </div>
-          <div class="card" style="padding: 16px; background: var(--bg-surface); margin-bottom: 14px;">
-            <h4 style="font-size: 12px; margin-bottom: 12px; color: var(--text-secondary);">ГРАФ ВЫПОЛНЕНИЯ ЗАДАЧ (DAG WORKFLOW)</h4>
-            <div style="display: flex; flex-direction: column; align-items: center; gap: 8px;">
-              <div class="card dag-node" data-task-name="Host Discovery" data-task-status="SUCCEEDED" data-task-dur="00:00:02" data-task-target="127.0.0.1/32" style="width: 240px; text-align: center; border-left: 4px solid var(--accent-success); cursor: pointer;">
-                <div style="font-size: 11px; font-weight: 700;">Host Discovery (Локальный узел)</div>
-                <div style="font-size: 10px; color: var(--accent-success);">✓ УСПЕШНО</div>
-              </div>
-              <div style="color: var(--text-muted);">↓</div>
-              <div class="card dag-node" data-task-name="OS Fingerprint" data-task-status="SUCCEEDED" data-task-dur="00:00:01" data-task-target="PC-3002" style="width: 240px; text-align: center; border-left: 4px solid var(--accent-success); cursor: pointer;">
-                <div style="font-size: 11px; font-weight: 700;">OS Detection & Fingerprint</div>
-                <div style="font-size: 10px; color: var(--accent-success);">✓ Windows 11 Enterprise (x64)</div>
-              </div>
-              <div style="color: var(--text-muted);">↓</div>
-              <div class="card dag-node" data-task-name="Windows Collect" data-task-status="SUCCEEDED" data-task-dur="00:00:02" data-task-target="PC-3002" style="width: 240px; text-align: center; border-left: 4px solid var(--accent-success); cursor: pointer;">
-                <div style="font-size: 11px; font-weight: 700;">Windows Telemetry Collection</div>
-                <div style="font-size: 10px; color: var(--accent-success);">✓ Процессы, сокеты, службы активны</div>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <!-- View 12: Incident Reports -->
-        <div id="reportsView" class="tab-content" style="display: none; padding: 14px; overflow-y: auto;">
-          <h3 style="font-size: 13px; margin-bottom: 10px;">Генератор отчетов и экспорт данных</h3>
-          <div style="display: flex; gap: 8px; margin-bottom: 14px;">
-            <button class="btn btn-primary">[Экспорт Executive Summary (HTML)]</button>
-            <button class="btn">[Экспорт технического отчета (Markdown)]</button>
-            <button class="btn">[Экспорт пакета STIX 2.1]</button>
-          </div>
-          <div class="card"><pre style="font-size: 11px; color: var(--text-secondary); margin: 0;">ОТЧЕТ ПО БОЕВОМУ МОНИТОРИНГУ: INC-LIVE-001
-Исследуемый хост: PC-3002 (127.0.0.1)
-Подсети: 127.0.0.1/32, 172.16.121.0/24, 192.168.56.0/24
-Статус: Боевой режим. Сторонних вредоносных модулей не выявлено. Телеметрия передается в штатном режиме.</pre></div>
-        </div>
-
-        <!-- View 13: Platform Settings -->
-        <div id="settingsView" class="tab-content" style="display: none; padding: 14px; overflow-y: auto;">
-          <h3 style="font-size: 13px; margin-bottom: 10px;">Параметры платформы и брокера привилегий</h3>
-          <div class="card" style="max-width: 500px; font-size: 11px;">
-            <div style="margin-bottom: 8px;"><strong>Режим брокера:</strong> Локальный сокет IPC (Offline Enforced)</div>
-            <div style="margin-bottom: 8px;"><strong>Хранилище CAS:</strong> WAL-enabled SQLite + BLAKE3 deduplication</div>
-            <div style="margin-bottom: 8px;"><strong>Версия матрицы ATT&CK:</strong> v14.1 Enterprise</div>
-            <div><strong>Статус движка:</strong> 127.0.0.1:8080 (Соединение активно)</div>
-          </div>
-        </div>
-      </main>
-
-      <!-- 3. Right Pane: Selected Entity Inspector -->
-      <aside class="right-pane" id="inspectorPane">
-        <div class="inspector-header" style="display: flex; justify-content: space-between; align-items: center;">
-          <span>ИНСПЕКТОР СУЩНОСТЕЙ</span>
-          <span class="badge badge-proc" id="inspectorEntityType">Факт</span>
-        </div>
-        <div class="inspector-body" id="inspectorContent">
-          <div style="color: var(--text-muted); font-size: 11px;">Выберите сущность в топологии, графе или таймлайне для анализа форензик-атрибутов.</div>
-        </div>
-      </aside>
-
-      <!-- 4. Right Pane: Team Collaboration & Case Chat -->
-      <aside class="right-pane" id="collabPane" style="display: none; width: 380px; flex-direction: column; background: var(--bg-surface); border-left: 1px solid var(--border-default);">
-        <div class="inspector-header" style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border-muted); padding: 8px 12px;">
-          <div style="display: flex; gap: 4px;" id="collabTabs">
-            <button class="btn btn-primary" id="tabCaseChat" style="padding: 2px 8px; font-size: 11px;">Чат кейса</button>
-            <button class="btn" id="tabPresence" style="padding: 2px 8px; font-size: 11px;">Команда (<span id="onlineCountBadge">3</span>)</button>
-          </div>
-          <button class="btn" id="btnCloseCollab" style="padding: 2px 6px; font-size: 11px;">✕</button>
-        </div>
-        <!-- Chat View -->
-        <div id="collabChatView" style="display: flex; flex-direction: column; flex: 1; min-height: 0;">
-          <div id="collabMessagesList" style="flex: 1; overflow-y: auto; padding: 10px; display: flex; flex-direction: column; gap: 8px;"></div>
-          <!-- Quick Entity Inserts -->
-          <div style="padding: 4px 8px; background: var(--bg-surface-elevated); border-top: 1px solid var(--border-muted); display: flex; gap: 4px; overflow-x: auto; font-size: 10px;">
-            <button class="btn" id="btnInsertFinding" style="padding: 2px 5px; font-size: 10px;">+ Улика</button>
-            <button class="btn" id="btnInsertProcess" style="padding: 2px 5px; font-size: 10px;">+ Процесс</button>
-            <button class="btn" id="btnInsertMitre" style="padding: 2px 5px; font-size: 10px;">+ MITRE</button>
-          </div>
-          <!-- Chat Input -->
-          <div style="padding: 8px; border-top: 1px solid var(--border-default); display: flex; gap: 6px; background: var(--bg-surface);">
-            <input type="text" id="collabChatInput" placeholder="Сообщение... (/finding, /process, @имя)" style="flex: 1; padding: 6px 8px; background: var(--bg-canvas); border: 1px solid var(--border-muted); border-radius: 4px; color: var(--text-primary); font-size: 11px;">
-            <button class="btn btn-primary" id="btnCollabSend" style="padding: 6px 12px;">Отпр</button>
-          </div>
-        </div>
-        <!-- Presence View -->
-        <div id="collabPresenceView" style="display: none; flex-direction: column; flex: 1; overflow-y: auto; padding: 12px; gap: 10px;">
-          <div style="font-weight: 700; font-size: 11px; color: var(--text-secondary); margin-bottom: 4px;">УЧАСТНИКИ ОНЛАЙН В КЕЙСЕ</div>
-          <div id="presenceMembersList" style="display: flex; flex-direction: column; gap: 8px;"></div>
-          <div style="font-weight: 700; font-size: 11px; color: var(--text-secondary); margin-top: 10px; margin-bottom: 4px; display: flex; justify-content: space-between; align-items: center;"><span>КОМАНДЫ И ДОСТУП</span><div style="display: flex; gap: 4px;"><button class="btn" id="btnJoinCode" style="padding: 1px 5px; font-size: 10px;">Вступить</button><button class="btn btn-primary" id="btnCreateInvite" style="padding: 1px 5px; font-size: 10px;">+ Пригласить</button></div></div>
-          <div id="workspaceTeamsList" style="display: flex; flex-direction: column; gap: 6px;"></div>
-          <div id="invitationsList" style="display: flex; flex-direction: column; gap: 4px;"></div>
-        </div>
-      </aside>
-    </div>
-
-    <!-- User Profile Modal -->
-    <div id="userProfileModal" class="modal-overlay" style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.6); backdrop-filter: blur(4px); z-index: 1000; align-items: center; justify-content: center;">
-      <div style="background: var(--bg-surface); border: 1px solid var(--border-default); border-radius: 8px; width: 440px; padding: 20px; box-shadow: 0 10px 30px rgba(0,0,0,0.5);">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px;">
-          <h3 style="font-size: 14px; font-weight: 700; margin: 0;">Мой профиль и аккаунт</h3>
-          <button class="btn" id="btnCloseProfileModal" style="padding: 2px 6px;">✕</button>
-        </div>
-        <div style="display: flex; gap: 14px; align-items: center; margin-bottom: 14px; padding-bottom: 14px; border-bottom: 1px solid var(--border-muted);">
-          <div style="width: 44px; height: 44px; border-radius: 50%; background: var(--accent-primary); color: #fff; display: flex; align-items: center; justify-content: center; font-size: 18px; font-weight: bold;">С</div>
-          <div>
-            <div style="font-weight: 700; font-size: 13px;" id="profileDisplayNameHeader">Сироҷиддин</div>
-            <div style="font-size: 11px; color: var(--text-muted);">@sirojiddin • <span class="badge badge-host" style="font-size: 9px;">Owner / SOC Lead</span></div>
-          </div>
-        </div>
-        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; font-size: 11px;">
-          <div>
-            <label style="color: var(--text-secondary); display: block; margin-bottom: 3px;">Отображаемое имя:</label>
-            <input type="text" id="profileInputName" value="Сироҷиддин" style="width: 100%; padding: 4px 6px; background: var(--bg-canvas); border: 1px solid var(--border-muted); border-radius: 4px; color: var(--text-primary); font-size: 11px;">
-          </div>
-          <div>
-            <label style="color: var(--text-secondary); display: block; margin-bottom: 3px;">Email:</label>
-            <input type="email" id="profileInputEmail" value="sirojiddin@soc.local" style="width: 100%; padding: 4px 6px; background: var(--bg-canvas); border: 1px solid var(--border-muted); border-radius: 4px; color: var(--text-primary); font-size: 11px;">
-          </div>
-          <div>
-            <label style="color: var(--text-secondary); display: block; margin-bottom: 3px;">Отдел:</label>
-            <input type="text" id="profileInputDept" value="SOC" style="width: 100%; padding: 4px 6px; background: var(--bg-canvas); border: 1px solid var(--border-muted); border-radius: 4px; color: var(--text-primary); font-size: 11px;">
-          </div>
-          <div>
-            <label style="color: var(--text-secondary); display: block; margin-bottom: 3px;">Часовой пояс:</label>
-            <input type="text" id="profileInputTz" value="Asia/Tashkent" style="width: 100%; padding: 4px 6px; background: var(--bg-canvas); border: 1px solid var(--border-muted); border-radius: 4px; color: var(--text-primary); font-size: 11px;">
-          </div>
-        </div>
-        <div style="margin-top: 14px; display: flex; justify-content: space-between; align-items: center;">
-          <button class="btn" id="btnLogoutProfile" style="border-color: var(--accent-critical); color: var(--accent-critical); font-size: 11px;">Выйти</button>
-          <div style="display: flex; gap: 6px;">
-            <button class="btn" id="btnCancelProfile">Отмена</button>
-            <button class="btn btn-primary" id="btnSaveProfile">Сохранить</button>
-          </div>
-        </div>
+      <div class="case-context">
+        <span>Кейс:</span>
+        <strong id="caseId">INC-LIVE-001</strong>
+        <span id="caseMode" class="status-live">LIVE</span>
+        <span id="caseTimer">00:00:00</span>
       </div>
     </div>
 
-    <!-- Login Modal Overlay -->
-    <div id="loginModal" class="modal-overlay" style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.7); backdrop-filter: blur(4px); z-index: 2000; align-items: center; justify-content: center;">
-      <div style="background: var(--bg-surface); border: 1px solid var(--border-default); border-radius: 8px; width: 360px; padding: 20px; box-shadow: 0 10px 30px rgba(0,0,0,0.6);">
-        <div style="font-weight: 700; font-size: 13px; margin-bottom: 4px;">🛡️ Вход в SOC / DFIR Platform</div>
-        <div style="font-size: 11px; color: var(--text-muted); margin-bottom: 12px;">Локальная верификация аналитика (Argon2id)</div>
-        <div style="display: flex; flex-direction: column; gap: 8px; font-size: 11px;">
-          <div>
-            <label style="color: var(--text-secondary); display: block; margin-bottom: 2px;">Логин:</label>
-            <input type="text" id="loginInputUsername" value="sirojiddin" style="width: 100%; padding: 5px 8px; background: var(--bg-canvas); border: 1px solid var(--border-muted); border-radius: 4px; color: var(--text-primary); font-size: 12px;">
-          </div>
-          <div>
-            <label style="color: var(--text-secondary); display: block; margin-bottom: 2px;">Пароль:</label>
-            <input type="password" id="loginInputPassword" value="admin" style="width: 100%; padding: 5px 8px; background: var(--bg-canvas); border: 1px solid var(--border-muted); border-radius: 4px; color: var(--text-primary); font-size: 12px;">
-          </div>
-          <div id="loginErrorMsg" style="color: var(--accent-critical); font-size: 11px; display: none;"></div>
-          <button class="btn btn-primary" id="btnSubmitLogin" style="width: 100%; padding: 6px; margin-top: 4px;">Войти в систему</button>
+    <div class="topbar-right">
+      <div id="teamPresence" class="team-presence"></div>
+      <button id="openDiscussion" class="icon-button">
+        💬 <span id="unreadCount">0</span>
+      </button>
+      <input id="globalSearch" class="global-search" placeholder="Поиск (Ctrl+K)...">
+      <button id="startCollection" class="primary-action">▶ Запустить сбор</button>
+    </div>
+  </header>
+
+  <!-- ===================================================== -->
+  <!-- BODY                                                  -->
+  <!-- ===================================================== -->
+  <div class="workspace-layout">
+
+    <!-- GLOBAL NAVIGATION -->
+    <nav class="global-nav">
+      <button data-space="operations">
+        ◈ <span>Операции</span>
+      </button>
+      <button data-space="investigation" class="active">
+        ⎔ <span>Расследование</span>
+      </button>
+      <button data-space="evidence">
+        ◉ <span>Улики</span>
+      </button>
+      <button data-space="range">
+        ▣ <span>Range</span>
+      </button>
+      <button data-space="system">
+        ⚙ <span>Система</span>
+      </button>
+    </nav>
+
+    <!-- ================================================= -->
+    <!-- MAIN INVESTIGATION                                -->
+    <!-- ================================================= -->
+    <main id="investigationWorkspace" class="investigation-workspace">
+
+      <!-- LAYERS -->
+      <section class="layer-toolbar">
+        <button data-layer="environment">◎ Среда</button>
+        <button data-layer="attack" class="active danger">⎔ Атака</button>
+        <button data-layer="processes">⚙ Процессы</button>
+        <button data-layer="network">⛓ Сеть</button>
+        <button data-layer="mitre">◈ ATT&CK</button>
+
+        <div class="toolbar-spacer"></div>
+
+        <button id="zoomOut">−</button>
+        <span id="zoomLabel">100%</span>
+        <button id="zoomIn">+</button>
+        <button id="fitGraph">⌗</button>
+      </section>
+
+      <!-- INVESTIGATION CANVAS -->
+      <section class="investigation-canvas">
+        <canvas id="investigationGraph"></canvas>
+        <div id="graphEmptyState" class="canvas-empty">
+          <strong>Расследование пока пустое</strong>
+          <span>Запустите сбор данных или загрузите артефакт.</span>
+        </div>
+      </section>
+
+      <!-- BOTTOM FORENSIC WORKSPACE -->
+      <section class="forensic-bottom">
+        <div class="timeline-panel">
+          <header>
+            <strong>Хронология</strong>
+            <select id="timelineFilter">
+              <option value="all">Все события</option>
+              <option value="process">Процессы</option>
+              <option value="network">Сеть</option>
+              <option value="persistence">Закрепление</option>
+              <option value="security">Безопасность</option>
+            </select>
+          </header>
+          <div id="timelineEvents" class="timeline-events"></div>
+        </div>
+
+        <div id="eventDetails" class="event-details">
+          <div class="empty-panel">Выберите событие в хронологии</div>
+        </div>
+      </section>
+    </main>
+
+    <!-- ================================================= -->
+    <!-- CONTEXT INSPECTOR                                 -->
+    <!-- ================================================= -->
+    <aside class="context-panel">
+      <div class="context-tabs">
+        <button data-context-tab="context" class="active">Контекст</button>
+        <button data-context-tab="evidence">Улики</button>
+        <button data-context-tab="relations">Связи</button>
+      </div>
+
+      <div id="entityInspector" class="entity-inspector">
+        <div class="empty-panel">
+          Выберите объект на карте, таймлайне или в графе.
         </div>
       </div>
-    </div>
 
-    <!-- Bottom Status Footer Contract -->
-    <footer class="workflow-footer">
-      <div>
-        <span>Воркфлоу: <strong style="color: var(--text-primary)">27/41</strong> завершено</span>
-        <span style="margin: 0 6px;">│</span>
-        <span style="color: var(--accent-success)">4 активно</span>
-        <span style="margin: 0 6px;">│</span>
-        <span style="color: var(--accent-critical)">2 заблокировано</span>
-        <span style="margin: 0 6px;">│</span>
-        <span>Риск: <strong style="color: var(--accent-critical)">ВЫСОКИЙ</strong></span>
-      </div>
-      <div>
-        <span>CAS: <strong style="color: var(--text-primary)">1.2 ГБ</strong> (WAL Активен)</span>
-        <span style="margin: 0 6px;">│</span>
-        <span>Движок: <strong style="color: var(--accent-success)">127.0.0.1:8080</strong></span>
-        <span style="margin: 0 6px;">│</span>
-        <span>Режим: <strong style="color: var(--text-primary)">ОФЛАЙН ЛОКАЛЬНЫЙ</strong></span>
-      </div>
-    </footer>
+      <!-- CONTEXT DISCUSSION -->
+      <section class="context-discussion">
+        <header>
+          <strong>Обсуждение</strong>
+          <span id="discussionCount">0</span>
+        </header>
+        <div id="discussionMessages" class="discussion-messages"></div>
+        <div class="discussion-input">
+          <input id="discussionText" placeholder="Сообщение...">
+          <button id="sendDiscussion">➤</button>
+        </div>
+      </section>
+    </aside>
   </div>
 
-  <script type="module" src="js/app.js"></script>
+  <!-- ===================================================== -->
+  <!-- STATUS BAR                                            -->
+  <!-- ===================================================== -->
+  <footer class="statusbar">
+    <span>● Расследование активно</span>
+    <span>Риск: <strong id="riskLevel">LOW</strong></span>
+    <span>Находки: <strong id="findingCount">0</strong></span>
+    <span>Улики: <strong id="evidenceCount">0</strong></span>
+    <span>Хосты: <strong id="affectedHosts">0</strong></span>
+    <span class="statusbar-spacer"></span>
+    <span>Engine: <strong>LOCAL</strong></span>
+    <span id="teamSyncState">Team: OFFLINE</span>
+  </footer>
+</div>
+
+<script type="module" src="js/app.js"></script>
 </body>
 </html>

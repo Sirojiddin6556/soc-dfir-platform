@@ -14,6 +14,7 @@ use std::path::PathBuf;
 
 pub mod collaboration;
 pub mod host_inspector;
+pub mod investigation;
 pub mod membership;
 pub mod scanner;
 pub mod scenario_eval;
@@ -426,6 +427,28 @@ impl EngineApp {
                     request_id: req.request_id,
                     result: Some(val),
                     error: None,
+                })
+                .unwrap()
+            }
+            m if m.starts_with("investigation.")
+                || m.starts_with("graph.")
+                || m.starts_with("timeline.")
+                || m == "chat.entity.thread" =>
+            {
+                let handler = investigation::InvestigationHandler::new(
+                    &self.storage,
+                    &self.correlation,
+                    &self.graph,
+                );
+                let (res, err) = match handler.handle(m, req.params).await {
+                    Ok(val) => (Some(val), None),
+                    Err(e) => (None, Some(e)),
+                };
+                serde_json::to_string(&IpcResponse {
+                    api_version: 1,
+                    request_id: req.request_id,
+                    result: res,
+                    error: err,
                 })
                 .unwrap()
             }
