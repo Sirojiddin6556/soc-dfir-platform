@@ -5,9 +5,11 @@ use core_domain::observation::{Observation, RawToolResult};
 use thiserror::Error;
 
 pub mod cpe;
+pub mod importer;
 pub mod vuln;
 
 pub use cpe::{resolve_cpe_and_purl, NormalizedSoftwareId};
+pub use importer::{parse_epss_csv, parse_kev_json, parse_nvd_json, ImportError, ImportedCve};
 pub use vuln::{VulnerabilityDatabase, VulnerabilityRecord};
 
 #[derive(Error, Debug)]

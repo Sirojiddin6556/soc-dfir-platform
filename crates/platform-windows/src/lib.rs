@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::process::Command;
 use thiserror::Error;
 
+pub mod discovery;
 pub mod persistence;
 pub mod process;
 pub mod service;
@@ -11,6 +12,7 @@ pub mod snapshot;
 pub mod socket;
 pub mod software;
 
+pub use discovery::{discover_via_arp, discover_via_tcp_probe, DiscoveredHost, DiscoveryMethod};
 pub use persistence::{
     enumerate_registry_autoruns, enumerate_scheduled_tasks, RegistryAutorunObservation,
     ScheduledTaskObservation,
