@@ -4,7 +4,10 @@ pub mod network;
 pub mod probe;
 
 pub use network::{execute_cve_scan, execute_network_scan};
-pub use probe::{fingerprint_os, probe_service_details, resolve_hostname, DiscoveredService};
+pub use probe::{
+    fingerprint_os, probe_service_details, resolve_hostname, Confidence, DiscoveredService,
+    ScanMethod,
+};
 
 /// Discovers live hosts using ARP cache + TCP probe fallback.
 pub async fn execute_host_discovery(subnet_prefix: &str) -> serde_json::Value {

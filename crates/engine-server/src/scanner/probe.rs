@@ -1,10 +1,48 @@
 #![forbid(unsafe_code)]
 
-use serde_json::json;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::timeout;
+
+/// How the port/service was confirmed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScanMethod {
+    /// TCP connect succeeded — OS confirmed the port is open.
+    TcpConnect,
+    /// Banner was read from the open socket — higher confidence than connect alone.
+    BannerGrab,
+    /// Well-known port with a static heuristic (no real connect attempted).
+    Heuristic,
+}
+
+/// Qualitative confidence in the service observation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Confidence {
+    High,   // Banner grabbed or well-known protocol confirmed
+    Medium, // TCP connect succeeded, no banner
+    Low,    // Heuristic only
+}
+
+impl std::fmt::Display for ScanMethod {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ScanMethod::TcpConnect => write!(f, "tcp-connect"),
+            ScanMethod::BannerGrab => write!(f, "banner-grab"),
+            ScanMethod::Heuristic => write!(f, "heuristic"),
+        }
+    }
+}
+
+impl std::fmt::Display for Confidence {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Confidence::High => write!(f, "high"),
+            Confidence::Medium => write!(f, "medium"),
+            Confidence::Low => write!(f, "low"),
+        }
+    }
+}
 
 /// Service information discovered on an open port
 #[derive(Debug, Clone)]
@@ -14,6 +52,8 @@ pub struct DiscoveredService {
     pub service_name: String,
     pub version: Option<String>,
     pub banner: Option<String>,
+    pub scan_method: ScanMethod,
+    pub confidence: Confidence,
 }
 
 /// Probes an open TCP port for protocol banners and service versions
@@ -123,12 +163,22 @@ pub async fn probe_service_details(ip: &str, port: u16) -> DiscoveredService {
         };
     }
 
+    let (scan_method, confidence) = if banner.is_some() {
+        (ScanMethod::BannerGrab, Confidence::High)
+    } else if matches!(port, 135 | 445 | 3389) {
+        (ScanMethod::Heuristic, Confidence::Low)
+    } else {
+        (ScanMethod::TcpConnect, Confidence::Medium)
+    };
+
     DiscoveredService {
         port,
         protocol: "TCP".to_string(),
         service_name,
         version,
         banner,
+        scan_method,
+        confidence,
     }
 }
 

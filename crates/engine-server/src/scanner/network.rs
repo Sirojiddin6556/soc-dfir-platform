@@ -65,6 +65,8 @@ pub async fn execute_network_scan(subnet: &str, mode: &str) -> serde_json::Value
                 "service": s.service_name,
                 "version": s.version.unwrap_or_else(|| "Detected".to_string()),
                 "banner": s.banner.unwrap_or_else(|| format!("{}/{}", s.service_name, s.port)),
+                "scan_method": s.scan_method.to_string(),
+                "confidence": s.confidence.to_string(),
             }));
         }
 
@@ -79,6 +81,14 @@ pub async fn execute_network_scan(subnet: &str, mode: &str) -> serde_json::Value
             "hosts_up": 1,
             "duration_ms": duration,
             "scan_rate_pps": 350,
+            "coverage": {
+                "ports_attempted": common_ports.len(),
+                "ports_open": open_ports.len(),
+                "ports_closed_or_filtered": common_ports.len() - open_ports.len(),
+                "hosts_attempted": 1,
+                "hosts_responded": if open_ports.is_empty() { 0 } else { 1 },
+                "scan_mode": mode,
+            },
             "discovered_hosts": [
                 {
                     "id": "h_local",
@@ -162,6 +172,8 @@ pub async fn execute_network_scan(subnet: &str, mode: &str) -> serde_json::Value
                     "service": s.service_name,
                     "version": s.version.unwrap_or_else(|| "Detected".to_string()),
                     "banner": s.banner.unwrap_or_else(|| format!("{}/{}", s.service_name, s.port)),
+                    "scan_method": s.scan_method.to_string(),
+                    "confidence": s.confidence.to_string(),
                 }));
             }
 
@@ -196,6 +208,14 @@ pub async fn execute_network_scan(subnet: &str, mode: &str) -> serde_json::Value
             "hosts_up": hosts_up,
             "duration_ms": duration,
             "scan_rate_pps": 350,
+            "coverage": {
+                "ports_attempted": common_ports.len(),
+                "ports_open": open_ports.len(),
+                "ports_closed_or_filtered": common_ports.len() - open_ports.len(),
+                "hosts_attempted": 1,
+                "hosts_responded": if open_ports.is_empty() { 0 } else { 1 },
+                "scan_mode": mode,
+            },
             "discovered_hosts": discovered
         });
     }
@@ -237,6 +257,8 @@ pub async fn execute_network_scan(subnet: &str, mode: &str) -> serde_json::Value
                     "service": s.service_name,
                     "version": s.version.unwrap_or_else(|| "Detected".to_string()),
                     "banner": s.banner.unwrap_or_else(|| format!("{}/{}", s.service_name, s.port)),
+                    "scan_method": s.scan_method.to_string(),
+                    "confidence": s.confidence.to_string(),
                 }));
             }
 
@@ -272,6 +294,12 @@ pub async fn execute_network_scan(subnet: &str, mode: &str) -> serde_json::Value
         "hosts_up": hosts_up,
         "duration_ms": duration,
         "scan_rate_pps": 500,
+        "coverage": {
+            "hosts_attempted": probe_hosts.len(),
+            "hosts_responded": hosts_up,
+            "ports_per_host_attempted": probe_ports.len(),
+            "scan_mode": mode,
+        },
         "discovered_hosts": discovered
     })
 }
