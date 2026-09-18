@@ -2,6 +2,8 @@
  * Контроллер сканирования для платформы SOC/DFIR
  * Управляет сетевой разведкой инфраструктуры, портовыми зондами и сканером CVE
  */
+import { updatePyramidAndFindings } from './drilldown.js';
+
 export class ScannerController {
   constructor(app, ipc) {
     this.app = app;
@@ -242,23 +244,81 @@ export class ScannerController {
 
   async quickInspectProcess() {
     if (!this.app.selectedHost) return;
+    await this.runHostCorrelation();
+    const procTabBtn = document.querySelector('[data-asset-tab="tabProcesses"]');
+    if (procTabBtn) procTabBtn.click();
+  }
 
+  async runHostCorrelation() {
     try {
-      const res = await this.ipc.call('broker.execute', {
-        CollectProcessMetadata: { pid: 4820 }
-      });
-      const procTabBtn = document.querySelector('[data-asset-tab="tabProcesses"]');
-      if (procTabBtn) procTabBtn.click();
-
-      const procContainer = document.getElementById('tabProcesses');
-      if (procContainer && res) {
-        const notice = document.createElement('div');
-        notice.style.cssText = 'background: rgba(88,166,255,0.15); border: 1px solid var(--accent-primary); padding: 8px; border-radius: 4px; margin-bottom: 8px; font-size: 11px; color: var(--accent-primary);';
-        notice.innerHTML = `<strong>Телеметрия привилегированного брокера:</strong> Проверен PID 4820 (${res.process_name || 'powershell.exe'}) — Статус: Активен / Под наблюдением`;
-        procContainer.prepend(notice);
+      const corr = await this.ipc.call('host.correlate', { host_id: 'PC-3002' });
+      if (corr) {
+        this.app.correlationData = corr;
+        updatePyramidAndFindings(this.app, corr);
+        this.app.renderTimeline();
+        this.app.renderMitreMatrix();
       }
+      return corr;
     } catch (err) {
-      console.warn('[Process Inspection] Уведомление:', err.message);
+      console.warn('[Correlation Engine] Ошибка:', err);
     }
   }
+}
+
+export function renderTimelineLanes(lanesEl, correlationData, host) {
+  if (!lanesEl) return;
+  const findings = correlationData?.findings || [];
+  const findingsHtml = findings.map(f => `
+    <div class="card" style="border-left: 3px solid ${f.severity === 'Critical' ? 'var(--accent-critical)' : 'var(--accent-warning)'}; margin-bottom: 8px; cursor: pointer;" data-finding-id="${f.id}">
+      <div style="display: flex; justify-content: space-between; font-size: 11px;">
+        <span><strong>${f.created_at ? f.created_at.slice(11, 19) + ' UTC' : 'LIVE'}</strong> │ Correlation Engine (${f.rule_id})</span>
+        <span class="badge ${f.severity === 'Critical' ? 'badge-attack' : 'badge-net'}">${f.severity.toUpperCase()}</span>
+      </div>
+      <div style="font-size: 12px; margin-top: 4px;"><strong>${f.title}</strong>: ${f.entity_key} (Риск: ${f.risk_score})</div>
+    </div>
+  `).join('');
+
+  lanesEl.innerHTML = `${findingsHtml}
+    <div class="card" style="border-left: 3px solid var(--accent-success); margin-bottom: 8px;">
+      <div style="display: flex; justify-content: space-between; font-size: 11px;">
+        <span><strong>18:00:05.120 UTC</strong> │ Поток: Локальный брокер ядра</span>
+        <span class="badge badge-host">ИНФО</span>
+      </div>
+      <div style="font-size: 12px; margin-top: 4px;">Engine Server JSON-RPC активен на 127.0.0.1:8080. Форензик-аудит запущен.</div>
+    </div>
+    <div class="card" style="border-left: 3px solid var(--accent-info); margin-bottom: 8px;">
+      <div style="display: flex; justify-content: space-between; font-size: 11px;">
+        <span><strong>18:00:01.004 UTC</strong> │ Поток: Телеметрия хоста</span>
+        <span class="badge badge-net">В НОРМЕ</span>
+      </div>
+      <div style="font-size: 12px; margin-top: 4px;">Станция ${host?.hostname || 'PC-3002'}: Сетевые интерфейсы и сокеты в штатном режиме. Вредоносных аномалий не обнаружено.</div>
+    </div>`;
+}
+
+export function renderMitreGrid(grid, correlationData) {
+  if (!grid) return;
+  const tactics = [
+    { ru: 'Первичный доступ', en: 'Initial Access' }, { ru: 'Выполнение', en: 'Execution' },
+    { ru: 'Закрепление', en: 'Persistence' }, { ru: 'Повышение привилегий', en: 'Privilege Escalation' },
+    { ru: 'Обход защиты', en: 'Defense Evasion' }, { ru: 'Сбор учетных данных', en: 'Credential Access' },
+    { ru: 'Разведка', en: 'Discovery' }, { ru: 'Боковое перемещение', en: 'Lateral Movement' },
+    { ru: 'Сбор данных', en: 'Collection' }, { ru: 'Управление и контроль', en: 'Command and Control' },
+    { ru: 'Эксфильтрация', en: 'Exfiltration' }, { ru: 'Воздействие', en: 'Impact' }
+  ];
+  const mitreList = correlationData?.mitre_matrix || [];
+  grid.innerHTML = tactics.map((t, idx) => {
+    const matches = mitreList.filter(m => m.tactic === t.en || m.tactic === t.ru);
+    if (matches.length > 0) {
+      return `<div class="card" style="font-size: 11px; padding: 8px; border: 1px solid var(--accent-critical); background: rgba(248,81,73,0.08);">
+        <div style="font-weight: 700; color: var(--accent-critical); margin-bottom: 6px;">${idx + 1}. ${t.ru}</div>
+        <div style="display: flex; flex-direction: column; gap: 4px;">
+          ${matches.map(m => `<div style="background: rgba(248,81,73,0.15); border: 1px solid var(--accent-critical); border-radius: 3px; padding: 4px; font-size: 10px;"><strong style="color: var(--accent-critical);">${m.technique_id}</strong>: ${m.name}</div>`).join('')}
+        </div>
+      </div>`;
+    }
+    return `<div class="card" style="font-size: 11px; padding: 8px;">
+      <div style="font-weight: 700; color: var(--accent-info); margin-bottom: 6px;">${idx + 1}. ${t.ru}</div>
+      <div style="background: var(--bg-canvas); border: 1px solid var(--border-muted); padding: 4px; border-radius: 3px; font-size: 10px; color: var(--text-secondary);">Не обнаружено</div>
+    </div>`;
+  }).join('');
 }

@@ -215,12 +215,12 @@
             <span style="font-size: 11px; color: var(--text-secondary);">Боевой режим мониторинга</span>
           </div>
           <div style="display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; margin-bottom: 14px;">
-            <div class="card" style="text-align: center; padding: 8px;"><div style="font-size: 18px; font-weight: 700; color: var(--accent-info);">1</div><div style="font-size: 10px; color: var(--text-muted);">Узлов</div></div>
-            <div class="card" style="text-align: center; padding: 8px;"><div style="font-size: 18px; font-weight: 700; color: var(--accent-success);">4</div><div style="font-size: 10px; color: var(--text-muted);">Находок</div></div>
-            <div class="card" style="text-align: center; padding: 8px;"><div style="font-size: 18px; font-weight: 700; color: var(--accent-success);">0</div><div style="font-size: 10px; color: var(--text-muted);">Критичных</div></div>
-            <div class="card" style="text-align: center; padding: 8px;"><div style="font-size: 18px; font-weight: 700; color: var(--accent-info);">0</div><div style="font-size: 10px; color: var(--text-muted);">Улик</div></div>
-            <div class="card" style="text-align: center; padding: 8px;"><div style="font-size: 18px; font-weight: 700; color: var(--accent-success);">0</div><div style="font-size: 10px; color: var(--text-muted);">CVE</div></div>
-            <div class="card" style="text-align: center; padding: 8px;"><div style="font-size: 18px; font-weight: 700; color: var(--accent-success);">0</div><div style="font-size: 10px; color: var(--text-muted);">ATT&CK</div></div>
+            <div class="card" style="text-align: center; padding: 8px;"><div style="font-size: 18px; font-weight: 700; color: var(--accent-info);" id="metricHostsCount">1</div><div style="font-size: 10px; color: var(--text-muted);">Узлов</div></div>
+            <div class="card" style="text-align: center; padding: 8px;"><div style="font-size: 18px; font-weight: 700; color: var(--accent-success);" id="metricFindingsCount">0</div><div style="font-size: 10px; color: var(--text-muted);">Находок</div></div>
+            <div class="card" style="text-align: center; padding: 8px;"><div style="font-size: 18px; font-weight: 700; color: var(--accent-success);" id="metricCriticalCount">0</div><div style="font-size: 10px; color: var(--text-muted);">Критичных</div></div>
+            <div class="card" style="text-align: center; padding: 8px;"><div style="font-size: 18px; font-weight: 700; color: var(--accent-info);" id="metricEvidenceCount">0</div><div style="font-size: 10px; color: var(--text-muted);">Улик</div></div>
+            <div class="card" style="text-align: center; padding: 8px;"><div style="font-size: 18px; font-weight: 700; color: var(--accent-success);" id="metricCveCount">0</div><div style="font-size: 10px; color: var(--text-muted);">CVE</div></div>
+            <div class="card" style="text-align: center; padding: 8px;"><div style="font-size: 18px; font-weight: 700; color: var(--accent-success);" id="metricAttackCount">0</div><div style="font-size: 10px; color: var(--text-muted);">ATT&CK</div></div>
           </div>
           <div class="card" style="margin-bottom: 14px; padding: 10px;">
             <div style="display: flex; justify-content: space-between; font-size: 11px; margin-bottom: 4px;">
@@ -266,10 +266,10 @@
           <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
             <h3 style="font-size: 13px; margin: 0;">Реестр выявленных находок и алертов</h3>
             <div id="findingsFilterBar" style="display: flex; gap: 6px;">
-              <button class="btn btn-sm btn-filter-findings active" data-filter="all">Все (4)</button>
-              <button class="btn btn-sm btn-filter-findings" data-filter="critical" style="color: var(--accent-critical); font-weight: 700;">Критичные (0)</button>
-              <button class="btn btn-sm btn-filter-findings" data-filter="high" style="color: var(--accent-warning);">Высокие (0)</button>
-              <button class="btn btn-sm btn-filter-findings" data-filter="other">Прочие (4)</button>
+              <button class="btn btn-sm btn-filter-findings active" data-filter="all" id="btnFilterAll">Все (0)</button>
+              <button class="btn btn-sm btn-filter-findings" data-filter="critical" id="btnFilterCritical" style="color: var(--accent-critical); font-weight: 700;">Критичные (0)</button>
+              <button class="btn btn-sm btn-filter-findings" data-filter="high" id="btnFilterHigh" style="color: var(--accent-warning);">Высокие (0)</button>
+              <button class="btn btn-sm btn-filter-findings" data-filter="other" id="btnFilterOther">Прочие (0)</button>
             </div>
           </div>
           <table class="data-table" id="findingsDataTable">
@@ -277,18 +277,7 @@
               <tr><th>Находка / Аномалия</th><th>Узел</th><th>Критичность</th><th>TTP</th><th>Источник</th><th>Статус</th></tr>
             </thead>
             <tbody id="findingsTableBody">
-              <tr class="finding-row" data-severity="other" data-finding-id="f1" style="cursor: pointer;">
-                <td><strong>Штатный запуск рабочего процесса desktop-app.exe</strong></td><td>PC-3002</td><td><span class="badge badge-host">ИНФО</span></td><td>-</td><td>Process Tracker</td><td><span class="badge badge-host">В норме</span></td>
-              </tr>
-              <tr class="finding-row" data-severity="other" data-finding-id="f2" style="cursor: pointer;">
-                <td><strong>Локальный брокер безопасности активен на 127.0.0.1:8080</strong></td><td>PC-3002</td><td><span class="badge badge-host">ИНФО</span></td><td>-</td><td>Engine Server</td><td><span class="badge badge-host">Подтверждено</span></td>
-              </tr>
-              <tr class="finding-row" data-severity="other" data-finding-id="f3" style="cursor: pointer;">
-                <td><strong>Мониторинг форензик-артефактов готов к приему данных</strong></td><td>PC-3002</td><td><span class="badge badge-host">ИНФО</span></td><td>-</td><td>CAS Engine</td><td><span class="badge badge-host">Готов</span></td>
-              </tr>
-              <tr class="finding-row" data-severity="other" data-finding-id="f4" style="cursor: pointer;">
-                <td><strong>Проверка автозагрузки Windows (Persistence)</strong></td><td>PC-3002</td><td><span class="badge badge-host">В НОРМЕ</span></td><td>-</td><td>Registry/Scheduler</td><td><span class="badge badge-host">Чисто</span></td>
-              </tr>
+              <tr class="finding-row"><td colspan="6" style="text-align: center; color: var(--text-muted); padding: 14px;">Боевой режим: Активных находок и аномалий не обнаружено. Базовая линия хоста чиста.</td></tr>
             </tbody>
           </table>
         </div>

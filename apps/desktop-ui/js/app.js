@@ -1,7 +1,7 @@
 import { IpcClient } from './ipc.js';
-import { ScannerController } from './scanner.js';
+import { ScannerController, renderTimelineLanes, renderMitreGrid } from './scanner.js';
 import { renderAssetTab } from './asset_tabs.js';
-import { setupDrilldowns } from './drilldown.js';
+import { setupDrilldowns, updatePyramidAndFindings } from './drilldown.js';
 
 class CyberRangeCockpitApp {
   constructor() {
@@ -11,6 +11,7 @@ class CyberRangeCockpitApp {
     this.currentAssetTab = 'tabOverview';
     this.selectedHost = null;
     this.selectedEntity = null;
+    this.correlationData = null;
 
     this.hosts = [
       {
@@ -45,7 +46,7 @@ class CyberRangeCockpitApp {
     setupDrilldowns(this);
     this.scanner.init();
 
-    // Auto-probe live workstation on startup
+    // Auto-probe live workstation and evaluate correlation on startup
     try {
       const res = await this.ipc.call('scan.network', { subnet: '127.0.0.1', mode: 'quick' });
       if (res && res.discovered_hosts && res.discovered_hosts.length > 0) {
@@ -53,6 +54,14 @@ class CyberRangeCockpitApp {
         this.selectedHost = this.hosts[0];
         this.renderInfraDiscovery();
         this.renderAssetDetails();
+      }
+
+      const corr = await this.ipc.call('host.correlate', { host_id: 'PC-3002' });
+      if (corr) {
+        this.correlationData = corr;
+        updatePyramidAndFindings(this, corr);
+        this.renderTimeline();
+        this.renderMitreMatrix();
       }
     } catch (_) {}
   }
@@ -220,38 +229,11 @@ class CyberRangeCockpitApp {
 
 
   renderTimeline() {
-    const lanesEl = document.getElementById('timelineLanes');
-    if (!lanesEl) return;
-    lanesEl.innerHTML = `
-      <div class="card" style="border-left: 3px solid var(--accent-success); margin-bottom: 8px;">
-        <div style="display: flex; justify-content: space-between; font-size: 11px;">
-          <span><strong>18:00:05.120 UTC</strong> │ Поток: Локальный брокер ядра</span>
-          <span class="badge badge-host">ИНФО</span>
-        </div>
-        <div style="font-size: 12px; margin-top: 4px;">Engine Server JSON-RPC активен на 127.0.0.1:8080. Форензик-аудит запущен.</div>
-      </div>
-      <div class="card" style="border-left: 3px solid var(--accent-info); margin-bottom: 8px;">
-        <div style="display: flex; justify-content: space-between; font-size: 11px;">
-          <span><strong>18:00:01.004 UTC</strong> │ Поток: Телеметрия хоста</span>
-          <span class="badge badge-net">В НОРМЕ</span>
-        </div>
-        <div style="font-size: 12px; margin-top: 4px;">Станция ${this.hosts[0]?.hostname || 'PC-3002'}: Сетевые интерфейсы и сокеты в штатном режиме. Вредоносных аномалий не обнаружено.</div>
-      </div>
-    `;
+    renderTimelineLanes(document.getElementById('timelineLanes'), this.correlationData, this.hosts[0]);
   }
 
   renderMitreMatrix() {
-    const grid = document.getElementById('mitreGrid');
-    if (!grid) return;
-    const tactics = ['Первичный доступ', 'Выполнение', 'Закрепление', 'Повышение привилегий', 'Обход защиты', 'Сбор учетных данных', 'Разведка', 'Боковое перемещение', 'Сбор данных', 'Управление и контроль', 'Эксфильтрация', 'Воздействие'];
-    grid.innerHTML = tactics.map((t, idx) => `
-      <div class="card" style="font-size: 11px; padding: 8px;">
-        <div style="font-weight: 700; color: var(--accent-info); margin-bottom: 6px;">${idx + 1}. ${t}</div>
-        <div style="background: var(--bg-canvas); border: 1px solid var(--border-muted); padding: 4px; border-radius: 3px; font-size: 10px; color: var(--text-secondary);">
-          Не обнаружено
-        </div>
-      </div>
-    `).join('');
+    renderMitreGrid(document.getElementById('mitreGrid'), this.correlationData);
   }
 
   renderEvidence() {

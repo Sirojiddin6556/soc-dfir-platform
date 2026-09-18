@@ -434,6 +434,32 @@ impl EngineApp {
                 };
                 serde_json::to_string(&resp).unwrap()
             }
+            "host.correlate" | "correlation.evaluate" => {
+                let host_id = req
+                    .params
+                    .get("host_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("PC-3002");
+                let case_id = req
+                    .params
+                    .get("case_id")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| EntityId::parse(s).ok())
+                    .unwrap_or_else(EntityId::new_v7);
+                let val = host_inspector::handle_host_correlation(
+                    host_id,
+                    case_id,
+                    &self.storage,
+                    &self.correlation,
+                );
+                let resp = IpcResponse {
+                    api_version: 1,
+                    request_id: req.request_id,
+                    result: Some(val),
+                    error: None,
+                };
+                serde_json::to_string(&resp).unwrap()
+            }
 
             _ => {
                 let resp: IpcResponse<()> = IpcResponse {
