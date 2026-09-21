@@ -22,6 +22,7 @@ members = [
     "crates/platform-windows",
     "crates/platform-linux",
     "crates/scan-engine",
+    "crates/vulnerability-engine",
     "crates/engine-server", "crates/desktop-app",
 ]
 

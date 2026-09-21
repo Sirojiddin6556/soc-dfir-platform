@@ -26,6 +26,7 @@ privilege-broker = { path = "../privilege-broker" }
 ipc-protocol = { path = "../ipc-protocol" }
 platform-windows = { path = "../platform-windows" }
 scan-engine = { path = "../scan-engine" }
+vulnerability-engine = { path = "../vulnerability-engine" }
 
 
 uuid = { workspace = true, features = ["v7"] }
