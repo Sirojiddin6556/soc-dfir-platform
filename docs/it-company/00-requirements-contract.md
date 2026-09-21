@@ -2,7 +2,7 @@
 ## Stage 4 — Investigation Engine Reliability & Hardening
 ### v0.3 Scope: Reliable Network Discovery (First Release)
 
-> **Revision**: 1.0 | **Owner**: Product | **Status**: DRAFT → GATE 1
+> **Revision**: 1.1 | **Owner**: IT-Company Orchestrator | **Status**: GATE 2 PASSED (VERIFIED)
 
 ---
 
