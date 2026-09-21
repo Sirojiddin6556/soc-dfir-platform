@@ -26,6 +26,9 @@ pub struct WindowsHostSnapshot {
     pub software: Vec<SoftwareObservation>,
     pub users: Vec<String>,
     pub firewall_rules: Vec<WindowsFirewallRule>,
+    pub os_build: Option<u32>,
+    pub os_ubr: Option<u32>,
+    pub installed_kbs: Vec<String>,
     pub collected_at: String,
     pub collector_version: String,
 }
@@ -64,6 +67,8 @@ pub fn collect_windows_snapshot(
         "NT AUTHORITY\\NetworkService".to_string(),
     ];
 
+    let (os_build, os_ubr, installed_kbs) = collect_os_build_and_kbs();
+
     WindowsHostSnapshot {
         snapshot_id: snap_id,
         host: hostname,
@@ -77,7 +82,48 @@ pub fn collect_windows_snapshot(
         software,
         users,
         firewall_rules,
+        os_build,
+        os_ubr,
+        installed_kbs,
         collected_at: now,
         collector_version: "0.2.0".to_string(),
     }
+}
+
+pub fn collect_os_build_and_kbs() -> (Option<u32>, Option<u32>, Vec<String>) {
+    #[cfg(target_os = "windows")]
+    {
+        use std::process::Command;
+
+        let ps_cmd = r#"
+        $b = [System.Environment]::OSVersion.Version.Build;
+        $u = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -ErrorAction SilentlyContinue).UBR;
+        $kbs = @(Get-HotFix -ErrorAction SilentlyContinue | Select-Object -ExpandProperty HotFixID);
+        [PSCustomObject]@{ Build = [int]$b; UBR = [int]$u; KBs = $kbs } | ConvertTo-Json -Compress
+        "#;
+
+        if let Ok(out) = Command::new("powershell.exe")
+            .args(["-NoProfile", "-NonInteractive", "-Command", ps_cmd])
+            .output()
+        {
+            if out.status.success() {
+                let s = String::from_utf8_lossy(&out.stdout);
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&s) {
+                    let build = val.get("Build").and_then(|v| v.as_u64()).map(|n| n as u32);
+                    let ubr = val.get("UBR").and_then(|v| v.as_u64()).map(|n| n as u32);
+                    let kbs = val
+                        .get("KBs")
+                        .and_then(|v| v.as_array())
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    return (build, ubr, kbs);
+                }
+            }
+        }
+    }
+    (None, None, Vec::new())
 }

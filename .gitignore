@@ -1,5 +1,8 @@
 /target
 /data
+data/
+*.db
+*.sqlite
 **/*.rs.bk
 *.tmp
 *.log

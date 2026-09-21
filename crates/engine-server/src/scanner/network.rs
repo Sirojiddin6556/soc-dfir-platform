@@ -122,8 +122,8 @@ pub async fn execute_network_scan(subnet: &str, mode: &str) -> serde_json::Value
     })
 }
 
-/// Correlates asset software stack against CVE vulnerability knowledge base with CPE 2.3 normalization
-/// and ecosystem-aware applicability filtering (eliminating false positives from vendor backports).
+/// Correlates asset software stack against persistent VulnDB (data/vulndb/vuln.db)
+/// with real OS telemetry (Build, UBR, KBs) and ecosystem-aware applicability filtering.
 pub fn execute_cve_scan(host_id: &str) -> serde_json::Value {
     let hostname = if host_id == "h_local" {
         crate::default_host_id()
@@ -131,27 +131,73 @@ pub fn execute_cve_scan(host_id: &str) -> serde_json::Value {
         host_id
     };
     let snap = crate::host_inspector::get_or_collect_snapshot(hostname);
-    let repo = vulnerability_engine::VulnDbRepository::open_in_memory().expect("in-memory vuln db");
+
+    // VULN-H01: Подключение к реальной persistent БД data/vulndb/vuln.db
+    let db_path = std::path::Path::new("data/vulndb/vuln.db");
+    let repo = match vulnerability_engine::VulnDbRepository::open_or_create(db_path) {
+        Ok(r) => r,
+        Err(e) => {
+            // VULN-H02: Ошибка никогда не должна маскироваться под отсутствие CVE!
+            return json!({
+                "host_id": host_id,
+                "hostname": hostname,
+                "status": "DATASET_UNAVAILABLE",
+                "error": format!("Failed to open persistent VulnDB at {:?}: {}", db_path, e),
+                "calculated_risk": 1.0,
+                "software_scanned": 0,
+                "scanned_software": [],
+                "vulnerabilities": [],
+                "feed_metadata": {
+                    "status": "ERROR",
+                    "available": false
+                }
+            });
+        }
+    };
+
+    let db_snapshot = match repo.get_snapshot_info() {
+        Ok(s) => s,
+        Err(e) => {
+            return json!({
+                "host_id": host_id,
+                "hostname": hostname,
+                "status": "DATASET_CORRUPT",
+                "error": format!("Failed to read VulnDB snapshot manifest: {}", e),
+                "calculated_risk": 1.0,
+                "software_scanned": 0,
+                "scanned_software": [],
+                "vulnerabilities": [],
+            });
+        }
+    };
+
     let orchestrator = vulnerability_engine::VulnerabilityOrchestrator::new(repo);
+
+    // VULN-H03: Определение экосистемы хоста из реальной ОС, а не по подстроке имени продукта
+    let os_lower = snap.os.to_lowercase();
+    let is_windows = os_lower.contains("windows");
+    let default_eco = if is_windows {
+        vulnerability_engine::PackageEcosystem::Windows
+    } else if os_lower.contains("ubuntu") {
+        vulnerability_engine::PackageEcosystem::Ubuntu
+    } else if os_lower.contains("debian") {
+        vulnerability_engine::PackageEcosystem::Debian
+    } else if os_lower.contains("red hat") || os_lower.contains("rhel") {
+        vulnerability_engine::PackageEcosystem::RedHat
+    } else {
+        vulnerability_engine::PackageEcosystem::Generic
+    };
 
     let mut scanned_software = Vec::new();
     let mut vulnerabilities = Vec::new();
     let mut max_risk_score = 1.0f32;
+    let mut had_evaluation_errors = false;
 
     for sw in &snap.software {
         let norm =
             normalization_engine::resolve_cpe_and_purl(&sw.product, &sw.publisher, &sw.version);
 
-        let eco = if sw.product.to_lowercase().contains("ubuntu") {
-            vulnerability_engine::PackageEcosystem::Ubuntu
-        } else if sw.product.to_lowercase().contains("debian") {
-            vulnerability_engine::PackageEcosystem::Debian
-        } else if sw.product.to_lowercase().contains("windows") {
-            vulnerability_engine::PackageEcosystem::Windows
-        } else {
-            vulnerability_engine::PackageEcosystem::Generic
-        };
-
+        // VULN-H04: Передаем реальные Windows Build, UBR и установленные KB из телеметрии
         let product_id = vulnerability_engine::ProductIdentity {
             raw_name: sw.product.clone(),
             raw_version: sw.version.clone(),
@@ -160,89 +206,102 @@ pub fn execute_cve_scan(host_id: &str) -> serde_json::Value {
             } else {
                 Some(sw.publisher.clone())
             },
-            ecosystem: eco,
+            ecosystem: default_eco,
             cpe: Some(norm.cpe23.clone()),
             purl: Some(norm.purl.clone()),
-            os_family: Some("Windows".to_string()),
-            os_release: None,
-            os_build: None,
-            os_ubr: None,
-            installed_kbs: vec![],
+            os_family: Some(if is_windows { "Windows" } else { "Linux" }.to_string()),
+            os_release: Some(snap.os.clone()),
+            os_build: snap.os_build,
+            os_ubr: snap.os_ubr,
+            installed_kbs: snap.installed_kbs.clone(),
         };
 
-        let eval = orchestrator
-            .evaluate_product(
-                &product_id,
-                vulnerability_engine::ExposureLevel::InternetFacing,
-                vulnerability_engine::AssetCriticality::Tier1,
-                vulnerability_engine::ExploitationState::NoEvidence,
-            )
-            .unwrap_or_else(|_| vulnerability_engine::VulnerabilityScanOutput {
-                target_identity: product_id.clone(),
-                evaluated_at: chrono::Utc::now(),
-                snapshot_id: "error".to_string(),
-                feed_is_stale: false,
-                total_candidates: 0,
-                affected_count: 0,
-                fixed_count: 0,
-                findings: vec![],
-                status_message: "NO_KNOWN_MATCHED_VULNERABILITIES".to_string(),
-            });
+        match orchestrator.evaluate_product(
+            &product_id,
+            vulnerability_engine::ExposureLevel::InternetFacing,
+            vulnerability_engine::AssetCriticality::Tier1,
+            vulnerability_engine::ExploitationState::NoEvidence,
+        ) {
+            Ok(eval) => {
+                for finding in &eval.findings {
+                    let risk = &finding.risk;
+                    if risk.contextual_risk_score > max_risk_score {
+                        max_risk_score = risk.contextual_risk_score;
+                    }
 
-        for finding in &eval.findings {
-            let risk = &finding.risk;
-            if risk.contextual_risk_score > max_risk_score {
-                max_risk_score = risk.contextual_risk_score;
+                    vulnerabilities.push(json!({
+                        "cve": finding.vulnerability.id,
+                        "name": format!("{} - {}", sw.product, finding.vulnerability.summary),
+                        "cvss_base": risk.cvss_base_score,
+                        "contextual_risk_score": risk.contextual_risk_score,
+                        "severity": risk.severity_label,
+                        "epss": risk.epss_score,
+                        "cisa_kev": risk.cisa_kev,
+                        "applicability_status": format!("{:?}", finding.applicability.status),
+                        "confidence": finding.applicability.confidence,
+                        "reason": finding.applicability.reason,
+                        "cpe": norm.cpe23,
+                        "purl": norm.purl,
+                        "evidence": finding.applicability.evidence,
+                    }));
+                }
+
+                let sw_status = if eval.affected_count > 0 {
+                    "AFFECTED".to_string()
+                } else if eval.fixed_count > 0 {
+                    "PATCHED / BACKPORT_FIXED".to_string()
+                } else {
+                    "NO_KNOWN_MATCHED_VULNERABILITIES".to_string()
+                };
+
+                scanned_software.push(json!({
+                    "name": sw.product,
+                    "ver": sw.version,
+                    "publisher": sw.publisher,
+                    "cpe": norm.cpe23,
+                    "purl": norm.purl,
+                    "status": sw_status,
+                    "confidence": 0.95,
+                }));
             }
-
-            vulnerabilities.push(json!({
-                "cve": finding.vulnerability.id,
-                "name": format!("{} - {}", sw.product, finding.vulnerability.summary),
-                "cvss_base": risk.cvss_base_score,
-                "contextual_risk_score": risk.contextual_risk_score,
-                "severity": risk.severity_label,
-                "epss": risk.epss_score,
-                "cisa_kev": risk.cisa_kev,
-                "applicability_status": format!("{:?}", finding.applicability.status),
-                "confidence": finding.applicability.confidence,
-                "reason": finding.applicability.reason,
-                "cpe": norm.cpe23,
-                "purl": norm.purl,
-                "evidence": finding.applicability.evidence,
-            }));
+            Err(e) => {
+                // Ошибка не маскируется под "NO_KNOWN_MATCHED"!
+                had_evaluation_errors = true;
+                scanned_software.push(json!({
+                    "name": sw.product,
+                    "ver": sw.version,
+                    "publisher": sw.publisher,
+                    "cpe": norm.cpe23,
+                    "purl": norm.purl,
+                    "status": "EVALUATION_ERROR",
+                    "error": e.to_string(),
+                    "confidence": 0.0,
+                }));
+            }
         }
-
-        let sw_status = if eval.affected_count > 0 {
-            "AFFECTED".to_string()
-        } else if eval.fixed_count > 0 {
-            "PATCHED / BACKPORT_FIXED".to_string()
-        } else {
-            // Строго запрещен вывод "SECURE (CVE-FREE)"
-            "NO_KNOWN_MATCHED_VULNERABILITIES".to_string()
-        };
-
-        scanned_software.push(json!({
-            "name": sw.product,
-            "ver": sw.version,
-            "publisher": sw.publisher,
-            "cpe": norm.cpe23,
-            "purl": norm.purl,
-            "status": sw_status,
-            "confidence": 0.95,
-        }));
     }
+
+    let overall_status = if had_evaluation_errors {
+        "PARTIAL_EVALUATION_ERROR"
+    } else if !vulnerabilities.is_empty() {
+        "VULNERABILITIES_DETECTED"
+    } else {
+        "NO_KNOWN_MATCHED_VULNERABILITIES"
+    };
 
     json!({
         "host_id": host_id,
         "hostname": hostname,
+        "status": overall_status,
         "software_scanned": scanned_software.len(),
         "calculated_risk": max_risk_score,
         "scanned_software": scanned_software,
         "vulnerabilities": vulnerabilities,
         "feed_metadata": {
-            "policy": "Standard",
-            "offline_bundle": true,
-            "freshness": "VALID",
+            "snapshot_id": db_snapshot.snapshot_id,
+            "is_stale": db_snapshot.is_stale,
+            "feeds_count": db_snapshot.feeds.len(),
+            "created_at": db_snapshot.created_at.to_rfc3339(),
         }
     })
 }
