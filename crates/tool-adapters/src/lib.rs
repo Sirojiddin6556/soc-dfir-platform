@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 pub mod evtx;
+pub mod magic;
 pub mod pcap;
 
 use async_trait::async_trait;

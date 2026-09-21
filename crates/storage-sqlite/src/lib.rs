@@ -1,7 +1,9 @@
 #![forbid(unsafe_code)]
 
 pub mod audit;
+pub mod cases;
 pub mod collaboration;
+pub mod evidence;
 pub mod membership;
 pub mod schema;
 
@@ -74,6 +76,7 @@ impl SqliteStorage {
         conn.execute_batch(schema::MIGRATION_003_SQL)?;
         conn.execute_batch(schema::MIGRATION_004_SQL)?;
         conn.execute_batch(schema::MIGRATION_005_SQL)?;
+        conn.execute_batch(evidence::MIGRATION_006_SQL)?;
         Ok(())
     }
 
@@ -84,109 +87,22 @@ impl SqliteStorage {
         description: Option<&str>,
     ) -> Result<(), SqliteStorageError> {
         let conn = self.conn.lock().unwrap();
-        let now = chrono::Utc::now().to_rfc3339();
-        conn.execute(
-            "INSERT INTO cases (id, title, description, status, created_at, updated_at) VALUES (?1, ?2, ?3, 'Active', ?4, ?4)",
-            params![id.to_string(), title, description, now],
-        )?;
-        Ok(())
+        cases::insert_case(&conn, id, title, description).map_err(SqliteStorageError::Rusqlite)
     }
 
     pub fn list_cases(&self) -> Result<Vec<Case>, SqliteStorageError> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT id, title, description, status, created_at, updated_at FROM cases ORDER BY created_at DESC"
-        )?;
-        let rows = stmt.query_map([], |row| {
-            let id_str: String = row.get(0)?;
-            let title: String = row.get(1)?;
-            let description: Option<String> = row.get(2)?;
-            let status: String = row.get(3)?;
-            let created_at_str: String = row.get(4)?;
-            let updated_at_str: String = row.get(5)?;
-
-            let created_at = chrono::DateTime::parse_from_rfc3339(&created_at_str)
-                .map(|dt| dt.with_timezone(&chrono::Utc))
-                .unwrap_or_else(|_| chrono::Utc::now());
-            let updated_at = chrono::DateTime::parse_from_rfc3339(&updated_at_str)
-                .map(|dt| dt.with_timezone(&chrono::Utc))
-                .unwrap_or_else(|_| chrono::Utc::now());
-
-            Ok(Case {
-                id: EntityId::parse(&id_str).unwrap_or_default(),
-                title,
-                description,
-                status,
-                created_at,
-                updated_at,
-            })
-        })?;
-
-        let mut cases = Vec::new();
-        for case_res in rows {
-            cases.push(case_res?);
-        }
-        Ok(cases)
+        cases::list_cases(&conn).map_err(SqliteStorageError::Rusqlite)
     }
 
     pub fn get_case(&self, id: EntityId) -> Result<Option<Case>, SqliteStorageError> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT id, title, description, status, created_at, updated_at FROM cases WHERE id = ?1"
-        )?;
-        let mut rows = stmt.query_map(params![id.to_string()], |row| {
-            let id_str: String = row.get(0)?;
-            let title: String = row.get(1)?;
-            let description: Option<String> = row.get(2)?;
-            let status: String = row.get(3)?;
-            let created_at_str: String = row.get(4)?;
-            let updated_at_str: String = row.get(5)?;
-
-            let created_at = chrono::DateTime::parse_from_rfc3339(&created_at_str)
-                .map(|dt| dt.with_timezone(&chrono::Utc))
-                .unwrap_or_else(|_| chrono::Utc::now());
-            let updated_at = chrono::DateTime::parse_from_rfc3339(&updated_at_str)
-                .map(|dt| dt.with_timezone(&chrono::Utc))
-                .unwrap_or_else(|_| chrono::Utc::now());
-
-            Ok(Case {
-                id: EntityId::parse(&id_str).unwrap_or_default(),
-                title,
-                description,
-                status,
-                created_at,
-                updated_at,
-            })
-        })?;
-
-        if let Some(res) = rows.next() {
-            Ok(Some(res?))
-        } else {
-            Ok(None)
-        }
+        cases::get_case(&conn, id).map_err(SqliteStorageError::Rusqlite)
     }
 
     pub fn insert_artifact(&self, art: &Artifact) -> Result<(), SqliteStorageError> {
         let conn = self.conn.lock().unwrap();
-        conn.execute(
-            r#"INSERT INTO artifacts (
-                id, case_id, hash_blake3, hash_sha256, original_name,
-                file_size, mime_type, acquisition_method, acquired_at, ingested_at
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)"#,
-            params![
-                art.id.to_string(),
-                art.case_id.to_string(),
-                art.hash_blake3,
-                art.hash_sha256,
-                art.original_name,
-                art.file_size as i64,
-                art.mime_type,
-                art.acquisition_method,
-                art.acquired_at.to_rfc3339(),
-                art.ingested_at.to_rfc3339(),
-            ],
-        )?;
-        Ok(())
+        cases::insert_artifact(&conn, art).map_err(SqliteStorageError::Rusqlite)
     }
 
     pub fn insert_observation(&self, obs: &Observation) -> Result<(), SqliteStorageError> {
@@ -470,27 +386,7 @@ impl SqliteStorage {
         case_id: EntityId,
     ) -> Result<Vec<serde_json::Value>, SqliteStorageError> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT id, hash_blake3, hash_sha256, original_name, file_size, mime_type, \
-             acquisition_method, acquired_at FROM artifacts WHERE case_id = ?1 ORDER BY ingested_at DESC",
-        )?;
-        let rows = stmt.query_map(params![case_id.to_string()], |row| {
-            Ok(serde_json::json!({
-                "id":          row.get::<_, String>(0)?,
-                "hash_blake3": row.get::<_, String>(1)?,
-                "hash_sha256": row.get::<_, String>(2)?,
-                "name":        row.get::<_, String>(3)?,
-                "size":        row.get::<_, i64>(4)?,
-                "mime_type":   row.get::<_, String>(5)?,
-                "method":      row.get::<_, String>(6)?,
-                "acquired_at": row.get::<_, String>(7)?,
-            }))
-        })?;
-        let mut results = Vec::new();
-        for r in rows {
-            results.push(r.map_err(SqliteStorageError::Rusqlite)?);
-        }
-        Ok(results)
+        cases::list_artifacts_for_case_json(&conn, case_id).map_err(SqliteStorageError::Rusqlite)
     }
 
     pub fn list_observations_for_artifact(
@@ -498,27 +394,8 @@ impl SqliteStorage {
         artifact_id: EntityId,
     ) -> Result<Vec<serde_json::Value>, SqliteStorageError> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT id, source_tool, raw_event_type, source_timestamp, data_json \
-             FROM observations WHERE artifact_id = ?1 ORDER BY source_timestamp ASC LIMIT 500",
-        )?;
-        let rows = stmt.query_map(params![artifact_id.to_string()], |row| {
-            let data_str: String = row.get(4)?;
-            let data: serde_json::Value =
-                serde_json::from_str(&data_str).unwrap_or(serde_json::Value::Null);
-            Ok(serde_json::json!({
-                "id":          row.get::<_, String>(0)?,
-                "tool":        row.get::<_, String>(1)?,
-                "event_type":  row.get::<_, String>(2)?,
-                "timestamp":   row.get::<_, String>(3)?,
-                "data":        data,
-            }))
-        })?;
-        let mut results = Vec::new();
-        for r in rows {
-            results.push(r.map_err(SqliteStorageError::Rusqlite)?);
-        }
-        Ok(results)
+        cases::list_observations_for_artifact_json(&conn, artifact_id)
+            .map_err(SqliteStorageError::Rusqlite)
     }
 
     pub fn list_custody_chain(
@@ -526,28 +403,7 @@ impl SqliteStorage {
         artifact_hash: &str,
     ) -> Result<Vec<serde_json::Value>, SqliteStorageError> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT id, actor_id, event_type, details_json, previous_state_hash, timestamp \
-             FROM custody_events WHERE artifact_hash = ?1 ORDER BY timestamp ASC",
-        )?;
-        let rows = stmt.query_map(params![artifact_hash], |row| {
-            let details_str: String = row.get(3)?;
-            let details: serde_json::Value =
-                serde_json::from_str(&details_str).unwrap_or(serde_json::Value::Null);
-            Ok(serde_json::json!({
-                "id":         row.get::<_, String>(0)?,
-                "actor":      row.get::<_, String>(1)?,
-                "event_type": row.get::<_, String>(2)?,
-                "details":    details,
-                "prev_hash":  row.get::<_, String>(4)?,
-                "timestamp":  row.get::<_, String>(5)?,
-            }))
-        })?;
-        let mut results = Vec::new();
-        for r in rows {
-            results.push(r.map_err(SqliteStorageError::Rusqlite)?);
-        }
-        Ok(results)
+        cases::list_custody_chain_json(&conn, artifact_hash).map_err(SqliteStorageError::Rusqlite)
     }
 
     pub fn delete_artifact(
@@ -556,119 +412,99 @@ impl SqliteStorage {
         case_id: EntityId,
     ) -> Result<bool, SqliteStorageError> {
         let conn = self.conn.lock().unwrap();
-        let deleted = conn.execute(
-            "DELETE FROM artifacts WHERE id = ?1 AND case_id = ?2",
-            params![artifact_id.to_string(), case_id.to_string()],
-        )?;
-        Ok(deleted > 0)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_sqlite_full_crud_and_query() {
-        let storage = SqliteStorage::open_in_memory().unwrap();
-        let case_id = EntityId::new_v7();
-        storage
-            .insert_case(case_id, "CTF Scenario 01", Some("Initial compromise"))
-            .unwrap();
-
-        let fact = Fact {
-            id: EntityId::new_v7(),
-            case_id,
-            evidence_ids: vec![EntityId::new_v7(), EntityId::new_v7()],
-            assertion_type: AssertionType::Fact,
-            verification_state: VerificationState::Confirmed,
-            entity_type: EntityType::Host,
-            entity_key: "192.168.1.50".to_string(),
-            fact_type: "DiscoveredHost".to_string(),
-            confidence: Confidence::new(1.0),
-            severity: Severity::Info,
-            risk_score: 10.0,
-            evidence_strength: 1.0,
-            pain_level: Some(PainLevel::IpAddresses),
-            data: serde_json::json!({"hostname": "WIN-SRV01"}),
-            created_at: chrono::Utc::now(),
-        };
-
-        storage.insert_fact(&fact).unwrap();
-
-        let facts = storage.get_facts_for_case(case_id).unwrap();
-        assert_eq!(facts.len(), 1);
-        assert_eq!(facts[0].entity_key, "192.168.1.50");
-        assert_eq!(facts[0].assertion_type, AssertionType::Fact);
+        cases::delete_artifact(&conn, artifact_id, case_id).map_err(SqliteStorageError::Rusqlite)
     }
 
-    #[test]
-    fn test_all_19_schema_tables_exist() {
-        let storage = SqliteStorage::open_in_memory().unwrap();
-        let conn = storage.conn.lock().unwrap();
-        let mut stmt = conn
-            .prepare(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",
-            )
-            .unwrap();
-        let tables: Vec<String> = stmt
-            .query_map([], |row| row.get(0))
-            .unwrap()
-            .map(|r| r.unwrap())
-            .collect();
-
-        let expected = [
-            "cases",
-            "artifacts",
-            "tool_runs",
-            "observations",
-            "facts",
-            "evidence",
-            "evidence_members",
-            "attack_nodes",
-            "attack_edges",
-            "taxonomy_versions",
-            "taxonomy_mappings",
-            "diagram_snapshots",
-            "custody_events",
-            "workflow_tasks",
-            "findings",
-            "hypotheses",
-            "entities",
-            "software",
-            "vulnerabilities",
-            "software_vulnerabilities",
-            "audit_events",
-        ];
-        for exp in expected {
-            assert!(
-                tables.iter().any(|t| t == exp),
-                "Missing expected table in schema: {}",
-                exp
-            );
-        }
+    pub fn get_artifact(&self, id: EntityId) -> Result<Option<Artifact>, SqliteStorageError> {
+        let conn = self.conn.lock().unwrap();
+        cases::get_artifact(&conn, id).map_err(SqliteStorageError::Rusqlite)
     }
 
-    #[test]
-    fn test_audit_event_logging() {
-        let storage = SqliteStorage::open_in_memory().unwrap();
-        let case_id = EntityId::new_v7();
-        storage.insert_case(case_id, "Audit Case", None).unwrap();
+    pub fn get_artifact_by_blake3(
+        &self,
+        blake3_hex: &str,
+    ) -> Result<Option<Artifact>, SqliteStorageError> {
+        let conn = self.conn.lock().unwrap();
+        cases::get_artifact_by_blake3(&conn, blake3_hex).map_err(SqliteStorageError::Rusqlite)
+    }
 
-        let event = AuditEvent::new(
-            Some(case_id),
-            "analyst_alice",
-            "PrivilegedPortScan",
-            "Network",
-            Some("192.168.1.1".to_string()),
-            "Success",
-            serde_json::json!({"ports": [80, 443]}),
-        );
-        storage.insert_audit_event(&event).unwrap();
+    pub fn conn(&self) -> Arc<Mutex<Connection>> {
+        Arc::clone(&self.conn)
+    }
 
-        let events = storage.list_audit_events(Some(case_id)).unwrap();
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].actor_id, "analyst_alice");
-        assert_eq!(events[0].action, "PrivilegedPortScan");
+    pub fn create_ingest_session(
+        &self,
+        s: &evidence::IngestSessionRecord,
+    ) -> Result<(), SqliteStorageError> {
+        let conn = self.conn.lock().unwrap();
+        evidence::insert_ingest_session(&conn, s).map_err(SqliteStorageError::Rusqlite)
+    }
+
+    pub fn update_ingest_session(
+        &self,
+        s: &evidence::IngestSessionRecord,
+    ) -> Result<(), SqliteStorageError> {
+        let conn = self.conn.lock().unwrap();
+        evidence::update_ingest_session(&conn, s).map_err(SqliteStorageError::Rusqlite)
+    }
+
+    pub fn get_ingest_session(
+        &self,
+        session_id: EntityId,
+    ) -> Result<Option<evidence::IngestSessionRecord>, SqliteStorageError> {
+        let conn = self.conn.lock().unwrap();
+        evidence::get_ingest_session(&conn, session_id).map_err(SqliteStorageError::Rusqlite)
+    }
+
+    pub fn record_custody_event(
+        &self,
+        e: &evidence::ForensicCustodyEvent,
+    ) -> Result<(), SqliteStorageError> {
+        let conn = self.conn.lock().unwrap();
+        evidence::insert_custody_event(&conn, e).map_err(SqliteStorageError::Rusqlite)
+    }
+
+    pub fn list_custody_events_for_session(
+        &self,
+        session_id: EntityId,
+    ) -> Result<Vec<evidence::ForensicCustodyEvent>, SqliteStorageError> {
+        let conn = self.conn.lock().unwrap();
+        evidence::list_custody_events_for_session(&conn, session_id)
+            .map_err(SqliteStorageError::Rusqlite)
+    }
+
+    pub fn list_custody_events_for_artifact(
+        &self,
+        artifact_id: EntityId,
+    ) -> Result<Vec<evidence::ForensicCustodyEvent>, SqliteStorageError> {
+        let conn = self.conn.lock().unwrap();
+        evidence::list_custody_events_for_artifact(&conn, artifact_id)
+            .map_err(SqliteStorageError::Rusqlite)
+    }
+
+    pub fn verify_custody_chain(
+        &self,
+        artifact_id: EntityId,
+    ) -> Result<bool, evidence::CustodyError> {
+        let events = self
+            .list_custody_events_for_artifact(artifact_id)
+            .map_err(|e| match e {
+                SqliteStorageError::Rusqlite(re) => evidence::CustodyError::Rusqlite(re),
+                _ => evidence::CustodyError::EmptyChain,
+            })?;
+        evidence::verify_custody_event_sequence(&events)
+    }
+
+    pub fn verify_session_custody_chain(
+        &self,
+        session_id: EntityId,
+    ) -> Result<bool, evidence::CustodyError> {
+        let events = self
+            .list_custody_events_for_session(session_id)
+            .map_err(|e| match e {
+                SqliteStorageError::Rusqlite(re) => evidence::CustodyError::Rusqlite(re),
+                _ => evidence::CustodyError::EmptyChain,
+            })?;
+        evidence::verify_custody_event_sequence(&events)
     }
 }

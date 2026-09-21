@@ -61,6 +61,28 @@ impl ProblemDetails {
             invalid_params: Vec::new(),
         }
     }
+
+    pub fn conflict(detail: &str) -> Self {
+        Self {
+            type_uri: "https://soc-dfir.local/errors/conflict".to_string(),
+            title: "Conflict".to_string(),
+            status: 409,
+            detail: detail.to_string(),
+            instance: None,
+            invalid_params: Vec::new(),
+        }
+    }
+
+    pub fn internal_error(detail: &str) -> Self {
+        Self {
+            type_uri: "https://soc-dfir.local/errors/internal-error".to_string(),
+            title: "Internal Server Error".to_string(),
+            status: 500,
+            detail: detail.to_string(),
+            instance: None,
+            invalid_params: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

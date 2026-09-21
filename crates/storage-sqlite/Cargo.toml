@@ -18,3 +18,5 @@ argon2.workspace = true
 rand_core.workspace = true
 sha2.workspace = true
 hex.workspace = true
+blake3.workspace = true
+serde.workspace = true

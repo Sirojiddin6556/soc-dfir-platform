@@ -87,18 +87,8 @@ pub async fn handle_connection(
         }
     };
 
-    while buffer.len() < body_start + content_len {
-        let needed = (body_start + content_len) - buffer.len();
-        let to_read = needed.min(temp.len());
-        let n = stream.read(&mut temp[..to_read]).await?;
-        if n == 0 {
-            break;
-        }
-        buffer.extend_from_slice(&temp[..n]);
-    }
-
-    let req_str = String::from_utf8_lossy(&buffer);
-    let first_line = req_str.lines().next().unwrap_or("");
+    let headers_str = String::from_utf8_lossy(&buffer[..body_start]).to_string();
+    let first_line = headers_str.lines().next().unwrap_or("");
     let parts: Vec<&str> = first_line.split_whitespace().collect();
     if parts.len() < 2 {
         return Ok(());
@@ -108,9 +98,34 @@ pub async fn handle_connection(
     let path = parts[1].split('?').next().unwrap_or("/");
 
     if method == "OPTIONS" {
-        let resp = "HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: POST, GET, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type\r\nContent-Length: 0\r\n\r\n";
+        let resp = "HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: POST, GET, PUT, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization, Upload-Offset\r\nContent-Length: 0\r\n\r\n";
         stream.write_all(resp.as_bytes()).await?;
         return Ok(());
+    }
+
+    if method == "PUT" && path.starts_with("/ingest/") && path.ends_with("/chunk") {
+        let initial_body = &buffer[body_start..];
+        crate::evidence::handle_binary_upload_chunk(
+            stream,
+            path,
+            &headers_str,
+            &app.session_mgr,
+            &app.storage,
+            initial_body,
+            content_len,
+        )
+        .await?;
+        return Ok(());
+    }
+
+    while buffer.len() < body_start + content_len {
+        let needed = (body_start + content_len) - buffer.len();
+        let to_read = needed.min(temp.len());
+        let n = stream.read(&mut temp[..to_read]).await?;
+        if n == 0 {
+            break;
+        }
+        buffer.extend_from_slice(&temp[..n]);
     }
 
     if method == "POST" && path == "/rpc" {

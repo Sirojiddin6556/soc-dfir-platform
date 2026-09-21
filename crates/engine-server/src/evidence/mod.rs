@@ -1,5 +1,19 @@
 #![forbid(unsafe_code)]
 
+pub mod data_plane;
+pub mod rpc;
+pub mod session;
+pub mod staging;
+pub mod token;
+
+pub use data_plane::handle_binary_upload_chunk;
+pub use rpc::*;
+pub use session::{
+    BeginIngestResult, CompleteIngestResult, IngestSessionManager, SessionStatusResult,
+};
+pub use staging::StagingManager;
+pub use token::TokenManager;
+
 use base64::Engine as _;
 use chrono::Utc;
 use core_domain::artifact::{Artifact, CustodyEvent, CustodyEventType};
@@ -14,18 +28,13 @@ use tool_adapters::{
     evtx::ParsedEvtxRecord, pcap::ParsedPacket, EvtxAdapter, PcapAdapter, ToolAdapter,
 };
 
-/// Files larger than this are refused: the file travels as base64 inside a
-/// single JSON-RPC request, so this is not a path for multi-gigabyte captures.
 const MAX_INGEST_BYTES: usize = 256 * 1024 * 1024;
 
 fn bad_request(detail: &str, field: &str) -> ProblemDetails {
     ProblemDetails::bad_request(detail, vec![field.to_string()])
 }
 
-/// Ingests a user-supplied evidence file (.evtx JSON-stream or .pcap) into the
-/// case: stores it in CAS, records an Artifact + chain-of-custody events,
-/// parses it with the matching real adapter, stores the resulting
-/// Observations, and runs correlation to derive Facts.
+/// Legacy helper for base64 ingest preserved for backward compatibility
 pub async fn handle_evidence_ingest(
     params: serde_json::Value,
     storage: &SqliteStorage,
@@ -68,7 +77,7 @@ pub async fn handle_evidence_ingest(
     }
     if bytes.len() > MAX_INGEST_BYTES {
         return Err(bad_request(
-            "File too large for ingest (max 256 MB)",
+            "File too large for legacy ingest (max 256 MB, use streaming ingest instead)",
             "content_base64",
         ));
     }
@@ -81,9 +90,7 @@ pub async fn handle_evidence_ingest(
 
     if !matches!(ext.as_str(), "evtx" | "pcap" | "pcapng" | "cap") {
         return Err(bad_request(
-            &format!(
-                "Unsupported evidence file type: .{ext} (поддерживаются .evtx как построчный JSON, .pcap/.pcapng/.cap)"
-            ),
+            &format!("Unsupported evidence file type: .{ext}"),
             "filename",
         ));
     }
@@ -161,9 +168,6 @@ pub async fn handle_evidence_ingest(
                     "provider": rec.provider,
                     "channel": rec.channel,
                     "host": rec.computer,
-                    // Best-effort field aliases so existing process-based
-                    // correlation rules can match common Sysmon/Security
-                    // EventData shapes (Image/CommandLine/ParentImage).
                     "process_name": rec.data.get("Image").and_then(|v| v.as_str()),
                     "command_line": rec.data.get("CommandLine").and_then(|v| v.as_str()),
                     "parent_name": rec.data.get("ParentImage").and_then(|v| v.as_str()),

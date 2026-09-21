@@ -615,6 +615,7 @@ dependencies = [
  "diagram-engine",
  "evidence-engine",
  "graph-engine",
+ "hex",
  "ipc-protocol",
  "normalization-engine",
  "platform-windows",
@@ -626,6 +627,7 @@ dependencies = [
  "scoring-engine",
  "serde",
  "serde_json",
+ "sha2",
  "storage-cas",
  "storage-sqlite",
  "taxonomy-projection",
@@ -2403,6 +2405,7 @@ dependencies = [
  "sha2",
  "thiserror 1.0.69",
  "tokio",
+ "tracing",
  "uuid",
 ]
 
@@ -2411,11 +2414,13 @@ name = "storage-sqlite"
 version = "0.1.0"
 dependencies = [
  "argon2",
+ "blake3",
  "chrono",
  "core-domain",
  "hex",
  "rand_core",
  "rusqlite",
+ "serde",
  "serde_json",
  "sha2",
  "thiserror 1.0.69",
