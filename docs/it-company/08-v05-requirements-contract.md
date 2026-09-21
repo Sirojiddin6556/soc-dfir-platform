@@ -1,8 +1,9 @@
 # REQUIREMENTS CONTRACT & SCOPE SPECIFICATION
 ## Stage 4 / Release v0.5: DFIR Evidence Pipeline & Forensic Artifacts Hardening
+### (Amended with Architecture Review v0.5-A1)
 
 > **Document**: `08-v05-requirements-contract.md`  
-> **Status**: GATE 1 — PROPOSED FOR APPROVAL  
+> **Status**: GATE 1 — APPROVED WITH AMENDMENTS  
 > **Target Release**: `v0.5.0`  
 > **Parent Milestone**: Stage 4 — Investigation Engine Reliability & Hardening  
 
@@ -34,28 +35,36 @@ FORENSIC ARTIFACT (EVTX / PCAP / PCAP-NG)
                    │
                    ▼
        INGEST SESSION (Control Plane)
-      [evidence.ingest.begin(case_id)]
+      [POST /rpc: evidence.ingest.begin(case_id, filename, declared_size)]
+        ├── Returns: session_id, upload_url, upload_token, chunk_size
                    │
                    ▼
      STREAMING STAGING (Data Plane)
-      [evidence.ingest.chunk(binary)]
+      [PUT /ingest/{session_id}/chunk]
+        ├── Headers: Upload-Offset, Authorization: Ingest <token>
+        ├── Body: RAW OCTET-STREAM (No JSON, No Base64)
         ├── Memory: O(chunk_size)
-        ├── Dual Hashing: BLAKE3 + SHA-256
-        └── Temp Staging Storage
+        ├── Dual Hashing on fly: BLAKE3 + SHA-256
+        └── Temp Staging Storage (staging/{session_id}.part)
                    │
                    ▼
-       VALIDATION & TYPE DETECTION
-        ├── Magic bytes verification
-        └── Integrity & size check
+       VALIDATION & TYPE DETECTION (evidence.ingest.complete)
+        ├── Magic bytes verification:
+        │     • EVTX: 45 6C 66 46 69 6C 65 00 ("ElfFile\0")
+        │     • PCAP: A1 B2 C3 D4 (BE usec) | D4 C3 B2 A1 (LE usec)
+        │             A1 B2 3C 4D (BE nsec) | 4D 3C B2 A1 (LE nsec)
+        │     • PCAP-NG: 0A 0D 0D 0A
+        └── Strict size & offset integrity check
                    │
                    ▼
          CAS ATOMIC FINALIZE
-        ├── Immutable storage (.cas/objects)
-        ├── Artifact record creation
-        └── CustodyEvent (COMMITTED_TO_CAS, hash chain)
+        ├── Verify existing size/hash in CAS (Dedup)
+        ├── Atomic move from staging to CAS directory
+        ├── Create Artifact record
+        └── CustodyEvent (COMMITTED_TO_CAS, tamper-evident hash chain)
                    │
                    ▼
-           PARSER DISPATCH
+           PARSER PIPELINE (Phase 2/3)
         ┌──────────┴──────────┐
         ▼                     ▼
    EvtxAdapter           PcapAdapter
@@ -91,19 +100,19 @@ FORENSIC ARTIFACT (EVTX / PCAP / PCAP-NG)
 
 | ID | Требование | Описание |
 |---|---|---|
-| **`EVID-001`** | **Typed Ingest API** | Реализация RPC методов: `evidence.ingest.begin`, `evidence.ingest.chunk`, `evidence.ingest.complete`, `evidence.ingest.cancel`, `evidence.ingest.status`. |
-| **`EVID-002`** | **Streaming Data Plane** | Потоковая передача чанков бинарных данных без накладных расходов Base64. Потребление памяти строго $O(chunk\_size)$. |
-| **`EVID-003`** | **Staging Lifecycle** | Изоляция незавершенных загрузок в директории `staging/`. Защита CAS от мусорных и невалидных данных. Атомарный перенос в CAS при завершении. |
-| **`EVID-004`** | **Dual Hashing on Stream** | Инкрементальное вычисление криптографических хешей `SHA-256` (судебный стандарт) и `BLAKE3` (внутренняя адресация CAS) на лету при приеме чанков. |
-| **`EVID-005`** | **Append-Only Chain-of-Custody** | Хранение полной цепочки владения: `previous_event_hash`, `event_hash`, `action`, `actor`, `timestamp_utc`, `sha256`, `blake3`, `session_id`. Хеш-чейн гарантирует невозможность подделки истории. |
-| **`EVID-006`** | **Magic Byte & Type Detection** | Автоматическая идентификация типов: `ElfFile\0` (EVTX), `0xA1B2C3D4` / `0x4D3CB2A1` (PCAP), `0x0A0D0D0A` (PCAP-NG). Неизвестные/битые файлы переводятся в `QUARANTINED`. |
-| **`EVID-007`** | **Parser Registry & Dispatch** | Типизированный диспетчер адаптеров `ToolAdapterRegistry`, направляющий валидированный артефакт в соответствующий парсер. |
-| **`EVID-008`** | **Provenance Tracking** | Каждая `Observation` содержит `artifact_id`, `record_locator`, `source_timestamp`, `parser_version` и `raw_record_hash`. |
-| **`EVID-009`** | **UI Ingest State & Progress** | Передача прогресса загрузки, скорости, хешей и детальных ошибок валидации в UI через IPC-статусы. |
+| **`EVID-001`** | **Typed Ingest Control Plane** | RPC методы: `evidence.ingest.begin`, `evidence.ingest.status`, `evidence.ingest.complete`, `evidence.ingest.cancel`. `begin` возвращает `session_id`, `upload_url` и capability `upload_token`. |
+| **`EVID-002`** | **Binary Streaming Data Plane** | Потоковый endpoint `PUT /ingest/{session_id}/chunk` (raw `application/octet-stream`), `Upload-Offset: <bytes>`, токен авторизации. Память строго $O(chunk\_size)$. Никакого Base64. |
+| **`EVID-003`** | **Staging & Atomic CAS** | Запись в `staging/{session_id}.part`. CAS не изменяется до валидации. При коммите: атомарный перенос через temp на той же файловой системе с fsync. При совпадении BLAKE3 — дедупликация объекта с созданием новой ссылки. |
+| **`EVID-004`** | **Dual Hashing on Stream** | Инкрементальный параллельный расчет `SHA-256` (судебный стандарт) и `BLAKE3` (адресация CAS) на лету при поступлении байтов. |
+| **`EVID-005`** | **Tamper-Evident Chain of Custody** | Append-only журнал с канонической бинарной сериализацией полей (length-prefixed) и хеш-цепочкой. Обеспечивает обнаружение изменений при верификации от доверенного chain head. Включает функцию `verify_custody_chain(artifact_id)`. Запрет `ON DELETE CASCADE`. |
+| **`EVID-006`** | **Forensic Magic Detection** | Распознавание 4 вариантов классического PCAP (BE/LE usec/nsec), PCAP-NG (`0x0A0D0D0A`) и EVTX (`ElfFile\0`). Расширение файла — только подсказка, истина — сигнатура. Невалидные/битые файлы переходят в `QUARANTINED`. |
+| **`EVID-007`** | **Data Plane Security & Capabilities** | Capability-токен загрузки привязан к `(session_id, case_id, actor_id, expiry, max_size)`. Доступ только по loopback, санитарная очистка имени файла (отсутствие path traversal), запрет свободного CORS. |
+| **`EVID-008`** | **Resume & Restart Semantics** | Разрешена только последовательная запись (`chunk.offset == bytes_received`). При рестарте сервера незавершенная сессия восстанавливается: чтение размера staging-файла с диска и потоковый перерасчет хешей без сериализации hasher state в БД. |
+| **`EVID-009`** | **Phase 1 Ingestion Status** | В Phase 1 после коммита артефакта возвращается статус `COMMITTED` с `parser_status = PENDING_IMPLEMENTATION`. Платформа не фабрикует пустые наблюдения до реализации парсеров. `evidence.ingest.complete` идемпотентен. |
 
 ---
 
-### 3.2. Windows Event Log Engine (`EVTX-001..003`)
+### 3.2. Windows Event Log Engine (`EVTX-001..003`) — Phase 2
 
 | ID | Требование | Описание |
 |---|---|---|
@@ -113,7 +122,7 @@ FORENSIC ARTIFACT (EVTX / PCAP / PCAP-NG)
 
 ---
 
-### 3.3. Network Packet & Flow Engine (`PCAP-001..007`)
+### 3.3. Network Packet & Flow Engine (`PCAP-001..007`) — Phase 3
 
 | ID | Требование | Описание |
 |---|---|---|
@@ -127,7 +136,7 @@ FORENSIC ARTIFACT (EVTX / PCAP / PCAP-NG)
 
 ---
 
-### 3.4. Canonical Timeline & Forensics QA (`TIME-001`, `QA-DFIR-001..003`)
+### 3.4. Canonical Timeline & Forensics QA (`TIME-001`, `QA-DFIR-001..003`) — Phase 4
 
 | ID | Требование | Описание |
 |---|---|---|
@@ -138,92 +147,106 @@ FORENSIC ARTIFACT (EVTX / PCAP / PCAP-NG)
 
 ---
 
-## 4. Конечный автомат сессии Ingest (State Machine)
-
-Каждая загрузка артефакта управляется строгим конечным автоматом:
+## 4. Конечный автомат сессии Ingest (Hardened State Machine)
 
 ```text
-       [evidence.ingest.begin]
-                  │
-                  ▼
-              CREATED
-                  │
-                  │ [chunk received]
-                  ▼
-          ┌── RECEIVING ◄──┐
-          │       │        │ [more chunks]
-          │       └────────┘
-          │
-          │ [evidence.ingest.complete]
-          ▼
-              RECEIVED
-                  │
-                  ▼
-             VALIDATING ──────(format/magic mismatch)─────► QUARANTINED
-                  │
-                  ▼
-                HASHED
-                  │
-                  ▼
-              COMMITTED (Atomic CAS Store)
-                  │
-                  ▼
-               PARSING
-                  │
-                  ▼
-             NORMALIZING
-                  │
-                  ▼
-                READY
+       [POST /rpc: evidence.ingest.begin]
+                        │
+                        ▼
+                    CREATED
+                        │
+                        │ [PUT /ingest/{id}/chunk]
+                        ▼
+                ┌── RECEIVING ◄──┐
+                │       │        │ [more chunks at valid offset]
+                │       └────────┘
+                │
+                │ [POST /rpc: evidence.ingest.complete]
+                ▼
+                    RECEIVED
+                        │
+                        ▼
+                   VALIDATING ──────(magic/format mismatch)─────► QUARANTINED
+                        │
+                        ▼
+                      HASHED
+                        │
+                        ▼
+            ┌─────── COMMITTED ───────┐ (CAS Atomic Move + Artifact + Custody)
+            │                         │
+      (Phase 1: DONE)           (Phase 2/3: Parser Pipeline)
+            │                         │
+   [PARSER_PENDING]                   ▼
+                                PARSER_QUEUED
+                                      │
+                                      ▼
+                                   PARSING
+                                      │
+                                      ▼
+                                 NORMALIZING
+                                      │
+                                      ▼
+                                    READY
 
-Исключительные состояния:
-  * ANY STATE ──(client error / abort)──► CANCELLED
-  * VALIDATION / PARSER FATAL ERROR   ──► FAILED
+Правила отмены и завершения:
+  * CANCEL разрешён ТОЛЬКО в состояниях: CREATED, RECEIVING, RECEIVED, VALIDATING, HASHED.
+  * CANCEL СТРОГО ЗАПРЕЩЁН после перехода в COMMITTED (артефакт зафиксирован в CAS и охраняется законом целостности улик).
+  * complete() идемпотентен: повторный вызов возвращает существующий результат без дублирования артефактов.
+  * Любая критическая ошибка ввода-вывода или несоответствие размера переводит сессию в FAILED.
 ```
 
 ---
 
-## 5. Модель Chain of Custody (Судебный аудит)
+## 5. Модель Tamper-Evident Chain of Custody
 
-Каждое действие над артефактом генерирует неизменяемую запись аудита с криптографическим хешированием предшествующего события (Hash Chaining):
+События до коммита фиксируются с `session_id`, а после коммита связываются с постоянным `artifact_id`:
 
 ```rust
 pub struct CustodyEvent {
     pub event_id: EntityId,
-    pub artifact_id: EntityId,
+    pub session_id: EntityId,
+    pub artifact_id: Option<EntityId>,
     pub case_id: EntityId,
+    pub sequence_no: u64,
     pub action: CustodyAction,
-    pub actor: String,
+    pub actor_id: String,
     pub timestamp_utc: DateTime<Utc>,
     pub sha256: String,
     pub blake3: String,
     pub previous_event_hash: String,
     pub event_hash: String,
+    pub details_hash: String,
     pub details: serde_json::Value,
-}
-
-pub enum CustodyAction {
-    Received,
-    Hashed,
-    Validated,
-    CommittedToCas,
-    ParserDispatched,
-    ParsedSuccessfully,
-    Normalized,
-    DerivedArtifactCreated,
-    Quarantined,
-    Exported,
 }
 ```
 
-Формула хеша события:
-$$\text{event\_hash} = \text{BLAKE3}(\text{previous\_event\_hash} \parallel \text{action} \parallel \text{timestamp\_utc} \parallel \text{sha256} \parallel \text{blake3})$$
+### Канонический расчет хеша события (Length-Prefixed Binary Serialization):
+Каждое поле кодируется как `[u32_be_len][bytes]`, исключая неоднозначность конкатенации:
+```text
+event_hash = BLAKE3(
+    "SOCDFIR-CUSTODY-V1\0" ||
+    len_pref(previous_event_hash) ||
+    u64_be(sequence_no) ||
+    len_pref(event_id) ||
+    len_pref(session_id) ||
+    len_pref(artifact_id.unwrap_or("")) ||
+    len_pref(case_id) ||
+    len_pref(action.as_str()) ||
+    len_pref(actor_id) ||
+    len_pref(timestamp_utc.to_rfc3339()) ||
+    len_pref(sha256) ||
+    len_pref(blake3) ||
+    len_pref(details_hash)
+)
+```
+
+Свойство системы:
+> **Обеспечивает tamper-evident chain: любое изменение или удаление ранее записанного события немедленно обнаруживается при верификации цепочки от доверенного chain head.**
 
 ---
 
 ## 6. Границы релиза (Out of Scope для v0.5)
 
-Во избежание распыления фокуса из v0.5 исключены следующие компоненты (перенесены на `v0.5.1` / `v0.6`):
 - Захват сырого дампа оперативной памяти (Live RAM Acquisition);
 - Интеграция с Volatility 3 / Rekall;
 - Разбор файловых систем raw-образов дисков (`.E01`, `.raw`, `.vmdk`, NTFS MFT/UsnJrnl);
@@ -233,15 +256,14 @@ $$\text{event\_hash} = \text{BLAKE3}(\text{previous\_event\_hash} \parallel \tex
 
 ---
 
-## 7. Критерии приемки релиза (Acceptance Criteria Gate 2)
+## 7. Критерии приемки Phase 1 (Acceptance Criteria Gate 2 Phase 1)
 
 | ID | Критерий |
 |---|---|
-| **`AC-DFIR-1`** | **Streaming Chunking**: Загрузка 50 МБ артефакта через чанки по 1 МБ с пиковым потреблением RAM $< 30$ МБ. Отсутствие Base64 в Data Plane. |
-| **`AC-DFIR-2`** | **Dual Hashing Invariant**: `SHA-256` и `BLAKE3`, вычисленные на лету во время стриминга, бит-в-бит совпадают с хешами файла на диске. |
-| **`AC-DFIR-3`** | **CAS Immutability**: Повторная загрузка идентичного файла возвращает тот же CAS-объект, но регистрирует новую запись артефакта и новую цепочку владения. |
-| **`AC-DFIR-4`** | **Native EVTX**: Корректный разбор реального бинарного файла Windows `Security.evtx` с извлечением записей 4624/4688 без вызова внешних процессов. |
-| **`AC-DFIR-5`** | **PCAP/PCAP-NG Parity**: Декодирование как классического `.pcap`, так и `.pcapng` с извлечением TCP/UDP сессий, DNS QNAME и TLS SNI. |
-| **`AC-DFIR-6`** | **Reassembly Quality**: Точное указание качества сборки потока (`COMPLETE`, `PARTIAL`, `TRUNCATED`, `GAPPED`). |
-| **`AC-DFIR-7`** | **Observation Provenance**: Каждое наблюдение, факт и таймлайн-событие содержат `artifact_id` и `record_locator`. |
-| **`AC-DFIR-8`** | **Quality Gate**: `cargo fmt --check`, `cargo clippy -D warnings`, `cargo test --workspace` проходят со 100% успехом. Все файлы строго $< 500$ строк. |
+| **`AC-P1-1`** | **Streaming Upload**: Загрузка 50 МБ артефакта чанками по 1 МБ через `PUT /ingest/{id}/chunk` с пиковым потреблением RAM $< 30$ МБ. Base64 отсутствует в Data Plane. |
+| **`AC-P1-2`** | **Dual Hashing Invariant**: `SHA-256` и `BLAKE3`, вычисленные на лету во время стриминга, бит-в-бит совпадают с хешами файла. |
+| **`AC-P1-3`** | **Crash & Resume Recovery**: Имитация сбоя/перезапуска сервера посередине передачи. Сервер перечитывает и перехеширует staging-файл, принимает остаток чанков с точного offset и успешно завершает сессию. |
+| **`AC-P1-4`** | **Tamper-Evident Verification**: Функция `verify_custody_chain(artifact_id)` подтверждает валидность цепочки. Модификация любой строки в SQLite ломает проверку. |
+| **`AC-P1-5`** | **CAS Dedup**: Повторный upload идентичного файла переиспользует объект в CAS, не тратя дополнительное дисковое пространство. |
+| **`AC-P1-6`** | **FSM & Security**: Отклонение неверного offset, просроченного токена, попытки отмены после `COMMITTED`, попытки path traversal в имени файла. |
+| **`AC-P1-7`** | **Code Hygiene**: `#![forbid(unsafe_code)]`, все файлы $< 500$ строк, `cargo clippy -D warnings` и `cargo test` = 100% green. |
