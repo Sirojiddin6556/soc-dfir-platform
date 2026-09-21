@@ -92,7 +92,7 @@ fn resolve_token(token: &str) -> Result<Vec<String>, TargetError> {
             .parse()
             .map_err(|_| TargetError::InvalidToken(token.to_string()))?;
 
-        if prefix_len < 16 || prefix_len > 32 {
+        if !(16..=32).contains(&prefix_len) {
             return Err(TargetError::InvalidToken(format!(
                 "CIDR prefix /{} not supported (only /16.../32 allowed)",
                 prefix_len

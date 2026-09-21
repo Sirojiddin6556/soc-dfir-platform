@@ -107,7 +107,7 @@ pub fn parse_nvd_json(path: &Path) -> Result<Vec<ImportedCve>, ImportError> {
         let severity = item
             .pointer("/impact/baseMetricV3/cvssV3/baseSeverity")
             .and_then(|v| v.as_str())
-            .map(|s| capitalize(s))
+            .map(capitalize)
             .unwrap_or_else(|| "Unknown".to_string());
 
         // CPE: extract vendor + product from first cpe23Uri

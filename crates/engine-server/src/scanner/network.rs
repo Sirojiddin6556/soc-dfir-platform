@@ -1,304 +1,122 @@
 #![forbid(unsafe_code)]
 
-use super::probe::{fingerprint_os, probe_service_details, resolve_hostname};
+use super::probe::{fingerprint_os, resolve_hostname};
+use scan_engine::orchestrator::ScanOrchestrator;
+use scan_engine::target::parse_target;
+use scan_engine::types::{PortState, ScanJob, ScanJobId, ScanJobStatus, ScanProfile, ScanTarget};
 use serde_json::json;
-use std::time::Duration;
-use tokio::net::TcpStream;
-use tokio::time::timeout;
 
-/// Executes an infrastructure network scan (Quick, Standard, Deep) with banner grabbing
+/// Executes an infrastructure network scan (Quick, Standard, Deep) powered by ScanOrchestrator
 pub async fn execute_network_scan(subnet: &str, mode: &str) -> serde_json::Value {
-    let is_local = subnet.starts_with("127.") || subnet == "localhost";
-    let start_instant = std::time::Instant::now();
+    let profile = match mode {
+        "deep" => ScanProfile::Deep,
+        "standard" => ScanProfile::Standard,
+        _ => ScanProfile::Quick,
+    };
 
-    if is_local {
-        let common_ports: Vec<u16> = match mode {
-            "deep" => vec![
-                21, 22, 23, 25, 53, 80, 88, 110, 111, 135, 139, 143, 443, 445, 465, 587, 993, 995,
-                1433, 1521, 3306, 3389, 5432, 5985, 5986, 6379, 8080, 8443, 8888, 9090, 9200,
-                27017,
-            ],
-            "standard" => vec![
-                22, 25, 53, 80, 110, 135, 143, 443, 445, 1433, 3306, 3389, 5432, 5985, 8080, 8443,
-            ],
-            _ => vec![22, 80, 135, 443, 445, 3389, 8080], // quick
-        };
+    let target = parse_target(subnet).unwrap_or_else(|_| ScanTarget::Hostname(subnet.to_string()));
 
-        use std::sync::Arc;
-        use tokio::sync::Semaphore;
+    let job = ScanJob {
+        id: ScanJobId(uuid::Uuid::now_v7().to_string()),
+        target,
+        profile,
+        created_at: chrono::Utc::now(),
+        status: ScanJobStatus::Running,
+    };
 
-        let sem = Arc::new(Semaphore::new(64)); // max 64 concurrent probes
-        let mut handles = Vec::new();
+    let orchestrator = ScanOrchestrator::new();
+    let scan_result = orchestrator.execute(&job).await;
 
-        for &port in &common_ports {
-            let sem = Arc::clone(&sem);
-            let ip_str = "127.0.0.1".to_string(); // use "127.0.0.1" for local branch
-            handles.push(tokio::spawn(async move {
-                let _permit = sem.acquire_owned().await.ok()?;
-                let addr = format!("{}:{}", ip_str, port);
-                if timeout(Duration::from_millis(80), TcpStream::connect(&addr))
-                    .await
-                    .map(|r| r.is_ok())
-                    .unwrap_or(false)
-                {
-                    Some(port)
-                } else {
-                    None
-                }
-            }));
-        }
+    let mut discovered = Vec::new();
 
-        let mut open_ports: Vec<u16> = Vec::new();
-        for h in handles {
-            if let Ok(Some(p)) = h.await {
-                open_ports.push(p);
-            }
-        }
-        open_ports.sort_unstable();
+    for host in &scan_result.hosts {
+        let ip_str = host.ip.to_string();
+        let port_results = scan_result
+            .port_results
+            .get(&ip_str)
+            .cloned()
+            .unwrap_or_default();
 
+        let mut open_ports = Vec::new();
         let mut services_json = Vec::new();
-        for &port in &open_ports {
-            let s = probe_service_details("127.0.0.1", port).await;
-            services_json.push(json!({
-                "port": s.port,
-                "protocol": s.protocol,
-                "service": s.service_name,
-                "version": s.version.unwrap_or_else(|| "Detected".to_string()),
-                "banner": s.banner.unwrap_or_else(|| format!("{}/{}", s.service_name, s.port)),
-                "scan_method": s.scan_method.to_string(),
-                "confidence": s.confidence.to_string(),
-            }));
+
+        for p in port_results {
+            if p.state == PortState::Open {
+                open_ports.push(p.port);
+                if let Some(s) = p.service {
+                    services_json.push(json!({
+                        "port": p.port,
+                        "protocol": "TCP",
+                        "service": s.name,
+                        "version": s.version.unwrap_or_else(|| "Detected".to_string()),
+                        "banner": s.banner.unwrap_or_else(|| format!("{}/{}", s.name, p.port)),
+                        "scan_method": s.method,
+                        "confidence": format!("{:.2}", s.confidence),
+                    }));
+                }
+            }
         }
 
         let (os_str, dev_type) = fingerprint_os(&open_ports);
-        let hostname = resolve_hostname("127.0.0.1");
-        let duration = start_instant.elapsed().as_millis();
+        let hostname = host
+            .hostname
+            .clone()
+            .unwrap_or_else(|| resolve_hostname(&ip_str));
 
-        return json!({
+        discovered.push(json!({
+            "id": format!("h_{}", ip_str.replace(['.', ':'], "_")),
+            "hostname": hostname,
+            "ip": ip_str,
+            "mac": host.mac.clone().unwrap_or_else(|| "00:00:00:00:00:00".to_string()),
+            "os": os_str,
+            "device_type": dev_type,
+            "criticality": if ip_str == "127.0.0.1" { "Tier-1 (Рабочая станция аналитика)" } else { "Tier-2 (Сетевой узел)" },
+            "status": "Активен / Боевой режим",
+            "risk": "НИЗКИЙ (1.0)",
             "subnet": subnet,
-            "mode": mode,
-            "hosts_scanned": 1,
-            "hosts_up": 1,
-            "duration_ms": duration,
-            "scan_rate_pps": 350,
-            "coverage": {
-                "ports_attempted": common_ports.len(),
-                "ports_open": open_ports.len(),
-                "ports_closed_or_filtered": common_ports.len() - open_ports.len(),
-                "hosts_attempted": 1,
-                "hosts_responded": if open_ports.is_empty() { 0 } else { 1 },
-                "scan_mode": mode,
+            "ports": open_ports,
+            "services": services_json,
+            "persistence": [],
+            "software": if ip_str == "127.0.0.1" {
+                vec![json!({ "name": "SOC DFIR Engine", "ver": "0.3.0", "cpe": "cpe:2.3:a:soc:dfir_engine:0.3.0" })]
+            } else {
+                vec![]
             },
-            "discovered_hosts": [
-                {
-                    "id": "h_local",
-                    "hostname": hostname,
-                    "ip": "127.0.0.1",
-                    "mac": "00:00:00:00:00:00",
-                    "os": os_str,
-                    "device_type": dev_type,
-                    "criticality": "Tier-1 (Рабочая станция аналитика)",
-                    "status": "Активен / Боевой режим",
-                    "risk": "НИЗКИЙ (1.0)",
-                    "subnet": "127.0.0.1/32",
-                    "ports": open_ports,
-                    "services": services_json,
-                    "persistence": [],
-                    "software": [{ "name": "SOC DFIR Engine", "ver": "0.2.0", "cpe": "cpe:2.3:a:soc:dfir_engine:0.2.0" }],
-                    "vulnerabilities": []
-                }
-            ]
-        });
+            "vulnerabilities": []
+        }));
     }
 
-    if mode == "remote" {
-        let target = if subnet.contains('/') {
-            subnet.split('/').next().unwrap_or(subnet)
-        } else {
-            subnet
-        };
-        let common_ports: Vec<u16> = match mode {
-            "deep" => vec![
-                21, 22, 23, 25, 53, 80, 88, 110, 111, 135, 139, 143, 443, 445, 465, 587, 993, 995,
-                1433, 1521, 3306, 3389, 5432, 5985, 5986, 6379, 8080, 8443, 8888, 9090, 9200,
-                27017,
-            ],
-            "standard" => vec![
-                22, 25, 53, 80, 110, 135, 143, 443, 445, 1433, 3306, 3389, 5432, 5985, 8080, 8443,
-            ],
-            _ => vec![22, 80, 135, 443, 445, 3389, 8080], // quick
-        };
-
-        use std::sync::Arc;
-        use tokio::sync::Semaphore;
-
-        let sem = Arc::new(Semaphore::new(64)); // max 64 concurrent probes
-        let mut handles = Vec::new();
-
-        for &port in &common_ports {
-            let sem = Arc::clone(&sem);
-            let ip_str = target.to_string(); // use target for remote branch
-            handles.push(tokio::spawn(async move {
-                let _permit = sem.acquire_owned().await.ok()?;
-                let addr = format!("{}:{}", ip_str, port);
-                if timeout(Duration::from_millis(80), TcpStream::connect(&addr))
-                    .await
-                    .map(|r| r.is_ok())
-                    .unwrap_or(false)
-                {
-                    Some(port)
-                } else {
-                    None
-                }
-            }));
-        }
-
-        let mut open_ports: Vec<u16> = Vec::new();
-        for h in handles {
-            if let Ok(Some(p)) = h.await {
-                open_ports.push(p);
-            }
-        }
-        open_ports.sort_unstable();
-
-        let mut discovered = Vec::new();
-        if !open_ports.is_empty() {
-            let mut services_json = Vec::new();
-            for &port in &open_ports {
-                let s = probe_service_details(target, port).await;
-                services_json.push(json!({
-                    "port": s.port,
-                    "protocol": s.protocol,
-                    "service": s.service_name,
-                    "version": s.version.unwrap_or_else(|| "Detected".to_string()),
-                    "banner": s.banner.unwrap_or_else(|| format!("{}/{}", s.service_name, s.port)),
-                    "scan_method": s.scan_method.to_string(),
-                    "confidence": s.confidence.to_string(),
-                }));
-            }
-
-            let (os_str, dev_type) = fingerprint_os(&open_ports);
-            let hostname = resolve_hostname(target);
-
-            discovered.push(json!({
-                "id": format!("remote_{}", target.replace(['.', ':'], "_")),
-                "hostname": hostname,
-                "ip": target,
-                "mac": "02:42:AC:11:00:02",
-                "os": os_str,
-                "device_type": dev_type,
-                "criticality": "Tier-1 (Внешний периметр)",
-                "status": "В сети / Сканирован",
-                "risk": "НИЗКИЙ (1.0)",
-                "subnet": format!("{}/32", target),
-                "ports": open_ports,
-                "services": services_json,
-                "persistence": [],
-                "software": [],
-                "vulnerabilities": []
-            }));
-        }
-
-        let hosts_up = discovered.len();
-        let duration = start_instant.elapsed().as_millis();
-        return json!({
-            "subnet": target,
-            "mode": "remote",
-            "hosts_scanned": 1,
-            "hosts_up": hosts_up,
-            "duration_ms": duration,
-            "scan_rate_pps": 350,
-            "coverage": {
-                "ports_attempted": common_ports.len(),
-                "ports_open": open_ports.len(),
-                "ports_closed_or_filtered": common_ports.len() - open_ports.len(),
-                "hosts_attempted": 1,
-                "hosts_responded": if open_ports.is_empty() { 0 } else { 1 },
-                "scan_mode": mode,
-            },
-            "discovered_hosts": discovered
-        });
-    }
-
-    // Live Subnet Discovery (e.g. 192.168.56.0/24, 172.16.121.0/24, 172.20.32.0/20)
-    let prefix = if let Some(slash_idx) = subnet.find('/') {
-        let base_ip = &subnet[..slash_idx];
-        if let Some(last_dot) = base_ip.rfind('.') {
-            &base_ip[..=last_dot]
-        } else {
-            "127.0.0."
-        }
-    } else {
-        "127.0.0."
-    };
-
-    let probe_hosts = vec![1, 2, 10, 32, 50, 100, 254];
-    let probe_ports = vec![80, 443, 445, 135, 22, 3389, 8080];
-    let mut discovered = Vec::new();
-
-    for &host_suffix in &probe_hosts {
-        let ip = format!("{}{}", prefix, host_suffix);
-        let mut host_open_ports = Vec::new();
-
-        for &port in &probe_ports {
-            let addr = format!("{}:{}", ip, port);
-            if let Ok(Ok(_)) = timeout(Duration::from_millis(30), TcpStream::connect(&addr)).await {
-                host_open_ports.push(port);
-            }
-        }
-
-        if !host_open_ports.is_empty() {
-            let mut services_json = Vec::new();
-            for &port in &host_open_ports {
-                let s = probe_service_details(&ip, port).await;
-                services_json.push(json!({
-                    "port": s.port,
-                    "protocol": s.protocol,
-                    "service": s.service_name,
-                    "version": s.version.unwrap_or_else(|| "Detected".to_string()),
-                    "banner": s.banner.unwrap_or_else(|| format!("{}/{}", s.service_name, s.port)),
-                    "scan_method": s.scan_method.to_string(),
-                    "confidence": s.confidence.to_string(),
-                }));
-            }
-
-            let (os_str, dev_type) = fingerprint_os(&host_open_ports);
-            let hostname = resolve_hostname(&ip);
-
-            discovered.push(json!({
-                "id": format!("h_{}", host_suffix),
-                "hostname": hostname,
-                "ip": ip.clone(),
-                "mac": "00:50:56:C0:00:08",
-                "os": os_str,
-                "device_type": dev_type,
-                "criticality": "Tier-2 (Сетевой узел)",
-                "status": "В сети / Обнаружен",
-                "risk": "НИЗКИЙ (1.0)",
-                "subnet": subnet,
-                "ports": host_open_ports,
-                "services": services_json,
-                "persistence": [],
-                "software": [],
-                "vulnerabilities": []
-            }));
-        }
-    }
-
+    let cov = &scan_result.coverage;
     let hosts_up = discovered.len();
-    let duration = start_instant.elapsed().as_millis();
+
     json!({
         "subnet": subnet,
         "mode": mode,
-        "hosts_scanned": probe_hosts.len(),
+        "hosts_scanned": cov.targets_total,
         "hosts_up": hosts_up,
-        "duration_ms": duration,
-        "scan_rate_pps": 500,
+        "duration_ms": scan_result.duration_ms,
+        "scan_rate_pps": (cov.tcp_ports_attempted as u64 * 1000)
+            .checked_div(scan_result.duration_ms)
+            .unwrap_or(350),
         "coverage": {
-            "hosts_attempted": probe_hosts.len(),
-            "hosts_responded": hosts_up,
-            "ports_per_host_attempted": probe_ports.len(),
+            "targets_total": cov.targets_total,
+            "targets_responsive": cov.targets_responsive,
+            "ports_attempted": cov.tcp_ports_attempted,
+            "ports_open": cov.tcp_ports_open,
+            "ports_closed": cov.tcp_ports_closed,
+            "ports_filtered": cov.tcp_ports_filtered,
+            "ports_timeout": cov.tcp_ports_timeout,
+            "ports_error": cov.tcp_ports_error,
+            "services_identified": cov.services_identified,
+            "services_unknown": cov.services_unknown,
+            "os_identified": cov.os_identified,
+            "errors": cov.errors,
+            "quality": format!("{:?}", cov.quality).to_uppercase(),
+            "confidence": cov.confidence,
             "scan_mode": mode,
+            "privilege_level": cov.privilege_level,
+            "nmap_available": cov.nmap_available,
+            "note": cov.note,
         },
         "discovered_hosts": discovered
     })

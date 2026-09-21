@@ -386,6 +386,7 @@ impl SqliteStorage {
         audit::list_audit_events(&conn, case_id)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn upsert_cve_entry(
         &self,
         cve_id: &str,
