@@ -2,9 +2,9 @@
 ## Stage 4 / Release v0.3: Reliable Network Discovery
 
 > **Date**: 2026-09-21  
-> **Status**: GATE 2 READY FOR REVIEW  
+> **Status**: GATE 2 APPROVED (RELEASE v0.3.0 FINAL)  
 > **Branch**: `stage4-investigation-hardening` (Baseline Tag: `v0.2-live-baseline` at commit `7da9c0f`)  
-> **Verdict**: **ALL 10 VERIFICATION GATES PASSED**
+> **Verdict**: **ALL 10 VERIFICATION GATES + 4 HARDENING REFINEMENTS PASSED**
 
 ---
 
