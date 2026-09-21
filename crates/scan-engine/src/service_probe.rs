@@ -159,6 +159,23 @@ impl ServiceProbe for HttpProbe {
     }
 }
 
+const TLS_CLIENT_HELLO: &[u8] = &[
+    0x16, 0x03, 0x01, 0x00, 0x2f, 0x01, 0x00, 0x00, 0x2b, 0x03, 0x03, 0x01, 0x02, 0x03, 0x04, 0x05,
+    0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15,
+    0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f, 0x20, 0x00, 0x00, 0x02, 0x00, 0x2f,
+    0x01, 0x00,
+];
+
+const SMB2_NEGOTIATE_REQ: &[u8] = &[
+    0x00, 0x00, 0x00, 0x44, 0xfe, 0x53, 0x4d, 0x42, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x24, 0x00, 0x02, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x02, 0x03, 0x04,
+    0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x02, 0x02, 0x10, 0x02,
+];
+
 pub struct TlsProbe;
 #[async_trait::async_trait]
 impl ServiceProbe for TlsProbe {
@@ -166,15 +183,57 @@ impl ServiceProbe for TlsProbe {
         matches!(port, 443 | 8443 | 9443)
     }
     async fn probe(&self, target: &ServiceTarget) -> Result<ServiceObservation, ProbeError> {
-        Ok(ServiceObservation {
-            port: target.port,
-            service_name: "HTTPS/TLS".into(),
-            version: Some("TLS Enforced".into()),
-            banner: Some(format!("HTTPS on port {}", target.port)),
-            extra: serde_json::json!({ "tls": true }),
-            confidence: 0.85,
-            method: "tcp-connect".into(),
-        })
+        let addr = format!("{}:{}", target.ip, target.port);
+        let mut stream = timeout(
+            Duration::from_millis(target.timeout_ms),
+            TcpStream::connect(&addr),
+        )
+        .await
+        .map_err(|_| ProbeError::Timeout)?
+        .map_err(|e| ProbeError::Connection(e.to_string()))?;
+
+        let _ = stream.write_all(TLS_CLIENT_HELLO).await;
+
+        let mut buf = [0u8; 128];
+        let n = timeout(
+            Duration::from_millis(target.timeout_ms),
+            stream.read(&mut buf),
+        )
+        .await
+        .unwrap_or(Ok(0))
+        .unwrap_or(0);
+
+        if n >= 5 && (buf[0] == 0x16 || buf[0] == 0x15) {
+            let ver_str = match (buf[1], buf[2]) {
+                (3, 1) => "TLS 1.0",
+                (3, 2) => "TLS 1.1",
+                (3, 3) => "TLS 1.2",
+                (3, 4) => "TLS 1.3",
+                _ => "TLS (Active Handshake)",
+            };
+            Ok(ServiceObservation {
+                port: target.port,
+                service_name: "HTTPS/TLS".into(),
+                version: Some(ver_str.into()),
+                banner: Some(format!(
+                    "{} handshake confirmed on port {}",
+                    ver_str, target.port
+                )),
+                extra: serde_json::json!({ "tls": true, "record_type": buf[0] }),
+                confidence: 0.98,
+                method: "tls-handshake".into(),
+            })
+        } else {
+            Ok(ServiceObservation {
+                port: target.port,
+                service_name: "HTTPS/TLS".into(),
+                version: Some("TLS Enforced".into()),
+                banner: Some(format!("HTTPS on port {}", target.port)),
+                extra: serde_json::json!({ "tls": true }),
+                confidence: 0.70,
+                method: "tcp-connect".into(),
+            })
+        }
     }
 }
 
@@ -185,15 +244,55 @@ impl ServiceProbe for SmbProbe {
         matches!(port, 445 | 139)
     }
     async fn probe(&self, target: &ServiceTarget) -> Result<ServiceObservation, ProbeError> {
-        Ok(ServiceObservation {
-            port: target.port,
-            service_name: "SMB".into(),
-            version: Some("Microsoft Windows SMB".into()),
-            banner: Some("Microsoft-DS File Sharing".into()),
-            extra: serde_json::json!({ "proto": "SMB" }),
-            confidence: 0.85,
-            method: "tcp-connect".into(),
-        })
+        let addr = format!("{}:{}", target.ip, target.port);
+        let mut stream = timeout(
+            Duration::from_millis(target.timeout_ms),
+            TcpStream::connect(&addr),
+        )
+        .await
+        .map_err(|_| ProbeError::Timeout)?
+        .map_err(|e| ProbeError::Connection(e.to_string()))?;
+
+        let _ = stream.write_all(SMB2_NEGOTIATE_REQ).await;
+
+        let mut buf = [0u8; 128];
+        let n = timeout(
+            Duration::from_millis(target.timeout_ms),
+            stream.read(&mut buf),
+        )
+        .await
+        .unwrap_or(Ok(0))
+        .unwrap_or(0);
+
+        let is_smb2 = n >= 8 && (&buf[4..8] == b"\xfeSMB" || &buf[0..4] == b"\xfeSMB");
+        let is_smb1 = n >= 8 && (&buf[4..8] == b"\xffSMB" || &buf[0..4] == b"\xffSMB");
+
+        if is_smb2 || is_smb1 {
+            let dialect = if is_smb1 {
+                "SMB 1.0 (Legacy)"
+            } else {
+                "SMB 2.x / 3.x"
+            };
+            Ok(ServiceObservation {
+                port: target.port,
+                service_name: "SMB".into(),
+                version: Some(dialect.into()),
+                banner: Some(format!("Microsoft-DS ({} Negotiated)", dialect)),
+                extra: serde_json::json!({ "proto": "SMB", "negotiate_success": true }),
+                confidence: 0.98,
+                method: "smb-negotiate".into(),
+            })
+        } else {
+            Ok(ServiceObservation {
+                port: target.port,
+                service_name: "SMB".into(),
+                version: None,
+                banner: None,
+                extra: serde_json::json!({ "proto": "SMB", "negotiate_success": false }),
+                confidence: 0.50,
+                method: "heuristic".into(),
+            })
+        }
     }
 }
 

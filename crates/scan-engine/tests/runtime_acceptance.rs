@@ -4,7 +4,9 @@ use scan_engine::asset_resolver::AssetResolver;
 use scan_engine::nmap_adapter::NmapAdapter;
 use scan_engine::orchestrator::ScanOrchestrator;
 use scan_engine::port_scan::{classify_error, ports_for_profile};
-use scan_engine::service_probe::{HttpProbe, ServiceProbe, ServiceTarget, SshProbe};
+use scan_engine::service_probe::{
+    HttpProbe, ServiceProbe, ServiceTarget, SmbProbe, SshProbe, TlsProbe,
+};
 use scan_engine::target::{expand_target_to_ips, parse_target};
 use scan_engine::types::{
     PortState, RawAssetObservation, ScanJob, ScanJobId, ScanJobStatus, ScanProfile, ScanTarget,
@@ -42,8 +44,8 @@ fn test_gate_profiles_have_different_workloads() {
     assert!(standard_ports.len() < deep_ports.len());
 
     assert_eq!(quick_ports.len(), 40);
-    assert_eq!(standard_ports.len(), 101);
-    assert!(deep_ports.len() > 101);
+    assert_eq!(standard_ports.len(), 1000);
+    assert_eq!(deep_ports.len(), 65535);
 }
 
 /// GATE 3: Remote Target and CIDR Expansion
@@ -231,4 +233,115 @@ async fn test_gate_coverage_and_provenance_traceability() {
             "Valid 256-bit BLAKE3 hex hash"
         );
     }
+}
+
+/// GATE 7: Active Protocol Handshakes for TLS and SMB (Handshake verified != port guess)
+#[tokio::test]
+async fn test_gate_service_probe_tls_and_smb_handshakes() {
+    use tokio::io::AsyncReadExt;
+
+    // 1. Mock TLS Server with real ServerHello response
+    let tls_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let tls_port = tls_listener.local_addr().unwrap().port();
+
+    let tls_server = tokio::spawn(async move {
+        if let Ok((mut socket, _)) = tls_listener.accept().await {
+            let mut client_hello = [0u8; 128];
+            let _ = socket.read(&mut client_hello).await;
+            // Send TLS 1.2 ServerHello record header
+            let server_hello = &[0x16, 0x03, 0x03, 0x00, 0x10, 0x02, 0x00, 0x00, 0x0c];
+            let _ = socket.write_all(server_hello).await;
+            let _ = socket.flush().await;
+        }
+    });
+
+    let tls_probe = TlsProbe;
+    let tls_target = ServiceTarget {
+        ip: Ipv4Addr::new(127, 0, 0, 1),
+        port: tls_port,
+        timeout_ms: 1000,
+    };
+
+    let tls_obs = tls_probe
+        .probe(&tls_target)
+        .await
+        .expect("TLS probe succeeds");
+    assert_eq!(tls_obs.service_name, "HTTPS/TLS");
+    assert_eq!(tls_obs.version.as_deref(), Some("TLS 1.2"));
+    assert_eq!(tls_obs.method, "tls-handshake");
+    assert!(tls_obs.confidence >= 0.95);
+    let _ = tls_server.await;
+
+    // 2. Mock SMB Server with real SMB2 Negotiate response
+    let smb_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let smb_port = smb_listener.local_addr().unwrap().port();
+
+    let smb_server = tokio::spawn(async move {
+        if let Ok((mut socket, _)) = smb_listener.accept().await {
+            let mut negotiate_req = [0u8; 128];
+            let _ = socket.read(&mut negotiate_req).await;
+            // Send SMB2 Negotiate Response header
+            let smb_resp = &[
+                0x00, 0x00, 0x00, 0x40, // NetBIOS length
+                0xfe, 0x53, 0x4d, 0x42, // Protocol: "\xfeSMB"
+                0x40, 0x00, 0x00, 0x00, // Header
+            ];
+            let _ = socket.write_all(smb_resp).await;
+            let _ = socket.flush().await;
+        }
+    });
+
+    let smb_probe = SmbProbe;
+    let smb_target = ServiceTarget {
+        ip: Ipv4Addr::new(127, 0, 0, 1),
+        port: smb_port,
+        timeout_ms: 1000,
+    };
+
+    let smb_obs = smb_probe
+        .probe(&smb_target)
+        .await
+        .expect("SMB probe succeeds");
+    assert_eq!(smb_obs.service_name, "SMB");
+    assert_eq!(smb_obs.version.as_deref(), Some("SMB 2.x / 3.x"));
+    assert_eq!(smb_obs.method, "smb-negotiate");
+    assert!(smb_obs.confidence >= 0.95);
+    let _ = smb_server.await;
+}
+
+/// GATE 6: Full Production Nmap XML Parser Pipeline
+#[test]
+fn test_gate_nmap_full_production_xml_pipeline() {
+    let sample_nmap_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE nmaprun>
+<nmaprun scanner="nmap" args="nmap -T4 -sV -oX - 10.10.20.11" start="1700000000" version="7.94">
+<host starttime="1700000001" endtime="1700000005">
+    <status state="up" reason="syn-ack"/>
+    <address addr="10.10.20.11" addrtype="ipv4"/>
+    <hostnames>
+        <hostname name="DC-LAB.corp.local" type="PTR"/>
+    </hostnames>
+    <ports>
+        <port protocol="tcp" portid="445">
+            <state state="open" reason="syn-ack"/>
+            <service name="microsoft-ds" product="Windows Server 2022 Standard" version="20348" extrainfo="workgroup: CORP" method="probed" conf="10"/>
+        </port>
+        <port protocol="tcp" portid="3389">
+            <state state="open" reason="syn-ack"/>
+            <service name="ms-wbt-server" product="Microsoft Terminal Services" method="probed" conf="10"/>
+        </port>
+    </ports>
+</host>
+</nmaprun>"#;
+
+    let result = NmapAdapter::parse_xml(sample_nmap_xml).expect("XML parse succeeds");
+    assert_eq!(result.hosts.len(), 1);
+    let host = &result.hosts[0];
+    assert_eq!(host.ip, "10.10.20.11");
+    assert_eq!(host.hostname.as_deref(), Some("DC-LAB.corp.local"));
+    assert_eq!(host.ports.len(), 2);
+    assert_eq!(host.ports[0].port, 445);
+    assert_eq!(host.ports[0].state, PortState::Open);
+    assert_eq!(host.ports[1].port, 3389);
+    assert_eq!(host.ports[1].state, PortState::Open);
 }

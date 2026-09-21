@@ -26,20 +26,23 @@ pub const TOP_STANDARD_PORTS: &[u16] = &[
 pub fn ports_for_profile(profile: &ScanProfile) -> Vec<u16> {
     match profile {
         ScanProfile::Quick => TOP_QUICK_PORTS.to_vec(),
-        ScanProfile::Standard => TOP_STANDARD_PORTS.to_vec(),
-        ScanProfile::Deep => {
-            // For deep, combines standard ports + extended list
-            let mut ports = TOP_STANDARD_PORTS.to_vec();
-            for p in 49152..=49160 {
-                ports.push(p);
+        ScanProfile::Standard => {
+            let mut set: std::collections::BTreeSet<u16> =
+                TOP_STANDARD_PORTS.iter().copied().collect();
+            let mut p = 1u16;
+            while set.len() < 1000 && p <= 1024 {
+                set.insert(p);
+                p += 1;
             }
-            ports
+            set.into_iter().collect()
         }
+        ScanProfile::Deep => (1u16..=65535).collect(),
     }
 }
 
 pub async fn scan_tcp_ports(ip: Ipv4Addr, ports: &[u16], timeout_ms: u64) -> Vec<PortResult> {
-    let sem = Arc::new(Semaphore::new(64));
+    let concurrency = if ports.len() > 1000 { 256 } else { 64 };
+    let sem = Arc::new(Semaphore::new(concurrency));
     let mut handles = Vec::new();
 
     for &port in ports {
