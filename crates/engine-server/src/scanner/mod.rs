@@ -11,32 +11,37 @@ pub use probe::{
 
 /// Discovers live hosts using ARP cache + TCP probe fallback.
 pub async fn execute_host_discovery(subnet_prefix: &str) -> serde_json::Value {
-    #[cfg(target_os = "windows")]
-    {
-        let arp_hosts = platform_windows::discover_via_arp(subnet_prefix);
-        let tcp_hosts = if arp_hosts.is_empty() {
-            let guesses: Vec<String> = (1u8..=10)
-                .map(|i| format!("{}{}", subnet_prefix, i))
-                .collect();
-            platform_windows::discover_via_tcp_probe(&guesses)
-        } else {
-            vec![]
-        };
-        let mut all_hosts = Vec::new();
-        for h in arp_hosts.iter().chain(tcp_hosts.iter()) {
-            all_hosts.push(serde_json::json!({
-                "ip": h.ip,
-                "hostname": h.hostname,
-                "method": format!("{:?}", h.method),
-            }));
-        }
-        return serde_json::json!({
-            "subnet_prefix": subnet_prefix,
-            "hosts_found": all_hosts.len(),
-            "hosts": all_hosts,
-        });
+    execute_host_discovery_impl(subnet_prefix).await
+}
+
+#[cfg(target_os = "windows")]
+async fn execute_host_discovery_impl(subnet_prefix: &str) -> serde_json::Value {
+    let arp_hosts = platform_windows::discover_via_arp(subnet_prefix);
+    let tcp_hosts = if arp_hosts.is_empty() {
+        let guesses: Vec<String> = (1u8..=10)
+            .map(|i| format!("{}{}", subnet_prefix, i))
+            .collect();
+        platform_windows::discover_via_tcp_probe(&guesses)
+    } else {
+        vec![]
+    };
+    let mut all_hosts = Vec::new();
+    for h in arp_hosts.iter().chain(tcp_hosts.iter()) {
+        all_hosts.push(serde_json::json!({
+            "ip": h.ip,
+            "hostname": h.hostname,
+            "method": format!("{:?}", h.method),
+        }));
     }
-    #[allow(unreachable_code)]
+    serde_json::json!({
+        "subnet_prefix": subnet_prefix,
+        "hosts_found": all_hosts.len(),
+        "hosts": all_hosts,
+    })
+}
+
+#[cfg(not(target_os = "windows"))]
+async fn execute_host_discovery_impl(subnet_prefix: &str) -> serde_json::Value {
     serde_json::json!({
         "subnet_prefix": subnet_prefix,
         "hosts_found": 0,
