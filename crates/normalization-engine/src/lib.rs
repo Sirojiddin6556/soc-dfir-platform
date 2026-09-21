@@ -48,8 +48,14 @@ impl Normalizer for GenericLogNormalizer {
         let mut observations = Vec::new();
         let now = chrono::Utc::now();
 
-        if trimmed.starts_with('[') && trimmed.ends_with(']') {
-            if let Ok(records) = serde_json::from_str::<Vec<serde_json::Value>>(trimmed) {
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(trimmed) {
+            let records_opt = if let Some(arr) = val.as_array() {
+                Some(arr.clone())
+            } else {
+                val.get("records").and_then(|r| r.as_array().cloned())
+            };
+
+            if let Some(records) = records_opt {
                 for rec in records {
                     let mut data = rec.clone();
                     if let Some(inner) = rec.get("data").and_then(|d| d.as_object()) {
@@ -59,6 +65,20 @@ impl Normalizer for GenericLogNormalizer {
                             }
                         }
                     }
+                    if let Some(inner) = rec.get("event_data").and_then(|d| d.as_object()) {
+                        if let Some(obj) = data.as_object_mut() {
+                            for (k, v) in inner {
+                                obj.insert(k.clone(), v.clone());
+                            }
+                        }
+                    }
+                    let source_ts = rec
+                        .get("source_timestamp")
+                        .and_then(|v| v.as_str())
+                        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                        .map(|dt| dt.with_timezone(&chrono::Utc))
+                        .unwrap_or(now);
+
                     observations.push(Observation {
                         id: EntityId::new_v7(),
                         case_id,
@@ -66,7 +86,7 @@ impl Normalizer for GenericLogNormalizer {
                         tool_run_id: None,
                         source_tool: raw.tool_name.clone(),
                         raw_event_type: "log_entry".to_string(),
-                        source_timestamp: now,
+                        source_timestamp: source_ts,
                         ingest_timestamp: now,
                         data,
                     });

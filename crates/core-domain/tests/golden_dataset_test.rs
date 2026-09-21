@@ -8,7 +8,7 @@ use scoring_engine::ScoringEngine;
 use storage_cas::ContentAddressedStorage;
 use storage_sqlite::SqliteStorage;
 use taxonomy_projection::TaxonomyProjector;
-use tool_adapters::{EvtxAdapter, ToolAdapter};
+use tool_adapters::{EvtxJsonExportAdapter, ToolAdapter};
 
 use core_domain::id::EntityId;
 use core_domain::observation::RawToolResult;
@@ -39,13 +39,13 @@ async fn test_end_to_end_golden_dataset_pipeline() {
     assert!(!cas_record.sha256.is_empty());
 
     // 2. Tool Adapter -> RawToolResult
-    let fake_evtx_path = temp_dir.join("security.evtx");
+    let fake_evtx_path = temp_dir.join("security.jsonl");
     tokio::fs::create_dir_all(&temp_dir).await.unwrap();
     tokio::fs::write(&fake_evtx_path, raw_log_data)
         .await
         .unwrap();
 
-    let adapter = EvtxAdapter;
+    let adapter = EvtxJsonExportAdapter;
     let raw_tool_result: RawToolResult = adapter.parse_artifact(&fake_evtx_path).await.unwrap();
     assert_eq!(raw_tool_result.exit_code, 0);
 

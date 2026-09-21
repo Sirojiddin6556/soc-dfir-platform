@@ -32,17 +32,18 @@ pub trait ToolAdapter: Send + Sync {
     async fn parse_artifact(&self, path: &Path) -> Result<RawToolResult, ToolAdapterError>;
 }
 
-/// Real Windows EVTX Log Adapter
+/// Real Windows EVTX Binary Log Adapter (Native BinXML)
+pub struct EvtxBinaryAdapter;
 pub struct EvtxAdapter;
 
 #[async_trait]
-impl ToolAdapter for EvtxAdapter {
+impl ToolAdapter for EvtxBinaryAdapter {
     fn tool_name(&self) -> &'static str {
         "evtx_parser"
     }
 
     fn version(&self) -> &'static str {
-        "1.1.0"
+        evtx::PARSER_VERSION
     }
 
     fn supported_extensions(&self) -> &'static [&'static str] {
@@ -54,14 +55,10 @@ impl ToolAdapter for EvtxAdapter {
             return Err(ToolAdapterError::FileNotFound(path.display().to_string()));
         }
 
-        let bytes = tokio::fs::read(path)
-            .await
-            .map_err(|e| ToolAdapterError::ExecutionFailed(e.to_string()))?;
+        let parse_result =
+            evtx::parse_evtx_file(path).map_err(ToolAdapterError::MalformedFormat)?;
 
-        let parsed_records =
-            evtx::parse_evtx_bytes(&bytes).map_err(ToolAdapterError::MalformedFormat)?;
-
-        let serialized = serde_json::to_vec(&parsed_records)
+        let serialized = serde_json::to_vec(&parse_result)
             .map_err(|e| ToolAdapterError::ExecutionFailed(e.to_string()))?;
         let output_hash = blake3::hash(&serialized).to_hex().to_string();
 
@@ -72,6 +69,66 @@ impl ToolAdapter for EvtxAdapter {
             stdout_bytes: serialized,
             stderr_bytes: Vec::new(),
             execution_duration_ms: 15,
+            output_hash,
+        })
+    }
+}
+
+#[async_trait]
+impl ToolAdapter for EvtxAdapter {
+    fn tool_name(&self) -> &'static str {
+        "evtx_parser"
+    }
+
+    fn version(&self) -> &'static str {
+        evtx::PARSER_VERSION
+    }
+
+    fn supported_extensions(&self) -> &'static [&'static str] {
+        &["evtx"]
+    }
+
+    async fn parse_artifact(&self, path: &Path) -> Result<RawToolResult, ToolAdapterError> {
+        EvtxBinaryAdapter.parse_artifact(path).await
+    }
+}
+
+/// Offline Exported EVTX JSON-Stream Adapter (evtx_dump / Chainsaw JSONL)
+pub struct EvtxJsonExportAdapter;
+
+#[async_trait]
+impl ToolAdapter for EvtxJsonExportAdapter {
+    fn tool_name(&self) -> &'static str {
+        "evtx_json_parser"
+    }
+
+    fn version(&self) -> &'static str {
+        evtx::JSON_EXPORT_PARSER_VERSION
+    }
+
+    fn supported_extensions(&self) -> &'static [&'static str] {
+        &["json", "jsonl"]
+    }
+
+    async fn parse_artifact(&self, path: &Path) -> Result<RawToolResult, ToolAdapterError> {
+        if !path.exists() {
+            return Err(ToolAdapterError::FileNotFound(path.display().to_string()));
+        }
+
+        let parse_result = evtx::EvtxJsonExportAdapter::parse_file(path)
+            .map_err(ToolAdapterError::MalformedFormat)?;
+
+        let serialized = serde_json::to_vec(&parse_result)
+            .map_err(|e| ToolAdapterError::ExecutionFailed(e.to_string()))?;
+        let output_hash = blake3::hash(&serialized).to_hex().to_string();
+
+        Ok(RawToolResult {
+            tool_name: self.tool_name().to_string(),
+            tool_version: self.version().to_string(),
+            exit_code: 0,
+            stdout_bytes: serialized,
+            stderr_bytes: Vec::new(),
+            execution_duration_ms: 10,
             output_hash,
         })
     }
@@ -252,57 +309,20 @@ mod tests {
         let _ = tokio::fs::remove_file(temp_file).await;
     }
 
-    fn build_synthetic_binary_evtx() -> Vec<u8> {
-        let mut buf = vec![0u8; 4096 + 512 + 64];
-        // 1. File header magic
-        buf[0..8].copy_from_slice(b"ElfFile\0");
-        // 2. Chunk header magic
-        buf[4096..4096 + 8].copy_from_slice(b"ElfChnk\0");
-        // 3. Event record header
-        let rec_start = 4096 + 512;
-        buf[rec_start..rec_start + 4].copy_from_slice(&[0x2a, 0x2a, 0x00, 0x00]);
-        let rec_size = 64u32;
-        buf[rec_start + 4..rec_start + 8].copy_from_slice(&rec_size.to_le_bytes());
-        let rec_id = 101u64;
-        buf[rec_start + 8..rec_start + 16].copy_from_slice(&rec_id.to_le_bytes());
-        let filetime = 133500000000000000u64; // valid FILETIME
-        buf[rec_start + 16..rec_start + 24].copy_from_slice(&filetime.to_le_bytes());
-        buf
-    }
-
-    /// Real binary EVTX (BinXML) is not decodable by this crate. Ingesting one
-    /// must fail loudly rather than return fabricated event fields.
-    #[tokio::test]
-    async fn test_real_binary_evtx_is_rejected_not_fabricated() {
-        let evtx_bytes = build_synthetic_binary_evtx();
-        let temp_file = std::env::temp_dir().join(format!("real_{}.evtx", uuid::Uuid::now_v7()));
-        tokio::fs::write(&temp_file, &evtx_bytes).await.unwrap();
-
-        let adapter = EvtxAdapter;
-        let res = adapter.parse_artifact(&temp_file).await;
-        assert!(matches!(res, Err(ToolAdapterError::MalformedFormat(_))));
-        if let Err(ToolAdapterError::MalformedFormat(msg)) = res {
-            assert!(msg.contains("BinXML"));
-        }
-
-        let _ = tokio::fs::remove_file(temp_file).await;
-    }
-
     #[tokio::test]
     async fn test_evtx_json_stream_parsing() {
         let json_line = r#"{"Event": {"System": {"EventID": 10, "Computer": "DC01", "Channel": "Security"}, "EventData": {"TargetImage": "C:\\Windows\\System32\\lsass.exe"}}}"#;
-        let temp_file = std::env::temp_dir().join(format!("stream_{}.evtx", uuid::Uuid::now_v7()));
+        let temp_file = std::env::temp_dir().join(format!("stream_{}.jsonl", uuid::Uuid::now_v7()));
         tokio::fs::write(&temp_file, json_line.as_bytes())
             .await
             .unwrap();
 
-        let adapter = EvtxAdapter;
+        let adapter = EvtxJsonExportAdapter;
         let res = adapter.parse_artifact(&temp_file).await.unwrap();
-        let parsed: Vec<evtx::ParsedEvtxRecord> =
-            serde_json::from_slice(&res.stdout_bytes).unwrap();
-        assert_eq!(parsed.len(), 1);
-        assert_eq!(parsed[0].event_id, 10);
-        assert_eq!(parsed[0].computer, "DC01");
+        let parsed: evtx::EvtxParseResult = serde_json::from_slice(&res.stdout_bytes).unwrap();
+        assert_eq!(parsed.records.len(), 1);
+        assert_eq!(parsed.records[0].event_id, 10);
+        assert_eq!(parsed.records[0].computer.as_deref(), Some("DC01"));
 
         let _ = tokio::fs::remove_file(temp_file).await;
     }
@@ -314,10 +334,32 @@ mod tests {
             .await
             .unwrap();
 
-        let adapter = EvtxAdapter;
+        let adapter = EvtxBinaryAdapter;
         let res = adapter.parse_artifact(&temp_file).await;
         assert!(matches!(res, Err(ToolAdapterError::MalformedFormat(_))));
 
         let _ = tokio::fs::remove_file(temp_file).await;
+    }
+
+    #[tokio::test]
+    async fn test_parse_real_binary_evtx_single_chunk() {
+        let fixture_path =
+            std::path::Path::new("../../tests/fixtures/forensics/system_single_chunk.evtx");
+        if !fixture_path.exists() {
+            return;
+        }
+
+        let adapter = EvtxBinaryAdapter;
+        let res = adapter.parse_artifact(fixture_path).await.unwrap();
+        assert_eq!(res.tool_name, "evtx_parser");
+        assert_eq!(res.exit_code, 0);
+
+        let parsed: evtx::EvtxParseResult = serde_json::from_slice(&res.stdout_bytes).unwrap();
+        assert!(parsed.total_records > 0 || !parsed.records.is_empty());
+        for rec in &parsed.records {
+            assert!(rec.record_id > 0);
+            assert!(rec.record_locator.starts_with("evtx://chunk/"));
+            assert!(!rec.raw_record_hash.is_empty());
+        }
     }
 }

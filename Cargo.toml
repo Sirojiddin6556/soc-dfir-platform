@@ -60,3 +60,4 @@ rusqlite = { version = "0.32", features = ["bundled", "chrono", "uuid"] }
 thiserror = "1.0"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+evtx = "0.12"

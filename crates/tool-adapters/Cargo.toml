@@ -14,6 +14,7 @@ blake3.workspace = true
 chrono.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+evtx.workspace = true
 
 [dev-dependencies]
 uuid.workspace = true

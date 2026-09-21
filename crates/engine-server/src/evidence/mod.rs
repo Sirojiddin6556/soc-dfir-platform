@@ -150,32 +150,48 @@ pub async fn handle_evidence_ingest(
 
     let tool_run_id = EntityId::new_v7();
     let observations: Vec<Observation> = if ext == "evtx" {
-        let records: Vec<ParsedEvtxRecord> = serde_json::from_slice(&parse_result.stdout_bytes)
-            .map_err(|e| bad_request(&e.to_string(), "filename"))?;
-        records
-            .into_iter()
-            .map(|rec| Observation {
-                id: EntityId::new_v7(),
-                case_id,
-                artifact_id: Some(artifact.id),
-                tool_run_id: Some(tool_run_id),
-                source_tool: parse_result.tool_name.clone(),
-                raw_event_type: "evtx_record".to_string(),
-                source_timestamp: rec.timestamp,
-                ingest_timestamp: now,
-                data: json!({
-                    "event_id": rec.event_id,
-                    "provider": rec.provider,
-                    "channel": rec.channel,
-                    "host": rec.computer,
-                    "process_name": rec.data.get("Image").and_then(|v| v.as_str()),
-                    "command_line": rec.data.get("CommandLine").and_then(|v| v.as_str()),
-                    "parent_name": rec.data.get("ParentImage").and_then(|v| v.as_str()),
-                    "executable_path": rec.data.get("Image").and_then(|v| v.as_str()),
-                    "event_data": rec.data
-                }),
-            })
-            .collect()
+        if let Ok(res) = serde_json::from_slice::<tool_adapters::evtx::EvtxParseResult>(
+            &parse_result.stdout_bytes,
+        ) {
+            res.records
+                .iter()
+                .map(|rec| {
+                    tool_adapters::evtx::EvtxNormalizer::normalize_record(
+                        case_id,
+                        Some(artifact.id),
+                        Some(tool_run_id),
+                        rec,
+                    )
+                })
+                .collect()
+        } else {
+            let records: Vec<ParsedEvtxRecord> = serde_json::from_slice(&parse_result.stdout_bytes)
+                .map_err(|e| bad_request(&e.to_string(), "filename"))?;
+            records
+                .into_iter()
+                .map(|rec| Observation {
+                    id: EntityId::new_v7(),
+                    case_id,
+                    artifact_id: Some(artifact.id),
+                    tool_run_id: Some(tool_run_id),
+                    source_tool: parse_result.tool_name.clone(),
+                    raw_event_type: "evtx_record".to_string(),
+                    source_timestamp: rec.timestamp.unwrap_or(now),
+                    ingest_timestamp: now,
+                    data: json!({
+                        "event_id": rec.event_id,
+                        "provider": rec.provider,
+                        "channel": rec.channel,
+                        "host": rec.computer,
+                        "process_name": rec.data.get("Image").and_then(|v| v.as_str()),
+                        "command_line": rec.data.get("CommandLine").and_then(|v| v.as_str()),
+                        "parent_name": rec.data.get("ParentImage").and_then(|v| v.as_str()),
+                        "executable_path": rec.data.get("Image").and_then(|v| v.as_str()),
+                        "event_data": rec.data
+                    }),
+                })
+                .collect()
+        }
     } else {
         let packets: Vec<ParsedPacket> = serde_json::from_slice(&parse_result.stdout_bytes)
             .map_err(|e| bad_request(&e.to_string(), "filename"))?;
