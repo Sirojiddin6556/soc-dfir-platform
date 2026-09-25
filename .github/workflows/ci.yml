@@ -41,6 +41,14 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Frontend Syntax & CTF E2E Tests
+        run: npm test --prefix apps/desktop-ui
+
       - name: Check Code Formatting
         run: cargo fmt --all -- --check
 
@@ -49,3 +57,8 @@ jobs:
 
       - name: Workspace Unit & Integration Tests
         run: cargo test --workspace --verbose
+
+      - name: Verify Docker Container Build (Linux only)
+        if: matrix.os == 'ubuntu-latest'
+        run: docker build -f config/docker/Dockerfile -t soc-dfir/engine-server:ci .
+

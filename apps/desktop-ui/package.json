@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "start": "npx serve .",
-    "test": "node scripts/check-syntax.mjs && node scripts/check-ctf-modules.mjs"
+    "test": "node scripts/check-syntax.mjs && node scripts/check-ctf-modules.mjs && node scripts/test-ctf-e2e.mjs"
   },
   "keywords": ["soc", "dfir", "cyber-range", "mitre-attack"],
   "author": "Blue Team Engineering",

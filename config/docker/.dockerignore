@@ -1,0 +1,11 @@
+target/
+.git/
+.github/
+.vscode/
+.idea/
+docs/
+fixtures/forensics/phase4-local/
+*.pcapng
+*.etl
+*.evtx
+node_modules/

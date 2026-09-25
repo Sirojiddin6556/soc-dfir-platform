@@ -1,0 +1,51 @@
+version: '3.8'
+
+services:
+  engine:
+    build:
+      context: ../..
+      dockerfile: config/docker/Dockerfile
+    image: soc-dfir/engine-server:v0.1.0-alpha
+    container_name: soc-dfir-engine
+    restart: unless-stopped
+    environment:
+      - RUST_LOG=info
+      - APP_PORT=8080
+      - CAS_STORAGE_PATH=/app/cas
+      - DB_PATH=/app/data/ctf_workspace.db
+    volumes:
+      - ctf_data:/app/data
+      - ctf_cas:/app/cas
+      - ctf_logs:/app/logs
+    networks:
+      - internal_net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:8080/health/live"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+  frontend:
+    image: nginx:1.27-alpine
+    container_name: soc-dfir-frontend
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      - ../../apps/desktop-ui:/usr/share/nginx/html:ro
+      - ../nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      engine:
+        condition: service_healthy
+    networks:
+      - internal_net
+
+volumes:
+  ctf_data:
+  ctf_cas:
+  ctf_logs:
+
+networks:
+  internal_net:
+    driver: bridge
