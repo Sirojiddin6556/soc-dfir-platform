@@ -24,17 +24,60 @@ pub struct EvtxRecord {
     pub user_data: serde_json::Value,
     pub system_data: serde_json::Value,
 
-    pub chunk_index: u64,
-    pub record_offset: u64,
+    pub chunk_index: Option<u64>,
+    pub physical_offset: Option<u64>,
     pub record_locator: String,
-    pub raw_record_hash: String,
+    pub decoded_record_hash: String,
     pub parser_version: String,
 }
 
 impl EvtxRecord {
     /// Builds a deterministic canonical record locator
-    pub fn format_locator(chunk_index: u64, record_id: u64) -> String {
-        format!("evtx://chunk/{chunk_index}/record/{record_id}")
+    pub fn format_locator(chunk_index: Option<u64>, record_id: u64) -> String {
+        match chunk_index {
+            Some(chunk) => format!("evtx://chunk/{chunk}/record/{record_id}"),
+            None => format!("evtx://record/{record_id}"),
+        }
+    }
+}
+
+/// Lightweight summary of EVTX parsing for streaming pipelines without in-memory record accumulation
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EvtxParseSummary {
+    pub records_parsed: u64,
+    pub corrupt_records: u64,
+    pub total_chunks: u64,
+    pub damaged_chunks: u64,
+    pub issues: Vec<ParseIssue>,
+    pub quality: ParseQuality,
+}
+
+impl EvtxParseSummary {
+    pub fn new(
+        records_parsed: u64,
+        corrupt_records: u64,
+        total_chunks: u64,
+        damaged_chunks: u64,
+        issues: Vec<ParseIssue>,
+    ) -> Self {
+        let quality = if records_parsed == 0 && (damaged_chunks > 0 || corrupt_records > 0) {
+            ParseQuality::Failed
+        } else if damaged_chunks > 0 {
+            ParseQuality::Partial
+        } else if corrupt_records > 0 {
+            ParseQuality::Degraded
+        } else {
+            ParseQuality::Complete
+        };
+
+        Self {
+            records_parsed,
+            corrupt_records,
+            total_chunks,
+            damaged_chunks,
+            issues,
+            quality,
+        }
     }
 }
 

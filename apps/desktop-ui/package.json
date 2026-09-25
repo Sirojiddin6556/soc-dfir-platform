@@ -3,9 +3,10 @@
   "version": "0.1.0",
   "description": "Cross-Platform Cyber Range Cockpit & SOC/DFIR Desktop Frontend",
   "main": "index.html",
+  "type": "module",
   "scripts": {
     "start": "npx serve .",
-    "test": "node scripts/check-syntax.mjs"
+    "test": "node scripts/check-syntax.mjs && node scripts/check-ctf-modules.mjs"
   },
   "keywords": ["soc", "dfir", "cyber-range", "mitre-attack"],
   "author": "Blue Team Engineering",

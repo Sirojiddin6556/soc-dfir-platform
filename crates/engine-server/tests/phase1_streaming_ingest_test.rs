@@ -184,10 +184,8 @@ async fn test_phase1_streaming_ingest_and_custody_lifecycle() {
     assert!(complete_resp["error"].is_null(), "{:?}", complete_resp);
     assert_eq!(complete_resp["result"]["status"], "COMMITTED");
     assert_eq!(complete_resp["result"]["format"], "pcapng");
-    assert_eq!(
-        complete_resp["result"]["parser_status"],
-        "PENDING_IMPLEMENTATION"
-    );
+    assert_eq!(complete_resp["result"]["parser_status"], "Failed");
+    assert_eq!(complete_resp["result"]["observations_created"], 0);
     assert_eq!(complete_resp["result"]["sha256"], expected_sha256);
     assert_eq!(complete_resp["result"]["blake3"], expected_blake3);
     assert_eq!(complete_resp["result"]["size_bytes"], payload.len() as u64);
@@ -353,10 +351,7 @@ async fn test_phase1_streaming_ingest_and_custody_lifecycle() {
     .await;
     assert_eq!(complete_evtx["result"]["status"], "COMMITTED");
     assert_eq!(complete_evtx["result"]["format"], "evtx");
-    assert_eq!(
-        complete_evtx["result"]["parser_status"],
-        "PENDING_IMPLEMENTATION"
-    );
+    assert_eq!(complete_evtx["result"]["parser_status"], "Succeeded");
 
     // 14. Test Unrecognized Magic Byte Quarantine (EVID-006)
     let bad_bytes = b"NOT_A_VALID_FORENSIC_FORMAT_12345678";
@@ -401,5 +396,203 @@ async fn test_phase1_streaming_ingest_and_custody_lifecycle() {
     assert_eq!(bad_status["result"]["status"], "QUARANTINED");
     assert_eq!(bad_status["result"]["custody_chain_valid"], true);
 
+    let _ = tokio::fs::remove_dir_all(temp_dir).await;
+}
+
+#[tokio::test]
+async fn phase3_h20_streaming_complete_parses_and_is_idempotent() {
+    use base64::Engine as _;
+    use std::fs;
+
+    fn fixture_bytes() -> Vec<u8> {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/forensics/tls/tls12_complete_clienthello.pcap.hex");
+        fs::read_to_string(path)
+            .unwrap()
+            .split_whitespace()
+            .flat_map(|part| {
+                (0..part.len())
+                    .step_by(2)
+                    .map(move |index| u8::from_str_radix(&part[index..index + 2], 16).unwrap())
+            })
+            .collect()
+    }
+
+    fn canonical(mut values: Vec<serde_json::Value>) -> Vec<serde_json::Value> {
+        for value in &mut values {
+            if let Some(object) = value.as_object_mut() {
+                object.remove("id");
+                object.remove("timestamp");
+            }
+        }
+        values.sort_by_key(|value| value.to_string());
+        values
+    }
+
+    let temp_dir = std::env::temp_dir().join(format!("phase3_h20_stream_{}", uuid::Uuid::now_v7()));
+    let cas_dir = temp_dir.join("cas");
+    let db_path = temp_dir.join("case.db");
+    let (port, app, server_handle) = spawn_test_server(cas_dir.clone(), db_path.clone()).await;
+    let case_resp = rpc_call(
+        port,
+        "cases.create",
+        serde_json::json!({"title":"H20 streaming"}),
+    )
+    .await;
+    let case_id = case_resp["result"]["case_id"].as_str().unwrap().to_string();
+    let bytes = fixture_bytes();
+    let expected_sha256 = hex::encode(Sha256::digest(&bytes));
+    let expected_blake3 = blake3::hash(&bytes).to_hex().to_string();
+    let begin = rpc_call(
+        port,
+        "evidence.ingest.begin",
+        serde_json::json!({
+            "case_id": case_id,
+            "filename": "tls12-stream.pcap",
+            "declared_size_bytes": bytes.len(),
+            "actor_id": "h20"
+        }),
+    )
+    .await;
+    let session_id = begin["result"]["session_id"].as_str().unwrap().to_string();
+    let token = begin["result"]["upload_token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let mut offset = 0u64;
+    for size in [7usize, 31, 4093] {
+        let end = (offset as usize + size).min(bytes.len());
+        let (code, _) = upload_chunk(
+            port,
+            &session_id,
+            &token,
+            offset,
+            &bytes[offset as usize..end],
+        )
+        .await;
+        assert_eq!(code, 200);
+        offset = end as u64;
+    }
+    if offset < bytes.len() as u64 {
+        let (code, _) =
+            upload_chunk(port, &session_id, &token, offset, &bytes[offset as usize..]).await;
+        assert_eq!(code, 200);
+    }
+
+    let complete = rpc_call(
+        port,
+        "evidence.ingest.complete",
+        serde_json::json!({"session_id": session_id}),
+    )
+    .await;
+    assert!(complete["error"].is_null(), "{}", complete);
+    assert_eq!(complete["result"]["parser_status"], "Succeeded");
+    assert!(complete["result"]["observations_created"].as_u64().unwrap() > 0);
+    assert_eq!(complete["result"]["sha256"], expected_sha256);
+    assert_eq!(complete["result"]["blake3"], expected_blake3);
+    let artifact_id =
+        core_domain::id::EntityId::parse(complete["result"]["artifact_id"].as_str().unwrap())
+            .unwrap();
+    let before = canonical(
+        app.storage
+            .list_observations_for_artifact(artifact_id)
+            .unwrap(),
+    );
+    let custody_before = app
+        .storage
+        .list_custody_events_for_artifact(artifact_id)
+        .unwrap()
+        .len();
+
+    let legacy = rpc_call(
+        port,
+        "evidence.ingest",
+        serde_json::json!({
+            "case_id": case_id,
+            "filename": "tls12-legacy.pcap",
+            "content_base64": base64::engine::general_purpose::STANDARD.encode(&bytes)
+        }),
+    )
+    .await;
+    assert!(legacy["error"].is_null(), "{}", legacy);
+    let legacy_id =
+        core_domain::id::EntityId::parse(legacy["result"]["artifact_id"].as_str().unwrap())
+            .unwrap();
+    let legacy_snapshot = canonical(
+        app.storage
+            .list_observations_for_artifact(legacy_id)
+            .unwrap(),
+    );
+    assert_eq!(before, legacy_snapshot);
+
+    let repeat = rpc_call(
+        port,
+        "evidence.ingest.complete",
+        serde_json::json!({"session_id": session_id}),
+    )
+    .await;
+    assert_eq!(
+        repeat["result"]["artifact_id"],
+        complete["result"]["artifact_id"]
+    );
+    assert_eq!(
+        repeat["result"]["observations_created"],
+        complete["result"]["observations_created"]
+    );
+    assert_eq!(
+        canonical(
+            app.storage
+                .list_observations_for_artifact(artifact_id)
+                .unwrap()
+        ),
+        before
+    );
+    assert_eq!(
+        app.storage
+            .list_custody_events_for_artifact(artifact_id)
+            .unwrap()
+            .len(),
+        custody_before
+    );
+
+    server_handle.abort();
+    drop(app);
+    let reopened = EngineApp::new(cas_dir, db_path).unwrap();
+    assert!(reopened.cas.has_object(&expected_blake3));
+    let after_restart = canonical(
+        reopened
+            .storage
+            .list_observations_for_artifact(artifact_id)
+            .unwrap(),
+    );
+    assert_eq!(before, after_restart);
+    let repeated_after_restart = reopened
+        .session_mgr
+        .complete_ingest(
+            core_domain::id::EntityId::parse(&session_id).unwrap(),
+            &reopened.storage,
+            &reopened.cas,
+            &reopened.correlation,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        repeated_after_restart.parser_status,
+        engine_server::evidence::ParserStatus::Succeeded
+    );
+    assert_eq!(
+        repeated_after_restart.observations_created,
+        complete["result"]["observations_created"].as_u64().unwrap()
+    );
+    assert_eq!(
+        canonical(
+            reopened
+                .storage
+                .list_observations_for_artifact(artifact_id)
+                .unwrap()
+        ),
+        after_restart
+    );
     let _ = tokio::fs::remove_dir_all(temp_dir).await;
 }

@@ -201,8 +201,15 @@ async fn test_end_to_end_binary_pcap_and_evtx_forensic_pipeline() {
     let pcap_result = pcap_adapter.parse_artifact(&pcap_file).await.unwrap();
     assert_eq!(pcap_result.exit_code, 0);
 
-    let parsed_packets: Vec<tool_adapters::pcap::ParsedPacket> =
+    let summary: tool_adapters::pcap::phase3::PcapParseResult =
         serde_json::from_slice(&pcap_result.stdout_bytes).unwrap();
+    assert_eq!(summary.packets_seen, 1);
+    assert_eq!(summary.packets_decoded, 1);
+
+    // The adapter's production output is a bounded summary. Use the explicit
+    // collection API for packet-level assertions instead of making the
+    // streaming adapter retain every packet in memory.
+    let parsed_packets = tool_adapters::pcap::phase3::parse_capture_collect(&pcap_file).unwrap();
     assert_eq!(parsed_packets.len(), 1);
     assert_eq!(parsed_packets[0].src_ip.as_deref(), Some("192.168.1.50"));
     assert_eq!(parsed_packets[0].dst_ip.as_deref(), Some("10.0.0.80"));

@@ -192,13 +192,38 @@ async fn test_evidence_ingest_pcap_produces_facts() {
         "unexpected error: {}",
         ingest_val
     );
-    assert_eq!(ingest_val["result"]["events_extracted"], 1);
+    assert!(
+        ingest_val["result"]["events_extracted"]
+            .as_u64()
+            .is_some_and(|count| count >= 2),
+        "packet and flow observations should both be persisted: {}",
+        ingest_val
+    );
     assert_eq!(ingest_val["result"]["facts_derived"], 1);
 
     let cid = core_domain::id::EntityId::parse(&case_id).unwrap();
     let facts = app.storage.get_facts_for_case(cid).unwrap();
     assert_eq!(facts.len(), 1);
     assert_eq!(facts[0].data["rule_id"], "CORR-WIN-003a");
+
+    let timeline_before = app.storage.list_timeline_events_for_case(cid).unwrap();
+    assert!(
+        !timeline_before.is_empty(),
+        "production ingest must persist TIME-001 projections"
+    );
+    let analysis_before =
+        engine_server::analysis::process_persisted_observations(&app.storage, cid).unwrap();
+    let timeline_after = app.storage.list_timeline_events_for_case(cid).unwrap();
+    let correlations_after = app.storage.list_correlations_for_case(cid).unwrap();
+    assert_eq!(timeline_before, timeline_after);
+    assert!(
+        correlations_after.is_empty(),
+        "unattributed network data must not be correlated"
+    );
+    assert_eq!(
+        analysis_before.timeline_events_created,
+        timeline_after.len() as u64
+    );
 
     // Unsupported extensions must be refused, not silently accepted.
     let bad_req = serde_json::json!({
@@ -214,5 +239,227 @@ async fn test_evidence_ingest_pcap_produces_facts() {
     let bad_resp = app.dispatch_request(&bad_req.to_string()).await;
     assert!(bad_resp.contains("\"status\":400"));
 
+    let _ = tokio::fs::remove_dir_all(scratch).await;
+}
+
+#[tokio::test]
+async fn phase4_production_evtx_ingest_persists_observations_and_timeline() {
+    use base64::Engine as _;
+
+    let scratch = std::env::temp_dir().join(format!("phase4_evtx_ingest_{}", uuid::Uuid::now_v7()));
+    let app = EngineApp::new(scratch.join("cas"), scratch.join("case.db")).unwrap();
+    let case: serde_json::Value = serde_json::from_str(
+        &app.dispatch_request(
+            r#"{"api_version":1,"request_id":"phase4-case","method":"cases.create","params":{"title":"Phase 4 EVTX"}}"#,
+        )
+        .await,
+    )
+    .unwrap();
+    let case_id = case["result"]["case_id"].as_str().unwrap().to_string();
+    let fixture = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/forensics/sysmon_real.evtx");
+    let ingest = serde_json::json!({
+        "api_version": 1,
+        "request_id": "phase4-sysmon",
+        "method": "evidence.ingest",
+        "params": {
+            "case_id": case_id,
+            "filename": "sysmon_phase4.evtx",
+            "content_base64": base64::engine::general_purpose::STANDARD.encode(
+                std::fs::read(fixture).unwrap()
+            )
+        }
+    });
+    let response: serde_json::Value =
+        serde_json::from_str(&app.dispatch_request(&ingest.to_string()).await).unwrap();
+    assert!(response["error"].is_null(), "{response}");
+
+    let case_id = core_domain::id::EntityId::parse(&case_id).unwrap();
+    assert_eq!(response["result"]["events_extracted"].as_u64(), Some(8));
+    assert_eq!(
+        app.storage
+            .list_observations_for_case(case_id)
+            .unwrap()
+            .len(),
+        8
+    );
+    assert_eq!(
+        app.storage
+            .list_timeline_events_for_case(case_id)
+            .unwrap()
+            .len(),
+        8
+    );
+    assert!(app
+        .storage
+        .list_correlations_for_case(case_id)
+        .unwrap()
+        .is_empty());
+    let _ = tokio::fs::remove_dir_all(scratch).await;
+}
+
+#[tokio::test]
+async fn phase3_h20_restart_and_cas_replay_preserve_network_semantics() {
+    use base64::Engine as _;
+    use std::fs;
+    use tool_adapters::pcap::phase3::{reconstruct_flows_with_artifact, Flow};
+    use tool_adapters::PcapAdapter;
+
+    fn fixture_bytes(name: &str) -> Vec<u8> {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/forensics/tls")
+            .join(name);
+        fs::read_to_string(path)
+            .unwrap()
+            .split_whitespace()
+            .flat_map(|part| {
+                (0..part.len())
+                    .step_by(2)
+                    .map(move |i| u8::from_str_radix(&part[i..i + 2], 16).unwrap())
+            })
+            .collect()
+    }
+
+    fn fixture_bytes_from_path(name: &str) -> Vec<u8> {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/forensics")
+            .join(name);
+        fs::read_to_string(path)
+            .unwrap()
+            .split_whitespace()
+            .flat_map(|part| {
+                (0..part.len())
+                    .step_by(2)
+                    .map(move |i| u8::from_str_radix(&part[i..i + 2], 16).unwrap())
+            })
+            .collect()
+    }
+
+    fn canonical(values: Vec<serde_json::Value>) -> Vec<serde_json::Value> {
+        let mut result: Vec<_> = values
+            .into_iter()
+            .map(|mut value| {
+                if let Some(object) = value.as_object_mut() {
+                    object.remove("id");
+                    object.remove("timestamp");
+                }
+                value
+            })
+            .collect();
+        result.sort_by_key(|value| value.to_string());
+        result
+    }
+
+    let scratch = std::env::temp_dir().join(format!("phase3_h20_{}", uuid::Uuid::now_v7()));
+    let cas_dir = scratch.join("cas");
+    let db_path = scratch.join("case.db");
+    let app = EngineApp::new(cas_dir.clone(), db_path.clone()).expect("open storage");
+    let case_resp = app
+        .dispatch_request(r#"{"api_version":1,"request_id":"h20-case","method":"cases.create","params":{"title":"H20"}}"#)
+        .await;
+    let case_id = serde_json::from_str::<serde_json::Value>(&case_resp).unwrap()["result"]
+        ["case_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let bytes = fixture_bytes("tls12_complete_clienthello.pcap.hex");
+    let ingest = serde_json::json!({
+        "api_version": 1,
+        "request_id": "h20-ingest",
+        "method": "evidence.ingest",
+        "params": {
+            "case_id": case_id,
+            "filename": "tls12.pcap",
+            "content_base64": base64::engine::general_purpose::STANDARD.encode(&bytes)
+        }
+    });
+    let ingest_value =
+        serde_json::from_str::<serde_json::Value>(&app.dispatch_request(&ingest.to_string()).await)
+            .unwrap();
+    assert!(ingest_value["error"].is_null(), "{}", ingest_value);
+    let artifact_id =
+        core_domain::id::EntityId::parse(ingest_value["result"]["artifact_id"].as_str().unwrap())
+            .unwrap();
+    let before = canonical(
+        app.storage
+            .list_observations_for_artifact(artifact_id)
+            .unwrap(),
+    );
+    assert!(before
+        .iter()
+        .any(|value| value["event_type"] == "network_flow"));
+    assert!(before
+        .iter()
+        .any(|value| value["data"]["_network_quality"].is_object()));
+
+    let artifact = app.storage.get_artifact(artifact_id).unwrap().unwrap();
+    let replay_path = app.cas.get_path_for_blake3(&artifact.hash_blake3);
+    let mut replay_packets = Vec::new();
+    let replay_summary = PcapAdapter::parse_capture_with_sink(&replay_path, |packet| {
+        replay_packets.push(packet);
+        Ok(())
+    })
+    .unwrap();
+    let replay_flows: Vec<Flow> =
+        reconstruct_flows_with_artifact(&artifact.hash_sha256, &replay_packets);
+    assert!(!replay_flows.is_empty());
+    let replay_flow_ids: Vec<_> = replay_flows
+        .iter()
+        .map(|flow| flow.flow_instance_id.clone())
+        .collect();
+    assert!(before.iter().any(|value| {
+        replay_flow_ids
+            .iter()
+            .any(|id| value["data"]["flow"]["flow_instance_id"] == *id)
+    }));
+    assert_eq!(
+        replay_summary.packets_decoded as usize,
+        replay_packets.len()
+    );
+
+    let pcapng = fixture_bytes_from_path("pcapng_multi_section_interfaces.pcapng.hex");
+    let pcapng_ingest = serde_json::json!({
+        "api_version": 1,
+        "request_id": "h20-pcapng",
+        "method": "evidence.ingest",
+        "params": {
+            "case_id": case_id,
+            "filename": "interfaces.pcapng",
+            "content_base64": base64::engine::general_purpose::STANDARD.encode(&pcapng)
+        }
+    });
+    let pcapng_value = serde_json::from_str::<serde_json::Value>(
+        &app.dispatch_request(&pcapng_ingest.to_string()).await,
+    )
+    .unwrap();
+    assert!(pcapng_value["error"].is_null(), "{}", pcapng_value);
+    let pcapng_id =
+        core_domain::id::EntityId::parse(pcapng_value["result"]["artifact_id"].as_str().unwrap())
+            .unwrap();
+    let pcapng_before = canonical(
+        app.storage
+            .list_observations_for_artifact(pcapng_id)
+            .unwrap(),
+    );
+    assert!(pcapng_before
+        .iter()
+        .any(|value| value["event_type"] == "network_flow"));
+
+    drop(app);
+    let reopened = EngineApp::new(cas_dir, db_path).expect("reopen storage");
+    let after = canonical(
+        reopened
+            .storage
+            .list_observations_for_artifact(artifact_id)
+            .unwrap(),
+    );
+    assert_eq!(before, after);
+    let pcapng_after = canonical(
+        reopened
+            .storage
+            .list_observations_for_artifact(pcapng_id)
+            .unwrap(),
+    );
+    assert_eq!(pcapng_before, pcapng_after);
     let _ = tokio::fs::remove_dir_all(scratch).await;
 }

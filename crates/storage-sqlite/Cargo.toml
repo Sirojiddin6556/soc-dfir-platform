@@ -7,6 +7,8 @@ license.workspace = true
 
 [dependencies]
 core-domain = { path = "../core-domain" }
+timeline-engine = { path = "../timeline-engine" }
+correlation-engine = { path = "../correlation-engine" }
 rusqlite.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
@@ -20,3 +22,4 @@ sha2.workspace = true
 hex.workspace = true
 blake3.workspace = true
 serde.workspace = true
+async-trait.workspace = true

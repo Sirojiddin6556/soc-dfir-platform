@@ -2,6 +2,44 @@ use crate::id::EntityId;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CaptureQuality {
+    Complete,
+    Degraded,
+    Partial,
+    Failed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FlowQuality {
+    Complete,
+    Partial,
+    Truncated,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ProtocolQuality {
+    Complete,
+    Degraded,
+    Partial,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NetworkObservationQuality {
+    pub capture: CaptureQuality,
+    pub flow: Option<FlowQuality>,
+    pub protocol: Option<ProtocolQuality>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NetworkDiagnosticProvenance {
+    pub artifact_digest: String,
+    pub packet_index: Option<u64>,
+    pub packet_locator: Option<String>,
+    pub flow_instance_id: Option<String>,
+    pub direction: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolRun {
     pub id: EntityId,
@@ -37,7 +75,11 @@ pub struct Observation {
     pub tool_run_id: Option<EntityId>,
     pub source_tool: String,
     pub raw_event_type: String,
-    pub source_timestamp: DateTime<Utc>,
+    pub source_timestamp: Option<DateTime<Utc>>,
     pub ingest_timestamp: DateTime<Utc>,
     pub data: serde_json::Value,
+    #[serde(default)]
+    pub network_quality: Option<NetworkObservationQuality>,
+    #[serde(default)]
+    pub network_provenance: Option<NetworkDiagnosticProvenance>,
 }

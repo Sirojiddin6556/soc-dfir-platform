@@ -3,6 +3,9 @@
 pub mod audit;
 pub mod cases;
 pub mod collaboration;
+pub mod ctf_artifacts_jobs;
+pub mod ctf_flags;
+pub mod ctf_workspace;
 pub mod evidence;
 pub mod membership;
 pub mod schema;
@@ -44,6 +47,10 @@ impl SqliteStorage {
         let conn = Connection::open(path)?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
+        conn.pragma_update(None, "cache_size", -64000)?;
+        conn.pragma_update(None, "mmap_size", 268435456)?;
+        conn.pragma_update(None, "temp_store", "MEMORY")?;
+        conn.pragma_update(None, "busy_timeout", 10000)?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
 
         let storage = Self {
@@ -77,6 +84,24 @@ impl SqliteStorage {
         conn.execute_batch(schema::MIGRATION_004_SQL)?;
         conn.execute_batch(schema::MIGRATION_005_SQL)?;
         conn.execute_batch(evidence::MIGRATION_006_SQL)?;
+        conn.execute_batch(schema::MIGRATION_007_SQL)?;
+        Self::apply_ctf_v002(&conn)?;
+        Ok(())
+    }
+
+    fn apply_ctf_v002(conn: &Connection) -> Result<(), SqliteStorageError> {
+        let exists: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='competitions'",
+                [],
+                |row| row.get(0),
+            )
+            .map(|count: i64| count > 0)
+            .unwrap_or(false);
+
+        if !exists {
+            conn.execute_batch(schema::MIGRATION_V002_CTF_CORE_SQL)?;
+        }
         Ok(())
     }
 
@@ -107,6 +132,21 @@ impl SqliteStorage {
 
     pub fn insert_observation(&self, obs: &Observation) -> Result<(), SqliteStorageError> {
         let conn = self.conn.lock().unwrap();
+        let mut data = obs.data.clone();
+        if let Some(object) = data.as_object_mut() {
+            if let Some(quality) = &obs.network_quality {
+                object.insert(
+                    "_network_quality".to_string(),
+                    serde_json::to_value(quality)?,
+                );
+            }
+            if let Some(provenance) = &obs.network_provenance {
+                object.insert(
+                    "_network_provenance".to_string(),
+                    serde_json::to_value(provenance)?,
+                );
+            }
+        }
         conn.execute(
             r#"INSERT INTO observations (
                 id, case_id, artifact_id, tool_run_id, source_tool,
@@ -119,12 +159,128 @@ impl SqliteStorage {
                 obs.tool_run_id.map(|id| id.to_string()),
                 obs.source_tool,
                 obs.raw_event_type,
-                obs.source_timestamp.to_rfc3339(),
+                obs.source_timestamp.as_ref().map(|t| t.to_rfc3339()),
                 obs.ingest_timestamp.to_rfc3339(),
-                serde_json::to_string(&obs.data)?,
+                serde_json::to_string(&data)?,
             ],
         )?;
         Ok(())
+    }
+
+    pub fn list_observations_for_case(
+        &self,
+        case_id: EntityId,
+    ) -> Result<Vec<Observation>, SqliteStorageError> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, artifact_id, tool_run_id, source_tool, raw_event_type, \
+             source_timestamp, ingest_timestamp, data_json \
+             FROM observations WHERE case_id = ?1 \
+             ORDER BY source_timestamp IS NULL, source_timestamp, id",
+        )?;
+        let rows = stmt.query_map(params![case_id.to_string()], |row| {
+            let id: String = row.get(0)?;
+            let artifact_id: Option<String> = row.get(1)?;
+            let tool_run_id: Option<String> = row.get(2)?;
+            let source_timestamp: Option<String> = row.get(5)?;
+            let ingest_timestamp: String = row.get(6)?;
+            let mut data: serde_json::Value = serde_json::from_str(&row.get::<_, String>(7)?)
+                .map_err(|error| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        7,
+                        rusqlite::types::Type::Text,
+                        Box::new(error),
+                    )
+                })?;
+            let network_quality = data
+                .get("_network_quality")
+                .cloned()
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(|error| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        7,
+                        rusqlite::types::Type::Text,
+                        Box::new(error),
+                    )
+                })?;
+            let network_provenance = data
+                .get("_network_provenance")
+                .cloned()
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(|error| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        7,
+                        rusqlite::types::Type::Text,
+                        Box::new(error),
+                    )
+                })?;
+            if let Some(object) = data.as_object_mut() {
+                object.remove("_network_quality");
+                object.remove("_network_provenance");
+            }
+            Ok(Observation {
+                id: EntityId::parse(&id).map_err(|error| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        0,
+                        rusqlite::types::Type::Text,
+                        Box::new(error),
+                    )
+                })?,
+                case_id,
+                artifact_id: artifact_id
+                    .as_deref()
+                    .map(EntityId::parse)
+                    .transpose()
+                    .map_err(|error| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            1,
+                            rusqlite::types::Type::Text,
+                            Box::new(error),
+                        )
+                    })?,
+                tool_run_id: tool_run_id
+                    .as_deref()
+                    .map(EntityId::parse)
+                    .transpose()
+                    .map_err(|error| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            2,
+                            rusqlite::types::Type::Text,
+                            Box::new(error),
+                        )
+                    })?,
+                source_tool: row.get(3)?,
+                raw_event_type: row.get(4)?,
+                source_timestamp: source_timestamp
+                    .as_deref()
+                    .map(chrono::DateTime::parse_from_rfc3339)
+                    .transpose()
+                    .map_err(|error| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            5,
+                            rusqlite::types::Type::Text,
+                            Box::new(error),
+                        )
+                    })?
+                    .map(|value| value.with_timezone(&chrono::Utc)),
+                ingest_timestamp: chrono::DateTime::parse_from_rfc3339(&ingest_timestamp)
+                    .map_err(|error| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            6,
+                            rusqlite::types::Type::Text,
+                            Box::new(error),
+                        )
+                    })?
+                    .with_timezone(&chrono::Utc),
+                data,
+                network_quality,
+                network_provenance,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(SqliteStorageError::Rusqlite)
     }
 
     pub fn insert_fact(&self, fact: &Fact) -> Result<(), SqliteStorageError> {
@@ -161,6 +317,151 @@ impl SqliteStorage {
             ],
         )?;
         Ok(())
+    }
+
+    pub fn insert_timeline_event(
+        &self,
+        event: &timeline_engine::TimelineEvent,
+    ) -> Result<(), SqliteStorageError> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT OR REPLACE INTO timeline_events (
+                event_id, case_id, source_timestamp, ingest_timestamp,
+                normalized_timestamp, source_kind, artifact_id, observation_id,
+                quality, provenance_json, data_json
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            params![
+                event.event_id,
+                event.case_id.to_string(),
+                event.source_timestamp.map(|value| value.to_rfc3339()),
+                event.ingest_timestamp.to_rfc3339(),
+                event.normalized_timestamp.map(|value| value.to_rfc3339()),
+                serde_json::to_string(&event.source_kind)?,
+                event.artifact_id.map(|value| value.to_string()),
+                event.observation_id.to_string(),
+                serde_json::to_string(&event.quality)?,
+                serde_json::to_string(&event.provenance)?,
+                serde_json::to_string(event)?,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_timeline_events_for_case(
+        &self,
+        case_id: EntityId,
+    ) -> Result<Vec<timeline_engine::TimelineEvent>, SqliteStorageError> {
+        let conn = self.conn.lock().unwrap();
+        let mut statement = conn.prepare(
+            "SELECT data_json FROM timeline_events
+             WHERE case_id = ?1
+             ORDER BY normalized_timestamp IS NULL, normalized_timestamp, event_id",
+        )?;
+        let rows = statement.query_map(params![case_id.to_string()], |row| {
+            let data: String = row.get(0)?;
+            serde_json::from_str(&data).map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    0,
+                    rusqlite::types::Type::Text,
+                    Box::new(error),
+                )
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    pub fn insert_correlation(
+        &self,
+        result: &correlation_engine::CorrelationResult,
+        case_id: EntityId,
+    ) -> Result<(), SqliteStorageError> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT OR REPLACE INTO correlations (
+                correlation_id, case_id, rule_id, rule_version,
+                supporting_observations_json, assertion_type,
+                verification_state, confidence, provenance_json
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                result.correlation_id,
+                case_id.to_string(),
+                result.rule_id,
+                result.rule_version,
+                serde_json::to_string(&result.supporting_observations)?,
+                serde_json::to_string(&result.assertion_type)?,
+                serde_json::to_string(&result.verification_state)?,
+                result.confidence,
+                serde_json::to_string(&result.provenance)?,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn clear_correlations_for_case(&self, case_id: EntityId) -> Result<(), SqliteStorageError> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "DELETE FROM correlations WHERE case_id = ?1",
+            params![case_id.to_string()],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_correlations_for_case(
+        &self,
+        case_id: EntityId,
+    ) -> Result<Vec<correlation_engine::CorrelationResult>, SqliteStorageError> {
+        let conn = self.conn.lock().unwrap();
+        let mut statement = conn.prepare(
+            "SELECT correlation_id, rule_id, rule_version,
+                    supporting_observations_json, assertion_type,
+                    verification_state, confidence, provenance_json
+             FROM correlations WHERE case_id = ?1 ORDER BY correlation_id",
+        )?;
+        let rows = statement.query_map(params![case_id.to_string()], |row| {
+            let correlation_id: String = row.get(0)?;
+            let rule_id: String = row.get(1)?;
+            let rule_version: String = row.get(2)?;
+            let supporting: String = row.get(3)?;
+            let assertion: String = row.get(4)?;
+            let verification: String = row.get(5)?;
+            let confidence: u8 = row.get(6)?;
+            let provenance: String = row.get(7)?;
+            Ok(correlation_engine::CorrelationResult {
+                correlation_id,
+                rule_id,
+                rule_version,
+                supporting_observations: serde_json::from_str(&supporting).map_err(|error| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        3,
+                        rusqlite::types::Type::Text,
+                        Box::new(error),
+                    )
+                })?,
+                assertion_type: serde_json::from_str(&assertion).map_err(|error| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        4,
+                        rusqlite::types::Type::Text,
+                        Box::new(error),
+                    )
+                })?,
+                verification_state: serde_json::from_str(&verification).map_err(|error| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        5,
+                        rusqlite::types::Type::Text,
+                        Box::new(error),
+                    )
+                })?,
+                confidence,
+                provenance: serde_json::from_str(&provenance).map_err(|error| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        7,
+                        rusqlite::types::Type::Text,
+                        Box::new(error),
+                    )
+                })?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
     pub fn get_facts_for_case(&self, case_id: EntityId) -> Result<Vec<Fact>, SqliteStorageError> {

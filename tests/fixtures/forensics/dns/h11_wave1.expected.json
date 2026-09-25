@@ -1,0 +1,20 @@
+{
+  "fixtures": [
+    {
+      "fixture": "dns_pointer_cycle.pcap.hex",
+      "layer_expected_invalid": "dns",
+      "container_expected_valid": true,
+      "expected_issue": "CompressionLoop",
+      "blake3": "ca7fb474ceb8929cb4118375b8a5f8541933cd552c1cf203c4f3e063e0b94b51",
+      "sha256": "9efb8e3c46c25b3144fc2d6472a82d177abeba96f1b99d6334da66ae27e10fda"
+    },
+    {
+      "fixture": "dns_truncated_rr.pcap.hex",
+      "layer_expected_invalid": "dns",
+      "container_expected_valid": true,
+      "expected_issue": "TruncatedRecord",
+      "blake3": "3f8503db7c16fba21451858333a789b65276d7be8fc3520579ec103f6568e393",
+      "sha256": "6db7d5bc945a936d4b4344709c408698a946ac06df8b78fc495899b912cf7892"
+    }
+  ]
+}

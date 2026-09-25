@@ -28,7 +28,6 @@ impl EvtxJsonExportAdapter {
         let mut records = Vec::new();
         let mut issues = Vec::new();
         let ingest_timestamp = Utc::now();
-        let mut record_offset = 0u64;
         let mut corrupted_records = 0u64;
 
         for (idx, line) in content.lines().enumerate() {
@@ -39,7 +38,9 @@ impl EvtxJsonExportAdapter {
 
             match serde_json::from_str::<serde_json::Value>(trimmed) {
                 Ok(val) => {
-                    let raw_record_hash = blake3::hash(trimmed.as_bytes()).to_hex().to_string();
+                    // This is the hash of the exported/decoded JSON line, never of an
+                    // originating EVTX record.  Keep the provenance claim explicit.
+                    let decoded_record_hash = blake3::hash(trimmed.as_bytes()).to_hex().to_string();
                     let event_root = val.get("Event").unwrap_or(&val);
                     let system = event_root
                         .get("System")
@@ -104,8 +105,8 @@ impl EvtxJsonExportAdapter {
                         .cloned()
                         .unwrap_or(serde_json::Value::Null);
 
-                    let chunk_index = (idx / 100) as u64;
-                    let record_locator = EvtxRecord::format_locator(chunk_index, record_id);
+                    // JSON exports do not carry physical EVTX chunk coordinates.
+                    let record_locator = EvtxRecord::format_locator(None, record_id);
 
                     records.push(EvtxRecord {
                         record_id,
@@ -121,19 +122,17 @@ impl EvtxJsonExportAdapter {
                         event_data,
                         user_data,
                         system_data: system,
-                        chunk_index,
-                        record_offset,
+                        chunk_index: None,
+                        physical_offset: None,
                         record_locator,
-                        raw_record_hash,
+                        decoded_record_hash,
                         parser_version: JSON_EXPORT_PARSER_VERSION.to_string(),
                     });
-
-                    record_offset += trimmed.len() as u64;
                 }
                 Err(e) => {
                     corrupted_records += 1;
                     issues.push(ParseIssue::new(
-                        Some((idx / 100) as u64),
+                        None,
                         None,
                         "JSON_LINE_PARSE_ERROR",
                         e.to_string(),
@@ -143,7 +142,8 @@ impl EvtxJsonExportAdapter {
             }
         }
 
-        let total_chunks = ((records.len() + corrupted_records as usize) / 100).max(1) as u64;
+        // Chunk coordinates are intentionally unavailable for a JSON export.
+        let total_chunks = 0;
 
         Ok(EvtxParseResult::new(
             records,

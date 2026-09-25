@@ -5,6 +5,7 @@ pub mod audit;
 pub mod broker;
 pub mod case;
 pub mod collaboration;
+pub mod ctf;
 pub mod epistemic;
 pub mod error;
 pub mod evidence;
@@ -25,13 +26,17 @@ pub use collaboration::{
     Channel, ChannelType, ChatMessage, CollabNotification, EntityRef, Permission, ReferenceType,
     Role, Team, TeamMember, User, UserPresence, UserSession, Workspace,
 };
+pub use ctf::*;
 pub use epistemic::{AssertionType, Confidence, PainLevel, Severity, VerificationState};
 pub use error::DomainError;
 pub use evidence::{Evidence, EvidenceMember};
 pub use fact::{EntityType, Fact};
 pub use graph::{AttackEdge, AttackGraph, AttackNode, GraphDelta};
 pub use id::EntityId;
-pub use observation::{Observation, RawToolResult, ToolRun};
+pub use observation::{
+    CaptureQuality, FlowQuality, NetworkDiagnosticProvenance, NetworkObservationQuality,
+    Observation, ProtocolQuality, RawToolResult, ToolRun,
+};
 pub use scenario::{GroundTruth, ScenarioManifest, VerificationReport};
 pub use taxonomy::{TaxonomyCandidate, TaxonomyMapping, TaxonomyNamespace, TaxonomyVersion};
 pub use workflow::{

@@ -29,10 +29,10 @@ fn create_sample_security_4624_record(record_id: u64, source_ts: DateTime<Utc>) 
         }),
         user_data: json!(null),
         system_data: json!({"EventID": 4624}),
-        chunk_index: 0,
-        record_offset: 1024,
-        record_locator: EvtxRecord::format_locator(0, record_id),
-        raw_record_hash: format!("hash_4624_{record_id}"),
+        chunk_index: None,
+        physical_offset: None,
+        record_locator: EvtxRecord::format_locator(None, record_id),
+        decoded_record_hash: format!("hash_4624_{record_id}"),
         parser_version: PARSER_VERSION.to_string(),
     }
 }
@@ -57,10 +57,10 @@ fn create_sample_security_4688_record(record_id: u64, source_ts: DateTime<Utc>) 
         }),
         user_data: json!(null),
         system_data: json!({"EventID": 4688}),
-        chunk_index: 0,
-        record_offset: 2048,
-        record_locator: EvtxRecord::format_locator(0, record_id),
-        raw_record_hash: format!("hash_4688_{record_id}"),
+        chunk_index: None,
+        physical_offset: None,
+        record_locator: EvtxRecord::format_locator(None, record_id),
+        decoded_record_hash: format!("hash_4688_{record_id}"),
         parser_version: PARSER_VERSION.to_string(),
     }
 }
@@ -85,10 +85,10 @@ fn create_sample_sysmon_record(
         event_data: data,
         user_data: json!(null),
         system_data: json!({"EventID": event_id}),
-        chunk_index: 1,
-        record_offset: 4096,
-        record_locator: EvtxRecord::format_locator(1, record_id),
-        raw_record_hash: format!("hash_sysmon_{event_id}_{record_id}"),
+        chunk_index: None,
+        physical_offset: None,
+        record_locator: EvtxRecord::format_locator(None, record_id),
+        decoded_record_hash: format!("hash_sysmon_{event_id}_{record_id}"),
         parser_version: PARSER_VERSION.to_string(),
     }
 }
@@ -228,8 +228,8 @@ fn test_gate2_source_timestamp_integrity() {
     let rec = create_sample_security_4624_record(500, original_source_time);
 
     let obs = EvtxNormalizer::normalize_record(case_id, None, None, &rec);
-    assert_eq!(obs.source_timestamp, original_source_time);
-    assert_ne!(obs.source_timestamp, obs.ingest_timestamp);
+    assert_eq!(obs.source_timestamp, Some(original_source_time));
+    assert_ne!(obs.source_timestamp, Some(obs.ingest_timestamp));
     assert!(obs.ingest_timestamp > original_source_time);
 }
 
@@ -251,10 +251,10 @@ fn test_gate2_no_fabricated_defaults() {
         event_data: json!(null),
         user_data: json!(null),
         system_data: json!(null),
-        chunk_index: 0,
-        record_offset: 0,
-        record_locator: "evtx://chunk/0/record/1".to_string(),
-        raw_record_hash: "hash_bare".to_string(),
+        chunk_index: None,
+        physical_offset: None,
+        record_locator: "evtx://record/1".to_string(),
+        decoded_record_hash: "hash_bare".to_string(),
         parser_version: "v1".to_string(),
     };
 
@@ -311,13 +311,13 @@ async fn test_gate2_file_based_streaming_reader_api() {
 // 8. Deterministic record locators & repeatable semantic output
 #[test]
 fn test_gate2_deterministic_record_locators() {
-    let loc1 = EvtxRecord::format_locator(42, 103552);
-    let loc2 = EvtxRecord::format_locator(42, 103552);
-    assert_eq!(loc1, "evtx://chunk/42/record/103552");
+    let loc1 = EvtxRecord::format_locator(None, 103552);
+    let loc2 = EvtxRecord::format_locator(None, 103552);
+    assert_eq!(loc1, "evtx://record/103552");
     assert_eq!(loc1, loc2);
 }
 
-// 9. Every Observation contains artifact_id, record_locator, and raw_record_hash
+// 9. Every Observation contains artifact_id, record locator, and decoded hash
 #[test]
 fn test_gate2_observation_provenance() {
     let case_id = EntityId::new_v7();
@@ -326,9 +326,9 @@ fn test_gate2_observation_provenance() {
 
     let obs = EvtxNormalizer::normalize_record(case_id, artifact_id, None, &rec);
     assert_eq!(obs.artifact_id, artifact_id);
-    assert_eq!(obs.data["record_locator"], "evtx://chunk/0/record/777");
+    assert_eq!(obs.data["record_locator"], "evtx://record/777");
     assert_eq!(obs.data["record_id"], 777);
-    assert_eq!(obs.data["raw_record_hash"], "hash_4624_777");
+    assert_eq!(obs.data["decoded_record_hash"], "hash_4624_777");
     assert_eq!(obs.data["parser_name"], "EvtxParser");
     assert_eq!(obs.data["parser_version"], PARSER_VERSION);
 }
@@ -341,4 +341,58 @@ fn test_gate2_no_external_process_invocation() {
         tool_adapters::evtx::JSON_EXPORT_PARSER_VERSION,
         "evtx-json-export/socdfir-1.0"
     );
+}
+
+#[tokio::test]
+async fn test_gate2_mandatory_real_binary_fixtures() {
+    let root =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/forensics");
+    let adapter = EvtxBinaryAdapter;
+    for name in ["security_real.evtx", "sysmon_real.evtx"] {
+        let path = root.join(name);
+        assert!(
+            path.exists(),
+            "required forensic fixture missing: {}",
+            path.display()
+        );
+        let result = adapter.parse_artifact(&path).await.unwrap();
+        let parsed: tool_adapters::evtx::EvtxParseResult =
+            serde_json::from_slice(&result.stdout_bytes).unwrap();
+        assert!(
+            !parsed.records.is_empty(),
+            "fixture decoded no records: {name}"
+        );
+        assert!(parsed
+            .records
+            .iter()
+            .all(|r| r.record_locator.starts_with("evtx://record/")));
+        assert!(parsed.records.iter().all(|r| r.physical_offset.is_none()));
+    }
+
+    for name in ["security_corrupt_chunk.evtx", "security_truncated.evtx"] {
+        let path = root.join(name);
+        assert!(
+            path.exists(),
+            "required corrupt fixture missing: {}",
+            path.display()
+        );
+        let result = adapter.parse_artifact(&path).await;
+        match result {
+            Err(_) => {}
+            Ok(raw) => {
+                let parsed: tool_adapters::evtx::EvtxParseResult =
+                    serde_json::from_slice(&raw.stdout_bytes).unwrap();
+                assert_ne!(
+                    parsed.quality,
+                    ParseQuality::Complete,
+                    "corrupt binary fixture was reported as complete: {name}"
+                );
+                assert!(
+                    !parsed.issues.is_empty()
+                        || parsed.corrupted_records > 0
+                        || parsed.damaged_chunks > 0
+                );
+            }
+        }
+    }
 }

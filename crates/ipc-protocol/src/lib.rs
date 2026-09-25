@@ -3,6 +3,14 @@
 use core_domain::id::EntityId;
 use serde::{Deserialize, Serialize};
 
+pub mod ctf_dto;
+pub mod events;
+pub mod jsonrpc;
+
+pub use ctf_dto::*;
+pub use events::*;
+pub use jsonrpc::*;
+
 pub const IPC_API_VERSION: u32 = 1;
 
 /// RFC 7807 Compliant Problem Details for API Errors

@@ -1,0 +1,18 @@
+﻿{
+    "schema":  "soc-dfir.phase4.local-corpus/v1",
+    "created_utc":  "2026-09-24T08:12:51.8633967Z",
+    "hostname":  "PC-3002",
+    "preferred_ipv4":  "172.16.121.32",
+    "endpoint":  "http://example.com/",
+    "scenario":  "PowerShell Invoke-WebRequest to an explicitly supplied test endpoint while pktmon captures the real packets.",
+    "files":  {
+                  "sysmon_evtx":  "sysmon.evtx",
+                  "traffic_pcapng":  "traffic.pcapng"
+              },
+    "collection":  {
+                       "sysmon_channel":  "Microsoft-Windows-Sysmon/Operational",
+                       "capture_tool":  "pktmon",
+                       "capture_seconds_after_request":  4,
+                       "filtered_port":  18765
+                   }
+}

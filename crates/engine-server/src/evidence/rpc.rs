@@ -54,6 +54,7 @@ pub async fn handle_ingest_complete(
     session_mgr: &IngestSessionManager,
     storage: &SqliteStorage,
     cas: &ContentAddressedStorage,
+    correlator: &correlation_engine::DeterministicCorrelationEngine,
 ) -> Result<Value, ProblemDetails> {
     let session_id = params
         .get("session_id")
@@ -67,7 +68,7 @@ pub async fn handle_ingest_complete(
         })?;
 
     let res = session_mgr
-        .complete_ingest(session_id, storage, cas)
+        .complete_ingest(session_id, storage, cas, correlator)
         .await?;
 
     Ok(json!(res))

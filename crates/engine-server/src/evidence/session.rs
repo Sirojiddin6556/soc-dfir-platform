@@ -2,6 +2,7 @@
 
 use super::staging::StagingManager;
 use super::token::{TokenManager, UploadTokenClaims};
+use super::{process_committed_artifact, ArtifactProcessingResult, ParserStatus};
 use chrono::Utc;
 use core_domain::artifact::Artifact;
 use core_domain::id::EntityId;
@@ -35,7 +36,12 @@ pub struct CompleteIngestResult {
     pub sha256: String,
     pub blake3: String,
     pub size_bytes: u64,
-    pub parser_status: String,
+    pub parser_status: ParserStatus,
+    pub observations_created: u64,
+    pub facts_created: u64,
+    pub diagnostics_created: u64,
+    pub parser_name: Option<String>,
+    pub parser_version: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -282,6 +288,7 @@ impl IngestSessionManager {
         session_id: EntityId,
         storage: &SqliteStorage,
         cas: &ContentAddressedStorage,
+        correlator: &correlation_engine::DeterministicCorrelationEngine,
     ) -> Result<CompleteIngestResult, ProblemDetails> {
         let mut session = storage
             .get_ingest_session(session_id)
@@ -294,6 +301,10 @@ impl IngestSessionManager {
                 .artifact_id
                 .and_then(|aid| storage.get_artifact(aid).ok().flatten())
             {
+                let observations_created = storage
+                    .list_observations_for_artifact(art.id)
+                    .map(|values| values.len() as u64)
+                    .unwrap_or(0);
                 return Ok(CompleteIngestResult {
                     session_id,
                     artifact_id: art.id,
@@ -302,7 +313,16 @@ impl IngestSessionManager {
                     sha256: art.hash_sha256,
                     blake3: art.hash_blake3,
                     size_bytes: art.file_size,
-                    parser_status: "PENDING_IMPLEMENTATION".to_string(),
+                    parser_status: if observations_created > 0 {
+                        ParserStatus::Succeeded
+                    } else {
+                        ParserStatus::NotApplicable
+                    },
+                    observations_created,
+                    facts_created: 0,
+                    diagnostics_created: 0,
+                    parser_name: Some("PcapAdapter".to_string()),
+                    parser_version: Some(tool_adapters::pcap::phase3::PARSER_VERSION.to_string()),
                 });
             }
         }
@@ -438,6 +458,29 @@ impl IngestSessionManager {
             }),
         );
 
+        let processing = match process_committed_artifact(
+            session.case_id,
+            &artifact,
+            &cas.get_path_for_blake3(&stored_hashes.blake3),
+            storage,
+            correlator,
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(error) => {
+                tracing::error!(artifact_id = %artifact.id, error = ?error, "post-CAS artifact processing failed");
+                ArtifactProcessingResult {
+                    parser_status: ParserStatus::Failed,
+                    observations_created: 0,
+                    facts_created: 0,
+                    diagnostics_created: 0,
+                    parser_name: Some("PcapAdapter".to_string()),
+                    parser_version: Some(tool_adapters::pcap::phase3::PARSER_VERSION.to_string()),
+                }
+            }
+        };
+
         Ok(CompleteIngestResult {
             session_id,
             artifact_id,
@@ -446,7 +489,12 @@ impl IngestSessionManager {
             sha256: stored_hashes.sha256,
             blake3: stored_hashes.blake3,
             size_bytes: stored_hashes.size_bytes,
-            parser_status: "PENDING_IMPLEMENTATION".to_string(),
+            parser_status: processing.parser_status,
+            observations_created: processing.observations_created,
+            facts_created: processing.facts_created,
+            diagnostics_created: processing.diagnostics_created,
+            parser_name: processing.parser_name,
+            parser_version: processing.parser_version,
         })
     }
 

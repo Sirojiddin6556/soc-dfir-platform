@@ -76,8 +76,7 @@ impl Normalizer for GenericLogNormalizer {
                         .get("source_timestamp")
                         .and_then(|v| v.as_str())
                         .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
-                        .map(|dt| dt.with_timezone(&chrono::Utc))
-                        .unwrap_or(now);
+                        .map(|dt| dt.with_timezone(&chrono::Utc));
 
                     observations.push(Observation {
                         id: EntityId::new_v7(),
@@ -89,6 +88,8 @@ impl Normalizer for GenericLogNormalizer {
                         source_timestamp: source_ts,
                         ingest_timestamp: now,
                         data,
+                        network_quality: None,
+                        network_provenance: None,
                     });
                 }
                 return Ok(observations);
@@ -111,9 +112,11 @@ impl Normalizer for GenericLogNormalizer {
                 tool_run_id: None,
                 source_tool: raw.tool_name.clone(),
                 raw_event_type: "log_entry".to_string(),
-                source_timestamp: now,
+                source_timestamp: None,
                 ingest_timestamp: now,
                 data,
+                network_quality: None,
+                network_provenance: None,
             });
         }
 
@@ -155,6 +158,15 @@ impl Normalizer for EvtxSecurityNormalizer {
                     _ => "security_event",
                 };
 
+                let source_ts = val
+                    .pointer("/System/TimeCreated/@SystemTime")
+                    .or_else(|| val.pointer("/Event/System/TimeCreated/#attributes/SystemTime"))
+                    .or_else(|| val.pointer("/TimeCreated/@SystemTime"))
+                    .or_else(|| val.get("TimeCreated"))
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                    .map(|dt| dt.with_timezone(&chrono::Utc));
+
                 observations.push(Observation {
                     id: EntityId::new_v7(),
                     case_id,
@@ -162,9 +174,11 @@ impl Normalizer for EvtxSecurityNormalizer {
                     tool_run_id: None,
                     source_tool: self.tool_name().to_string(),
                     raw_event_type: raw_type.to_string(),
-                    source_timestamp: now,
+                    source_timestamp: source_ts,
                     ingest_timestamp: now,
                     data: val,
+                    network_quality: None,
+                    network_provenance: None,
                 });
             }
         }
@@ -207,6 +221,15 @@ impl Normalizer for SysmonNormalizer {
                     _ => "sysmon_event",
                 };
 
+                let source_ts = val
+                    .pointer("/EventData/UtcTime")
+                    .or_else(|| val.get("UtcTime"))
+                    .or_else(|| val.pointer("/System/TimeCreated/@SystemTime"))
+                    .or_else(|| val.pointer("/Event/System/TimeCreated/#attributes/SystemTime"))
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                    .map(|dt| dt.with_timezone(&chrono::Utc));
+
                 observations.push(Observation {
                     id: EntityId::new_v7(),
                     case_id,
@@ -214,9 +237,11 @@ impl Normalizer for SysmonNormalizer {
                     tool_run_id: None,
                     source_tool: self.tool_name().to_string(),
                     raw_event_type: raw_type.to_string(),
-                    source_timestamp: now,
+                    source_timestamp: source_ts,
                     ingest_timestamp: now,
                     data: val,
+                    network_quality: None,
+                    network_provenance: None,
                 });
             }
         }

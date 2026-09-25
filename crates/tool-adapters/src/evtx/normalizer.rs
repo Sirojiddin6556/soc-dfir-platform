@@ -57,8 +57,8 @@ impl EvtxNormalizer {
             "record_locator": record.record_locator,
             "record_id": record.record_id,
             "chunk_index": record.chunk_index,
-            "record_offset": record.record_offset,
-            "raw_record_hash": record.raw_record_hash,
+            "physical_offset": record.physical_offset,
+            "decoded_record_hash": record.decoded_record_hash,
             "parser_name": "EvtxParser",
             "parser_version": record.parser_version,
             "event_id": record.event_id,
@@ -89,9 +89,11 @@ impl EvtxNormalizer {
             tool_run_id,
             source_tool: "evtx_normalizer".to_string(),
             raw_event_type: raw_event_type.to_string(),
-            source_timestamp: record.source_timestamp.unwrap_or(record.ingest_timestamp),
+            source_timestamp: record.source_timestamp,
             ingest_timestamp: record.ingest_timestamp,
             data: observation_data,
+            network_quality: None,
+            network_provenance: None,
         }
     }
 }
@@ -302,10 +304,10 @@ mod tests {
             event_data,
             user_data: Value::Null,
             system_data: Value::Null,
-            chunk_index: 2,
-            record_offset: 4096,
-            record_locator: EvtxRecord::format_locator(2, 1001),
-            raw_record_hash: "abcd1234ef5678".to_string(),
+            chunk_index: Some(2),
+            physical_offset: Some(4096),
+            record_locator: EvtxRecord::format_locator(Some(2), 1001),
+            decoded_record_hash: "abcd1234ef5678".to_string(),
             parser_version: "evtx-0.12/socdfir-1.0".to_string(),
         }
     }
@@ -331,8 +333,8 @@ mod tests {
         );
         let obs_4624 = EvtxNormalizer::normalize_record(case_id, artifact_id, None, &rec_4624);
         assert_eq!(obs_4624.raw_event_type, "logon_success");
-        assert_eq!(obs_4624.source_timestamp, past_time);
-        assert_ne!(obs_4624.source_timestamp, obs_4624.ingest_timestamp);
+        assert_eq!(obs_4624.source_timestamp, Some(past_time));
+        assert_ne!(obs_4624.source_timestamp, Some(obs_4624.ingest_timestamp));
         assert_eq!(obs_4624.data["target_user_name"], "Administrator");
         assert_eq!(obs_4624.data["logon_type"], 10);
         assert_eq!(
@@ -481,10 +483,10 @@ mod tests {
             event_data: Value::Null,
             user_data: Value::Null,
             system_data: Value::Null,
-            chunk_index: 0,
-            record_offset: 0,
-            record_locator: "evtx://chunk/0/record/42".to_string(),
-            raw_record_hash: "hash".to_string(),
+            chunk_index: None,
+            physical_offset: None,
+            record_locator: "evtx://record/42".to_string(),
+            decoded_record_hash: "hash".to_string(),
             parser_version: "v1".to_string(),
         };
 
@@ -496,5 +498,6 @@ mod tests {
         assert!(obs.data["user_sid"].is_null());
         assert_ne!(obs.data["computer"], "WORKSTATION-01");
         assert_ne!(obs.data["provider"], "Microsoft-Windows-Sysmon");
+        assert!(obs.source_timestamp.is_none());
     }
 }

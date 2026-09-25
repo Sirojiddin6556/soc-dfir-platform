@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
 
 use super::issues::ParseIssue;
-use super::model::{EvtxParseResult, EvtxRecord};
+use super::model::{EvtxParseResult, EvtxParseSummary, EvtxRecord};
 use chrono::{DateTime, Utc};
 use evtx::EvtxParser as NativeEvtxParser;
 use std::io::{Cursor, Read, Seek};
@@ -13,12 +13,65 @@ pub const PARSER_VERSION: &str = "evtx-0.12/socdfir-1.0";
 pub struct EvtxParser;
 
 impl EvtxParser {
-    /// Parses an EVTX file directly from a file path in a streaming fashion.
-    /// Memory consumption is O(chunk_size), not O(file_size).
-    pub fn parse_file(path: &Path) -> Result<EvtxParseResult, String> {
+    /// Parses an EVTX file with a streaming sink callback invoked per record.
+    /// Does NOT accumulate records into RAM, ensuring O(chunk_size) memory usage.
+    pub fn parse_file_with_sink<F>(path: &Path, sink: F) -> Result<EvtxParseSummary, String>
+    where
+        F: FnMut(EvtxRecord) -> Result<(), String>,
+    {
+        let file_len = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+        if file_len < 4096 || !(file_len - 4096).is_multiple_of(65536) {
+            return Err(format!("EVTX file is truncated: {file_len} bytes is not a 4096-byte header plus 64 KiB chunks"));
+        }
         let parser = NativeEvtxParser::from_path(path)
             .map_err(|e| format!("Failed to open EVTX file: {e}"))?;
-        Self::parse_records(parser)
+        Self::parse_reader_with_sink(parser, file_len, sink)
+    }
+
+    /// Parses an EVTX file in fixed batches, reducing call overhead while maintaining bounded memory.
+    pub fn parse_file_in_batches<F>(
+        path: &Path,
+        batch_size: usize,
+        mut handler: F,
+    ) -> Result<EvtxParseSummary, String>
+    where
+        F: FnMut(Vec<EvtxRecord>) -> Result<(), String>,
+    {
+        let batch_size = batch_size.max(1);
+        let mut batch = Vec::with_capacity(batch_size);
+        let summary = Self::parse_file_with_sink(path, |rec| {
+            batch.push(rec);
+            if batch.len() >= batch_size {
+                let to_send = std::mem::replace(&mut batch, Vec::with_capacity(batch_size));
+                handler(to_send)?;
+            }
+            Ok(())
+        })?;
+
+        if !batch.is_empty() {
+            handler(batch)?;
+        }
+
+        Ok(summary)
+    }
+
+    /// Parses an EVTX file directly from a file path into an in-memory EvtxParseResult.
+    pub fn parse_file(path: &Path) -> Result<EvtxParseResult, String> {
+        let mut records = Vec::new();
+        let summary = Self::parse_file_with_sink(path, |rec| {
+            records.push(rec);
+            Ok(())
+        })?;
+
+        Ok(EvtxParseResult {
+            records,
+            issues: summary.issues,
+            total_chunks: summary.total_chunks,
+            damaged_chunks: summary.damaged_chunks,
+            total_records: summary.records_parsed + summary.corrupt_records,
+            corrupted_records: summary.corrupt_records,
+            quality: summary.quality,
+        })
     }
 
     /// Parses an EVTX payload from in-memory bytes using a Seekable Cursor
@@ -26,41 +79,61 @@ impl EvtxParser {
         if bytes.is_empty() {
             return Err("EVTX buffer is empty".to_string());
         }
+        let file_len = bytes.len() as u64;
         let cursor = Cursor::new(bytes.to_vec());
         let parser = NativeEvtxParser::from_read_seek(cursor)
             .map_err(|e| format!("Failed to init EVTX parser from bytes: {e}"))?;
-        Self::parse_records(parser)
+
+        let mut records = Vec::new();
+        let summary = Self::parse_reader_with_sink(parser, file_len, |rec| {
+            records.push(rec);
+            Ok(())
+        })?;
+
+        Ok(EvtxParseResult {
+            records,
+            issues: summary.issues,
+            total_chunks: summary.total_chunks,
+            damaged_chunks: summary.damaged_chunks,
+            total_records: summary.records_parsed + summary.corrupt_records,
+            corrupted_records: summary.corrupt_records,
+            quality: summary.quality,
+        })
     }
 
-    fn parse_records<R: Read + Seek + Send + 'static>(
+    fn parse_reader_with_sink<R: Read + Seek + Send + 'static, F>(
         mut parser: NativeEvtxParser<R>,
-    ) -> Result<EvtxParseResult, String> {
-        let mut records = Vec::new();
+        file_len: u64,
+        mut sink: F,
+    ) -> Result<EvtxParseSummary, String>
+    where
+        F: FnMut(EvtxRecord) -> Result<(), String>,
+    {
         let mut issues = Vec::new();
         let mut corrupted_records = 0u64;
         let mut damaged_chunks = 0u64;
+        let mut records_parsed = 0u64;
 
         let ingest_timestamp = Utc::now();
-        let mut record_offset = 0u64;
 
-        for (idx, record_res) in parser.records_json().enumerate() {
+        for record_res in parser.records_json() {
             match record_res {
                 Ok(raw_record) => {
                     match parse_json_record(
                         &raw_record.data,
                         raw_record.event_record_id,
-                        idx as u64,
-                        record_offset,
                         ingest_timestamp,
                     ) {
                         Ok(rec) => {
-                            record_offset += raw_record.data.len() as u64;
-                            records.push(rec);
+                            records_parsed += 1;
+                            if let Err(e) = sink(rec) {
+                                return Err(format!("EVTX sink error: {e}"));
+                            }
                         }
                         Err(err) => {
                             corrupted_records += 1;
                             issues.push(ParseIssue::new(
-                                Some((idx / 100) as u64),
+                                None,
                                 Some(raw_record.event_record_id),
                                 "RECORD_JSON_PARSE_ERROR",
                                 err,
@@ -71,13 +144,13 @@ impl EvtxParser {
                 }
                 Err(e) => {
                     let err_msg = e.to_string();
-                    if err_msg.contains("chunk") || err_msg.contains("Chunk") {
+                    if err_msg.to_lowercase().contains("chunk") {
                         damaged_chunks += 1;
                     } else {
                         corrupted_records += 1;
                     }
                     issues.push(ParseIssue::new(
-                        Some((idx / 100) as u64),
+                        None,
                         None,
                         "EVTX_DECODE_ERROR",
                         err_msg,
@@ -87,14 +160,20 @@ impl EvtxParser {
             }
         }
 
-        let total_chunks = ((records.len() + corrupted_records as usize) / 100).max(1) as u64;
+        let total_chunks = if file_len > 4096 {
+            (file_len - 4096).div_ceil(65536).max(1)
+        } else if records_parsed > 0 || damaged_chunks > 0 {
+            1
+        } else {
+            0
+        };
 
-        Ok(EvtxParseResult::new(
-            records,
-            issues,
+        Ok(EvtxParseSummary::new(
+            records_parsed,
+            corrupted_records,
             total_chunks,
             damaged_chunks,
-            corrupted_records,
+            issues,
         ))
     }
 }
@@ -102,11 +181,9 @@ impl EvtxParser {
 fn parse_json_record(
     json_str: &str,
     record_id: u64,
-    record_idx: u64,
-    record_offset: u64,
     ingest_timestamp: DateTime<Utc>,
 ) -> Result<EvtxRecord, String> {
-    let raw_record_hash = blake3::hash(json_str.as_bytes()).to_hex().to_string();
+    let decoded_record_hash = blake3::hash(json_str.as_bytes()).to_hex().to_string();
     let val: serde_json::Value = serde_json::from_str(json_str)
         .map_err(|e| format!("Malformed JSON from evtx decoder: {e}"))?;
 
@@ -134,8 +211,7 @@ fn parse_json_record(
         .cloned()
         .unwrap_or(serde_json::Value::Null);
 
-    let chunk_index = record_idx / 100;
-    let record_locator = EvtxRecord::format_locator(chunk_index, record_id);
+    let record_locator = EvtxRecord::format_locator(None, record_id);
 
     Ok(EvtxRecord {
         record_id,
@@ -151,10 +227,10 @@ fn parse_json_record(
         event_data,
         user_data,
         system_data: system,
-        chunk_index,
-        record_offset,
+        chunk_index: None,
+        physical_offset: None,
         record_locator,
-        raw_record_hash,
+        decoded_record_hash,
         parser_version: PARSER_VERSION.to_string(),
     })
 }
@@ -339,8 +415,8 @@ mod tests {
 
     #[test]
     fn test_deterministic_record_locator() {
-        let loc1 = EvtxRecord::format_locator(5, 12345);
-        let loc2 = EvtxRecord::format_locator(5, 12345);
+        let loc1 = EvtxRecord::format_locator(Some(5), 12345);
+        let loc2 = EvtxRecord::format_locator(Some(5), 12345);
         assert_eq!(loc1, "evtx://chunk/5/record/12345");
         assert_eq!(loc1, loc2);
     }

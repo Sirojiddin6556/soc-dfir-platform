@@ -4,7 +4,43 @@ use core_domain::audit::AuditEvent;
 use core_domain::epistemic::{AssertionType, Confidence, PainLevel, Severity, VerificationState};
 use core_domain::fact::{EntityType, Fact};
 use core_domain::id::EntityId;
+use core_domain::observation::Observation;
 use storage_sqlite::SqliteStorage;
+
+fn phase4_observation(
+    case_id: EntityId,
+    artifact_id: EntityId,
+    id: EntityId,
+    event_type: &str,
+    timestamp: chrono::DateTime<chrono::Utc>,
+    data: serde_json::Value,
+) -> Observation {
+    Observation {
+        id,
+        case_id,
+        artifact_id: Some(artifact_id),
+        tool_run_id: None,
+        source_tool: if event_type == "process_create" {
+            "sysmon_parser".to_string()
+        } else {
+            "pcap_parser".to_string()
+        },
+        raw_event_type: event_type.to_string(),
+        source_timestamp: Some(timestamp),
+        ingest_timestamp: timestamp + chrono::Duration::seconds(1),
+        data,
+        network_quality: if event_type == "process_create" {
+            None
+        } else {
+            Some(core_domain::NetworkObservationQuality {
+                capture: core_domain::CaptureQuality::Complete,
+                flow: Some(core_domain::FlowQuality::Complete),
+                protocol: Some(core_domain::ProtocolQuality::Complete),
+            })
+        },
+        network_provenance: None,
+    }
+}
 
 #[test]
 fn test_sqlite_full_crud_and_query() {
@@ -197,4 +233,99 @@ fn test_forensic_custody_chain_verification_and_triggers() {
     assert!(update_res.is_err());
     let err_msg = update_res.unwrap_err().to_string();
     assert!(err_msg.contains("append-only"));
+}
+
+#[test]
+fn phase4_timeline_and_correlation_survive_restart() {
+    let db_path = std::env::temp_dir().join(format!("soc_dfir_phase4_{}.db", EntityId::new_v7()));
+    let case_id = EntityId::new_v7();
+    let artifact_id = EntityId::new_v7();
+    let source_time = chrono::DateTime::parse_from_rfc3339("2026-01-01T12:00:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+
+    let observations = vec![
+        phase4_observation(
+            case_id,
+            artifact_id,
+            EntityId::new_v7(),
+            "process_create",
+            source_time,
+            serde_json::json!({"host": "WS-01", "process_name": "powershell.exe"}),
+        ),
+        phase4_observation(
+            case_id,
+            artifact_id,
+            EntityId::new_v7(),
+            "dns_message",
+            source_time + chrono::Duration::seconds(10),
+            serde_json::json!({"host": "WS-01", "qname": "example.test"}),
+        ),
+        phase4_observation(
+            case_id,
+            artifact_id,
+            EntityId::new_v7(),
+            "tls_handshake",
+            source_time + chrono::Duration::seconds(20),
+            serde_json::json!({"host": "WS-01", "sni": "example.test"}),
+        ),
+        phase4_observation(
+            case_id,
+            artifact_id,
+            EntityId::new_v7(),
+            "dns_message",
+            source_time + chrono::Duration::seconds(30),
+            serde_json::json!({"host": "WS-01", "qname": "noise.test"}),
+        ),
+    ];
+
+    let storage = SqliteStorage::open(&db_path).unwrap();
+    storage
+        .insert_case(case_id, "Phase 4 acceptance", None)
+        .unwrap();
+    let artifact_time = source_time + chrono::Duration::seconds(1);
+    storage
+        .insert_artifact(&core_domain::artifact::Artifact {
+            id: artifact_id,
+            case_id,
+            hash_blake3: "blake3-phase4-fixture".to_string(),
+            hash_sha256: "sha256-phase4-fixture".to_string(),
+            original_name: "traffic.pcapng".to_string(),
+            file_size: 4096,
+            mime_type: "application/vnd.tcpdump.pcap".to_string(),
+            acquisition_method: "AcceptanceFixture".to_string(),
+            acquired_at: artifact_time,
+            ingested_at: artifact_time,
+        })
+        .unwrap();
+
+    let timeline = timeline_engine::project_observations(&observations);
+    for event in &timeline {
+        storage.insert_timeline_event(event).unwrap();
+    }
+    let correlations = correlation_engine::correlate_in_batches(&observations, 128).unwrap();
+    for result in &correlations {
+        storage.insert_correlation(result, case_id).unwrap();
+    }
+
+    let persisted_timeline = storage.list_timeline_events_for_case(case_id).unwrap();
+    let persisted_correlations = storage.list_correlations_for_case(case_id).unwrap();
+    assert_eq!(persisted_timeline, timeline);
+    assert_eq!(persisted_correlations, correlations);
+    drop(storage);
+
+    let reopened = SqliteStorage::open(&db_path).unwrap();
+    assert_eq!(
+        reopened.list_timeline_events_for_case(case_id).unwrap(),
+        timeline
+    );
+    assert_eq!(
+        reopened.list_correlations_for_case(case_id).unwrap(),
+        correlations
+    );
+
+    let replayed = correlation_engine::correlate_in_batches(&observations, 2048).unwrap();
+    assert_eq!(replayed, correlations);
+    drop(reopened);
+    std::fs::remove_file(&db_path).unwrap();
 }

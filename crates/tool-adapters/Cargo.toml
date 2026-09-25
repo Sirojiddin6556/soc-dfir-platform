@@ -11,6 +11,8 @@ thiserror.workspace = true
 async-trait.workspace = true
 tokio.workspace = true
 blake3.workspace = true
+sha2.workspace = true
+x509-parser.workspace = true
 chrono.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true

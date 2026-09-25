@@ -1,0 +1,28 @@
+{
+  "request": {
+    "packets": 3,
+    "flow_instances": 1,
+    "method": "GET",
+    "uri": "/admin",
+    "host": "example.test",
+    "content_length": 16,
+    "body_retained": false,
+    "raw_contains_body": true,
+    "reassembled_contains_body": true,
+    "observation_contains_body": false,
+    "serialized_observation_contains_body": false,
+    "blake3": "bef06a284e58787d281104a988baf9d9508008bbddf4a6bced90ea35ad56b230",
+    "sha256": "598b4c0bf94e50c3635ca8584facca9d852228b552c1f499f416733bb84873f5"
+  },
+  "response": {
+    "packets": 2,
+    "flow_instances": 1,
+    "status": 200,
+    "server": "nginx",
+    "content_type": "text/html",
+    "content_length": 16,
+    "body_retained": false,
+    "blake3": "c9ee7c4253beda0eb0d3faeb2d26deda0ccaf1a0f7b01997dcb2a45f8b5df965",
+    "sha256": "9ee2242ebf202d02a06e1a59f7d6fa5de9ff48dceb35884ca8a0550172bd55fc"
+  }
+}

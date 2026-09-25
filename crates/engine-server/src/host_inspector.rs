@@ -136,7 +136,7 @@ pub fn handle_host_correlation(
             tool_run_id: None,
             source_tool: "windows_process_collector".to_string(),
             raw_event_type: "process".to_string(),
-            source_timestamp: Utc::now(),
+            source_timestamp: Some(Utc::now()),
             ingest_timestamp: Utc::now(),
             data: json!({
                 "process_name": p.name,
@@ -149,6 +149,8 @@ pub fn handle_host_correlation(
                 "host": snap.host,
                 "host_ip": snap.host_ip
             }),
+            network_quality: None,
+            network_provenance: None,
         });
     }
 
@@ -160,7 +162,7 @@ pub fn handle_host_correlation(
             tool_run_id: None,
             source_tool: "windows_socket_collector".to_string(),
             raw_event_type: "network_socket".to_string(),
-            source_timestamp: Utc::now(),
+            source_timestamp: Some(Utc::now()),
             ingest_timestamp: Utc::now(),
             data: json!({
                 "local_address": s.local_address,
@@ -173,6 +175,8 @@ pub fn handle_host_correlation(
                 "host": snap.host,
                 "host_ip": snap.host_ip
             }),
+            network_quality: None,
+            network_provenance: None,
         });
     }
 
@@ -184,7 +188,7 @@ pub fn handle_host_correlation(
             tool_run_id: None,
             source_tool: "windows_service_collector".to_string(),
             raw_event_type: "service".to_string(),
-            source_timestamp: Utc::now(),
+            source_timestamp: Some(Utc::now()),
             ingest_timestamp: Utc::now(),
             data: json!({
                 "service_name": srv.service_name,
@@ -195,6 +199,8 @@ pub fn handle_host_correlation(
                 "host": snap.host,
                 "host_ip": snap.host_ip
             }),
+            network_quality: None,
+            network_provenance: None,
         });
     }
 
@@ -206,7 +212,7 @@ pub fn handle_host_correlation(
             tool_run_id: None,
             source_tool: "windows_autorun_collector".to_string(),
             raw_event_type: "autorun".to_string(),
-            source_timestamp: Utc::now(),
+            source_timestamp: Some(Utc::now()),
             ingest_timestamp: Utc::now(),
             data: json!({
                 "autorun_key": a.key,
@@ -216,6 +222,8 @@ pub fn handle_host_correlation(
                 "host": snap.host,
                 "host_ip": snap.host_ip
             }),
+            network_quality: None,
+            network_provenance: None,
         });
     }
 
@@ -227,7 +235,7 @@ pub fn handle_host_correlation(
             tool_run_id: None,
             source_tool: "windows_task_collector".to_string(),
             raw_event_type: "scheduled_task".to_string(),
-            source_timestamp: Utc::now(),
+            source_timestamp: Some(Utc::now()),
             ingest_timestamp: Utc::now(),
             data: json!({
                 "task_name": t.task_name,
@@ -237,6 +245,8 @@ pub fn handle_host_correlation(
                 "host": snap.host,
                 "host_ip": snap.host_ip
             }),
+            network_quality: None,
+            network_provenance: None,
         });
     }
 

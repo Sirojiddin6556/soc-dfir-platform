@@ -1,0 +1,20 @@
+﻿Invoke-WebRequest : 
+
+    
+        
+        Error response
+    
+    
+        Error response
+        Error code: 404
+        Message: File not found.
+        Error code explanation: 404 - Nothing matches the given URI.
+    
+
+
+C:\Users\Siroj\Projects\soc-dfir-platform\scripts\capture-phase4-local-corpus.ps1:100 знак:17
++     $response = Invoke-WebRequest -Uri $uri -UseBasicParsing
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : InvalidOperation: (System.Net.HttpWebRequest:HttpWebRequest) [Invoke-WebRequest], WebExc 
+   eption
+    + FullyQualifiedErrorId : WebCmdletWebResponseException,Microsoft.PowerShell.Commands.InvokeWebRequestCommand

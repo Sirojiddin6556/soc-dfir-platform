@@ -53,7 +53,7 @@ CREATE TABLE IF NOT EXISTS observations (
     tool_run_id TEXT REFERENCES tool_runs(id) ON DELETE SET NULL,
     source_tool TEXT NOT NULL,
     raw_event_type TEXT NOT NULL,
-    source_timestamp TEXT NOT NULL,
+    source_timestamp TEXT,
     ingest_timestamp TEXT NOT NULL,
     data_json TEXT NOT NULL
 );
@@ -492,3 +492,39 @@ CREATE TABLE IF NOT EXISTS cve_import_log (
     imported_at TEXT NOT NULL
 );
 "#;
+
+pub const MIGRATION_007_SQL: &str = r#"
+-- 39. Canonical forensic timeline and deterministic correlations (Phase 4)
+CREATE TABLE IF NOT EXISTS timeline_events (
+    event_id TEXT PRIMARY KEY,
+    case_id TEXT NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
+    source_timestamp TEXT,
+    ingest_timestamp TEXT NOT NULL,
+    normalized_timestamp TEXT,
+    source_kind TEXT NOT NULL,
+    artifact_id TEXT REFERENCES artifacts(id) ON DELETE SET NULL,
+    observation_id TEXT NOT NULL,
+    quality TEXT NOT NULL,
+    provenance_json TEXT NOT NULL,
+    data_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_timeline_case_time
+    ON timeline_events(case_id, normalized_timestamp, event_id);
+
+CREATE TABLE IF NOT EXISTS correlations (
+    correlation_id TEXT PRIMARY KEY,
+    case_id TEXT NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
+    rule_id TEXT NOT NULL,
+    rule_version TEXT NOT NULL,
+    supporting_observations_json TEXT NOT NULL,
+    assertion_type TEXT NOT NULL,
+    verification_state TEXT NOT NULL,
+    confidence INTEGER NOT NULL,
+    provenance_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_correlations_case_rule
+    ON correlations(case_id, rule_id, rule_version, correlation_id);
+"#;
+
+pub const MIGRATION_V002_CTF_CORE_SQL: &str =
+    include_str!("../migrations/V002_ctf_core_schema.sql");

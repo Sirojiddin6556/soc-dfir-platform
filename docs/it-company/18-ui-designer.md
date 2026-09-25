@@ -1,43 +1,323 @@
-# 18. UI Design System & Component Kit: Blue Team Cyber Range & SOC/DFIR Platform
+# 18. Дизайн-система, визуальный язык и UI Kit: CTF Unified Workspace Platform
 
-**Profile ID**: `PRF-18-UI`  
-**Status**: `COMPLETED`  
-**Input**: `docs/it-company/17-ux-designer.md`
-
----
-
-## 1. Color Palette & Dark Cyber Theme
-
-- **Background Canvas**: `#0d1117` (Deep Slate / Pitch Black)
-- **Card & Pane Surface**: `#161b22` (Subtle Charcoal)
-- **Border & Separators**: `#30363d` (Muted Gray)
-- **Typography Primary**: `#f0f6fc` (High Contrast White)
-- **Typography Muted**: `#8b949e` (Secondary Gray)
-- **Accents & Semantics**:
-  - Critical / Threat: `#f85149` (Vibrant Coral)
-  - Warning / Suspicious: `#d29922` (Warm Amber)
-  - Fact / Confirmed: `#2ea043` (Emerald Green)
-  - Info / Process: `#58a6ff` (Sky Blue)
-  - Network / Socket: `#bc8cff` (Purple)
+**Документ**: Спецификация визуального языка, дизайн-токенов и компонентов UI Kit  
+**Версия**: 1.0.0-final  
+**Роль**: 18 (UI Designer)  
+**Статус**: APPROVED  
+**Связанные документы**: [`17-ux-designer.md`](file:///C:/Users/Siroj/Projects/soc-dfir-platform/docs/it-company/17-ux-designer.md), [`05-security-architect.md`](file:///C:/Users/Siroj/Projects/soc-dfir-platform/docs/it-company/05-security-architect.md), [`project_state.json`](file:///C:/Users/Siroj/Projects/soc-dfir-platform/docs/it-company/project_state.json)
 
 ---
 
-## 2. Accessibility & Shape Encoding (NFR-UX-002 / WCAG AA)
+## 1. Концепция визуального языка: Deep Dark Terminal
 
-In compliance with technical specification NFR-UX-002, no state or entity type is communicated solely by color:
+Визуальный язык платформы спроектирован для высокоинтенсивных ночных CTF-сессий (24–48 часов непрерывной работы). Основная цель — свести к минимуму зрительное утомление оператора при анализе плотных массивов данных (шестнадцатеричные дампы, дизассемблерный листинг, ANSI-логи).
 
-| Entity Type | Shape Geometry | Text Badge | Color Accent |
+### Ключевые принципы эстетики:
+1. **Data Density First**: Высокая информационная плотность интерфейса без декоративного «воздуха». Компактные отступы, четкие границы, строгие линии (радиус скругления 0–4px).
+2. **Deep Space Backgrounds**: Холодные темно-серые и иссиня-черные подложки с дифференциацией слоев по глубине (Elevation 0..3) без использования размытых теней.
+3. **High-Contrast Monospace**: Шестнадцатеричные байты, смещения, адреса памяти и ANSI-терминал обладают жестким табличным выравниванием (`tabular-nums`) и коэффициентом контрастности $\ge 7:1$ (WCAG AAA).
+4. **Dual-Channel Semantics (Role 26a)**: Ни одно состояние (статус флага, категория задачи, уровень угрозы) не передается исключительно цветом. Каждый бейдж и маркер снабжен уникальной геометрической фигурой или буквенным глифом.
+
+---
+
+## 2. Цветовая палитра (Color Palette)
+
+### 2.1. Базовые поверхности и уровни глубины (Elevation)
+
+| Токен | Hex | Контраст к тексту | Назначение в интерфейсе |
 |---|---|---|---|
-| **Host / Machine** | Circle `●` | `[HOST]` | Blue `#58a6ff` |
-| **Process** | Hexagon `⬡` | `[PROC]` | Green `#2ea043` |
-| **Network Socket** | Diamond `◆` | `[NET]` | Purple `#bc8cff` |
-| **User Account** | Square `■` | `[USER]` | Cyan `#39c5bb` |
-| **Threat / Tactic** | Octagon `🛑` | `[ATT&CK]` | Red `#f85149` |
-| **File / Artifact** | Folded Sheet `📄` | `[FILE]` | Orange `#e3b341` |
+| `--bg-void` | `#090A0F` | 15.2:1 | Оконная рамка, внешняя канва приложения, фон пустого экрана |
+| `--bg-surface-0` | `#0D1117` | 14.4:1 | Рабочая зона: фон Hex Viewport, холст терминала xterm |
+| `--bg-surface-1` | `#161B22` | 12.1:1 | Боковые панели (Scope Tree, Flag Drawer), статусная строка |
+| `--bg-surface-2` | `#21262D` | 8.9:1 | Карточки задач в матрице, шаги Recipe Builder, инпуты |
+| `--bg-surface-3` | `#30363D` | 6.4:1 | Активные оверлеи, модальные окна, ховер-состояния списков |
+
+### 2.2. Границы и разделители
+
+| Токен | Hex | Толщина | Применение |
+|---|---|---|---|
+| `--border-subtle` | `#21262D` | 1px | Внутренние разделители панелей, сетка Hex-таблицы |
+| `--border-default` | `#30363D` | 1px | Карточки, поля ввода, внешние контуры контейнеров |
+| `--border-strong` | `#484F58` | 1px | Активные вкладки, разделитель Splitter при наведении |
+| `--border-focus` | `#00E5FF` | 2px | Кольцо фокуса клавиатурной навигации (`outline-offset: 2px`) |
+
+### 2.3. Текстовая иерархия
+
+| Токен | Hex | Контраст к Surface-0 | Назначение |
+|---|---|---|---|
+| `--text-primary` | `#F0F6FC` | 14.4:1 (AAA) | Значения байт в Hex, заголовки, ввод команд |
+| `--text-secondary` | `#8B949E` | 7.2:1 (AAA) | Метаданные, подписи параметров, метки времени |
+| `--text-offset` | `#79C0FF` | 9.5:1 (AAA) | Шестнадцатеричные адреса/смещения (`00004120`) |
+| `--text-muted` | `#6E7681` | 4.8:1 (AA+) | Плейсхолдеры, неактивные переключатели |
+| `--text-ascii-dot`| `#30363D` | 2.1:1 | Непечатаемые символы (`.`) в ASCII-колонке Hex-вьюера |
+
+### 2.4. Статусные индикаторы и сигнальные цвета
+
+| Семантическое состояние | Hex заливки | Hex акцента | Контраст | Глиф / Символ |
+|---|---|---|---|---|
+| **Flag Candidate** | `#2E2305` | `#F59E0B` (Amber) | 8.8:1 | `[?]` / `⬡` Шестиугольник |
+| **Flag Accepted (Solved)**| `#062E1E` | `#10B981` (Emerald) | 9.2:1 | `[✓]` / `◼` Квадрат |
+| **Flag Rejected** | `#330C14` | `#F43F5E` (Rose) | 8.1:1 | `[✕]` / `▲` Треугольник вверх |
+| **Job Running / Active** | `#082838` | `#00E5FF` (Cyan) | 12.3:1 | `[⟳]` / `●` Пульсирующая точка |
+| **Kill / Interrupted (Panic)**| `#3B0D0C` | `#EF4444` (Crimson) | 7.9:1 | `[■]` / `◆` Ромб |
+| **Masked Secret (Redacted)**| `#24123A` | `#C084FC` (Purple) | 9.4:1 | `[🔒]` / `⎔` Щит |
+
+### 2.5. Категории CTF соревнований (Colorblind-Safe)
+
+| Категория | Hex акцента | Hex фона бейджа | Иконка / Глиф | Значение формы |
+|---|---|---|---|---|
+| **Web** | `#38BDF8` (Sky) | `#082F49` | `[W] ◈` | Алмаз (Diamond) |
+| **Crypto** | `#FBBF24` (Gold) | `#451A03` | `[C] ⬡` | Гексагон (Hexagon) |
+| **Reverse** | `#A78BFA` (Violet) | `#2E1065` | `[R] ⎔` | Полигон (Octagon) |
+| **Pwn** | `#FB7185` (Rose) | `#4C0519` | `[P] ▲` | Опасность (Triangle) |
+| **Forensics** | `#2DD4BF` (Teal) | `#042F2E` | `[F] ◼` | Блок / Диск (Square) |
+| **Stego** | `#F472B6` (Pink) | `#500724` | `[S] ●` | Окружность (Circle) |
+| **OSINT** | `#60A5FA` (Blue) | `#172554` | `[O] ◉` | Радар (Target) |
+| **Misc** | `#94A3B8` (Slate) | `#0F172A` | `[M] ★` | Звезда (Star) |
 
 ---
 
-## 3. Typography & Spacing
-- **Interface Font**: System UI / Inter (`12px`, `14px`, `16px`)
-- **Forensic / Code Font**: `JetBrains Mono` / `Consolas` (`11px`, `13px`) for hashes, timestamps, JSON, and network IPs.
-- **Elevation**: Flat with 1px border highlights; no glossy or heavy shadows to preserve maximum data density.
+## 3. Типографика (Typography Hierarchy)
+
+### 3.1. Шрифтовые стеки
+* **Monospace Stack** (Hex Viewport, Disassembly, Terminal, Offsets, RegEx, Hashes):  
+  `'JetBrains Mono', 'Cascadia Code', 'Fira Code', 'Consolas', monospace`  
+  *Настройки*: `font-feature-settings: "tnum" 1, "zero" 1; letter-spacing: 0.02em;`
+* **UI Sans Stack** (Интерфейс, диалоги, настройки, навигация):  
+  `'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif`  
+  *Настройки*: `font-feature-settings: "cv02", "cv03", "cv04", "cv11";`
+
+### 3.2. Матрица стилей текста
+
+| Стиль | Семейство | Размер / Line-Height | Weight | Применение |
+|---|---|---|---|---|
+| `display-bold` | Sans | 20px / 28px (1.4) | 700 | Название соревнования, Scoreboard |
+| `h1-semibold` | Sans | 16px / 24px (1.5) | 600 | Заголовки экранов и модальных окон |
+| `h2-medium` | Sans | 14px / 20px (1.43)| 500 | Заголовки панелей, имя таски |
+| `body-ui` | Sans | 13px / 18px (1.38)| 400 | Описания тасок, параметры, текст UI |
+| `caption-ui` | Sans | 11px / 16px (1.45)| 500 | Метаданные, бейджи, хоткей-подсказки |
+| `mono-hex` | Mono | 13px / 20px (1.54)| 500 | Байты Hex, ASCII-столбец (строгий грид) |
+| `mono-offset` | Mono | 12px / 20px (1.66)| 400 | Смещения Hex (`0x00004120`) |
+| `mono-term` | Mono | 12px / 18px (1.5) | 400 | Вывод терминала, поток stdout/stderr |
+| `mono-badge` | Mono | 10px / 14px (1.4) | 700 | Теги категорий, хэши CAS, статусы |
+
+---
+
+## 4. Дизайн-токены (Design Tokens Specification)
+
+### 4.1. Сетка отступов (4px Base Spacing)
+* `spacing-0`: `0px`
+* `spacing-1`: `4px` (микро-отступы между иконкой и текстом, паддинги бейджей)
+* `spacing-2`: `8px` (паддинги кнопок, зазоры между тегами)
+* `spacing-3`: `12px` (зазоры в карточках, паддинг элементов списков)
+* `spacing-4`: `16px` (основной внутренний отступ панелей и карточек)
+* `spacing-6`: `24px` (отступы модальных окон, разделители секций)
+* `spacing-8`: `32px` (макро-сетка рабочей области)
+
+### 4.2. Скругления (Border Radii)
+* `radius-none`: `0px` (Hex-таблицы, окна терминала, сплиттеры)
+* `radius-sm`: `2px` (Теги категорий, хоткей-плашки, полосы скроллбара)
+* `radius-md`: `4px` (Кнопки, инпуты, карточки рецептов, дропдауны)
+* `radius-lg`: `6px` (Модальные окна, Drawer шторка)
+* `radius-full`: `9999px` (Статусные пилюли, индикаторы соединения)
+
+### 4.3. Z-Index слои
+* `z-base`: `0` (Рабочая зона, виртуализированные холсты)
+* `z-sticky`: `10` (Фиксированные заголовки Hex и терминала, разделители панелей)
+* `z-drawer`: `50` (Шторка флагов и гипотез справа)
+* `z-dropdown`: `100` (Контекстные меню, выпадающие списки)
+* `z-modal`: `500` (Модальные окна подтверждений и распаковки)
+* `z-toast`: `1000` (Системные алерты, бейдж перегрузки Backpressure)
+
+### 4.4. Токены в формате CSS Variables
+
+```css
+:root {
+  /* Surfaces */
+  --bg-void: #090A0F;
+  --bg-surface-0: #0D1117;
+  --bg-surface-1: #161B22;
+  --bg-surface-2: #21262D;
+  --bg-surface-3: #30363D;
+
+  /* Borders */
+  --border-subtle: #21262D;
+  --border-default: #30363D;
+  --border-strong: #484F58;
+  --border-focus: #00E5FF;
+
+  /* Text & Foreground */
+  --text-primary: #F0F6FC;
+  --text-secondary: #8B949E;
+  --text-offset: #79C0FF;
+  --text-muted: #6E7681;
+
+  /* Semantic Accents */
+  --accent-cyan: #00E5FF;
+  --accent-emerald: #10B981;
+  --accent-amber: #F59E0B;
+  --accent-rose: #F43F5E;
+  --accent-crimson: #EF4444;
+  --accent-purple: #C084FC;
+
+  /* Focus & Focus Ring */
+  --focus-ring: 0 0 0 2px var(--bg-void), 0 0 0 4px var(--border-focus);
+
+  /* Fonts */
+  --font-mono: 'JetBrains Mono', 'Cascadia Code', 'Fira Code', monospace;
+  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+```
+
+---
+
+## 5. Спецификация UI Kit компонентов
+
+### 5.1. Компонент: Кнопки (Buttons)
+
+| Вариант | Background | Border | Текст | Hover | Active / Focus |
+|---|---|---|---|---|---|
+| **Primary** | `#00E5FF` | None | `#090A0F` (Bold) | `#33EBFF` (Лёгкое свечение) | `#00B8CC`, ring: `--focus-ring` |
+| **Secondary**| `#21262D` | `1px solid #30363D` | `#F0F6FC` | `#30363D`, border: `#484F58` | `#161B22`, ring: `--focus-ring` |
+| **Destructive / Panic** | `#DC2626` | None | `#FFFFFF` (Bold) | `#EF4444` | `#B91C1C` |
+| **Ghost / Tool**| Transparent | None | `#8B949E` | `#21262D`, text: `#F0F6FC` | `#30363D` |
+| **Disabled** | `#161B22` | `1px solid #21262D` | `#484F58` | Курсор: `not-allowed`, без изменений | Без фокуса |
+
+*Спецификация Panic Kill Button (`F9`)*:  
+Высота 32px, цвет фона `#DC2626`, иконка `■`, надпись `Kill Tree (F9)`, при нажатии мгновенно переходит в анимацию пульсации со сменой текста на `Terminating...`.
+
+### 5.2. Компонент: Виртуализированный Hex Viewport
+
+```text
++---------------------------------------------------------------------------------------------------------+
+| OFFSET (Gutter) | 00 01 02 03 04 05 06 07   08 09 0A 0B 0C 0D 0E 0F | ASCII DECODE     | ENTROPY       |
++-----------------+---------------------------------------------------+------------------+---------------+
+| 00004120        | 54 68 69 73 20 70 72 6f   67 72 61 6d 20 63 61 6e | This program can | [######....]  |
+| 00004130 [SEL]  |[6e 6f 74 20 62 65 20 72]  67 61 6d 20 63 61 6e 20 |[not be r]gam can | [######....]  |
++---------------------------------------------------------------------------------------------------------+
+```
+
+1. **Offset Gutter**:
+   - Ширина: 96px, цвет текста: `--text-offset` (`#79C0FF`), выравнивание: `text-align: right`, разделитель справа: `1px solid #30363D`.
+2. **Byte Matrix**:
+   - Высота строки строго 20px. 16 байт в строке.
+   - Разбивка на 2 полу-блока по 8 байт с центральным промежутком 16px.
+   - Чередование яркости байт для удобства сканирования взглядом: четные байты `#F0F6FC`, нечетные байты `#C9D1D9`.
+   - Нулевые байты (`00`) отображаются приглушенным серым `#484F58`.
+   - Символы с высокой энтропией подсвечиваются мягким пурпурным градиентом.
+3. **ASCII Column**:
+   - Ширина: 16 символов + паддинги (160px).
+   - Печатаемые символы (ASCII 32–126): цвет `#7EE787` (Soft Mint).
+   - Непечатаемые символы (0–31, 127+): символ точки `·` цветом `#30363D`.
+4. **Выделение (Selection Highlight)**:
+   - Синхронное выделение диапазона в Hex и ASCII колонках.
+   - Фон выделения: `rgba(0, 229, 255, 0.22)`, контур: `1px solid #00E5FF`.
+
+### 5.3. Компонент: Terminal & Log Output (xterm styling)
+
+1. **Холст**: Фон `--bg-surface-0` (`#0D1117`), шрифт `mono-term` (12px / 18px).
+2. **ANSI Цвета (Контраст $\ge 7:1$)**:
+   - `Black`: `#484F58`, `Red`: `#FF7B72`, `Green`: `#7EE787`, `Yellow`: `#FFA657`
+   - `Blue`: `#79C0FF`, `Magenta`: `#D2A8FF`, `Cyan`: `#56D4DD`, `White`: `#F0F6FC`
+3. **Backpressure Indicator (Плашка перегрузки)**:
+   - При стриминге > 50 МБ/с в правом верхнем углу всплывает компактный бейдж:
+     `[⚡ Backpressure Active: 60 FPS Throttled | CAS Spooling]` (Фон `#3B0D0C`, текст `#FF7B72`).
+4. **Secret Redaction Pill**:
+   - Маскированные секреты выводятся специальной плашкой:
+     `[🔒 REDACTED:CTFD_TOKEN]` (Фон `#24123A`, граница `1px solid #A855F7`, текст `#E9D5FF`, моноширинный).
+
+### 5.4. Компонент: Карточка шага рецепта (Recipe Step Card)
+
+```text
++-----------------------------------------------------------------------------------------------+
+| [:: Drag]  #02  XOR                                                 [Mute: ○]  [✕ Remove]     |
+| Mode: [Repeating Key       v]   Key: [0x5A               ] [Hex v]                            |
+| [Input: 128.0 KB] ---------------------------------------------> [Output: 128.0 KB (Entropy: 7.9)]|
++-----------------------------------------------------------------------------------------------+
+```
+
+* **Анатомия**:
+  - Drag Handle `[::]`: курсор `grab`, цвет `#6E7681`.
+  - Порядковый номер `#02`: цвет `#79C0FF`.
+  - Название операции `XOR`: полужирный Sans 13px, цвет `#F0F6FC`.
+  - Переключатель `Mute`: при отключении вся карточка получает прозрачность 0.45 и пунктирную границу `1px dashed #484F58`.
+  - Индикаторы ввода/вывода: бейджи с размером данных и энтропией.
+
+### 5.5. Компонент: Flag Candidate Pill & Drawer
+
+```text
++-----------------------------------------------------------------------------------------------+
+| ⬡ CANDIDATE #01                     [Source: strings]                     [14:22:04]          |
+| flag{s1mple_x0r_dec0de_succ3ssful}                                        [📋 Copy]           |
+|-----------------------------------------------------------------------------------------------|
+| [✔ Accept & Mark Solved (Ctrl+Shift+A)]               [✕ Reject False Positive (Ctrl+Shift+R)]|
++-----------------------------------------------------------------------------------------------+
+```
+
+* **Candidate State**: Рамка `1px solid #F59E0B`, фоновая подсветка `rgba(245, 158, 11, 0.08)`, текст флага выделен зеленым моноширинным шрифтом `#7EE787`.
+* **Accepted State**: Рамка `1px solid #10B981`, плашка `[✓ SOLVED]`, кнопка копирования в один клик.
+* **Rejected State**: Рамка `1px solid #F43F5E`, прозрачность 0.5, перечеркнутый текст, возможность восстановления.
+
+### 5.6. Компонент: Статусные бейджи и теги категорий
+
+Все бейджи имеют фиксированную высоту 20px, радиус 2px, отступ `0 6px`, шрифт `mono-badge` (10px, bold, uppercase):
+* `[W] ◈ WEB` — фон `#082F49`, рамка `#0284C7`, текст `#38BDF8`
+* `[C] ⬡ CRYPTO` — фон `#451A03`, рамка `#D97706`, текст `#FBBF24`
+* `[P] ▲ PWN` — фон `#4C0519`, рамка `#E11D48`, текст `#FB7185`
+* `[F] ◼ FORENSICS` — фон `#042F2E`, рамка `#0D9488`, текст `#2DD4BF`
+
+---
+
+## 6. Доступность и эргономика (WCAG AAA & Role 26a Synergy)
+
+### 6.1. Матрица контрастности ключевых элементов
+
+| Элемент | Цвет текста | Цвет фона | Контрастность | Стандарт WCAG |
+|---|---|---|---|---|
+| Основной текст UI | `#F0F6FC` | `#0D1117` | **14.4:1** | WCAG AAA (порог 7.0:1) |
+| Hex байты | `#F0F6FC` | `#0D1117` | **14.4:1** | WCAG AAA |
+| Hex смещения | `#79C0FF` | `#0D1117` | **9.5:1** | WCAG AAA |
+| Вторичные подписи | `#8B949E` | `#0D1117` | **7.2:1** | WCAG AAA |
+| Кнопка Primary (Cyan)| `#090A0F` | `#00E5FF` | **14.5:1** | WCAG AAA |
+| Flag Accepted бейдж | `#10B981` | `#062E1E` | **8.2:1** | WCAG AAA |
+
+### 6.2. Адаптация для операторов с нарушениями цветовосприятия
+1. **Протанопия и Дейтеранопия (Red/Green)**:
+   - Кнопка `Accept` (зеленая) снабжена символом `✓` и формой квадрата.
+   - Кнопка `Reject` (красная) снабжена символом `✕` и формой треугольника.
+   - Статус `Running` снабжен динамической иконкой вращения `⟳`.
+2. **Тританопия (Blue/Yellow)**:
+   - Категории `Web` и `Crypto` различаются глифами `◈` (ромб) и `⬡` (шестиугольник).
+
+### 6.3. Фокус и клавиатурная навигация
+* Единый высококонтрастный контур фокуса: `outline: 2px solid #00E5FF; outline-offset: 2px;`.
+* При фокусе на Hex-ячейке с клавиатуры стрелками контур перемещается без мерцания, а адрес в строке состояния мгновенно обновляется.
+
+### 6.4. Политика пониженного движения (Prefers-Reduced-Motion)
+При включении настройки ОС `prefers-reduced-motion: reduce`:
+* Пульсация индикатора `Job Running` отключается (статичный цвет `#00E5FF`).
+* Выдвижение Drawer шторки происходит мгновенно (0ms transition).
+* Плавный скролл в Hex Viewport заменяется на дискретный скачок к смещению.
+
+---
+
+## 7. Архитектурная передача следующей роли (Frontend Architect)
+
+| Входной токен / Элемент | Требование к реализации во фронтенде (Роль 16) |
+|---|---|
+| `--font-mono` | Подключение локальных WOFF2 шрифтов (JetBrains Mono) без внешних CDN (изоляция сети по 05-security) |
+| Hex Viewport | Фиксированная высота строки 20px для расчета `virtual-scroll window = Math.floor(height / 20)` |
+| ANSI Terminal | Интеграция WebGL-аддона xterm.js с переопределенной темой по палитре Раздела 5.3 |
+| Backpressure Badge | Подписка на событие IPC `job:buffer_threshold_exceeded` для показа тоста перегрузки |
+| Token Redaction | Рендеринг спанов с классом `.token-redacted` при обнаружении маски `[REDACTED:*]` |
+
+---
+
+## 8. Контрольный лист валидации UI (Design QA Checklist)
+
+- [x] Все ключевые пары «текст/фон» удовлетворяют порогу WCAG AAA ($\ge 7:1$).
+- [x] Все категории задач имеют уникальное трио: `Цвет + Буквенный код + Геометрическая фигура`.
+- [x] Моноширинный стек поддерживает точное табличное выравнивание без джиттера ширины колонок.
+- [x] Специфицированы все состояния интерактивных компонентов: default, hover, active, focus, disabled.
+- [x] Предусмотрены специализированные компоненты под требования безопасности (Panic Kill Button, Secret Redaction Pill, Backpressure Alert).
+- [x] Размер документа не превышает 500 строк.

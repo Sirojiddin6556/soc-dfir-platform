@@ -30,6 +30,12 @@ fn respond_res<T: serde::Serialize>(req_id: String, res: Result<T, ProblemDetail
 impl EngineApp {
     /// Dispatches incoming JSON-RPC command
     pub async fn dispatch_request(&self, req_json: &str) -> String {
+        if req_json.contains("\"jsonrpc\"") {
+            if let Some(resp) = crate::ctf_dispatch::try_dispatch_jsonrpc(self, req_json).await {
+                return resp;
+            }
+        }
+
         let parsed: Result<IpcRequest<serde_json::Value>, _> = serde_json::from_str(req_json);
         let req = match parsed {
             Ok(r) => r,
@@ -112,6 +118,7 @@ impl EngineApp {
                     &self.session_mgr,
                     &self.storage,
                     &self.cas,
+                    &self.correlation,
                 )
                 .await;
                 respond_res(req.request_id, res)
@@ -445,6 +452,20 @@ impl EngineApp {
                         vec!["artifact_id".to_string(), "case_id".to_string()],
                     )),
                 };
+                respond_res(req.request_id, res)
+            }
+            m if m.starts_with("competitions.")
+                || m.starts_with("challenges.")
+                || m.starts_with("artifacts.")
+                || m.starts_with("tools.")
+                || m.starts_with("jobs.")
+                || m.starts_with("recipes.")
+                || m.starts_with("flags.")
+                || m.starts_with("writeups.") =>
+            {
+                let res = crate::ctf_dispatch::handle_ctf_command(self, m, req.params)
+                    .await
+                    .map_err(|e| ipc_protocol::domain_error_to_problem_details(&e));
                 respond_res(req.request_id, res)
             }
             _ => {

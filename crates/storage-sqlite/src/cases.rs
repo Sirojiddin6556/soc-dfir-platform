@@ -217,7 +217,7 @@ pub fn list_observations_for_artifact_json(
             "id":          row.get::<_, String>(0)?,
             "tool":        row.get::<_, String>(1)?,
             "event_type":  row.get::<_, String>(2)?,
-            "timestamp":   row.get::<_, String>(3)?,
+            "timestamp":   row.get::<_, Option<String>>(3)?,
             "data":        data,
         }))
     })?;

@@ -13,8 +13,13 @@ chrono.workspace = true
 blake3.workspace = true
 sha2.workspace = true
 hex.workspace = true
+base64.workspace = true
 thiserror.workspace = true
 async-trait.workspace = true
+tokio = { workspace = true, features = ["full"] }
+regex.workspace = true
+flate2.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
 tool-adapters = { path = "../tool-adapters" }

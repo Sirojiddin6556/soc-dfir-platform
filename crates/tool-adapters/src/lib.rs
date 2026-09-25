@@ -137,6 +137,29 @@ impl ToolAdapter for EvtxJsonExportAdapter {
 /// Real Libpcap Binary Packet Capture Adapter
 pub struct PcapAdapter;
 
+impl PcapAdapter {
+    pub fn parse_capture_with_capture_sink<S: pcap::phase3::CaptureSink>(
+        path: &Path,
+        sink: S,
+    ) -> Result<pcap::phase3::PcapParseResult, ToolAdapterError> {
+        pcap::phase3::parse_capture_file_with_capture_sink(path, sink)
+            .map_err(ToolAdapterError::MalformedFormat)
+    }
+
+    /// Production packet-at-a-time API. The callback owns each packet only for
+    /// the duration of the call and must persist or otherwise consume it.
+    pub fn parse_capture_with_sink<F>(
+        path: &Path,
+        sink: F,
+    ) -> Result<pcap::phase3::PcapParseResult, ToolAdapterError>
+    where
+        F: FnMut(pcap::ParsedPacket) -> Result<(), String>,
+    {
+        pcap::phase3::parse_capture_file_with_sink(path, sink)
+            .map_err(ToolAdapterError::MalformedFormat)
+    }
+}
+
 #[async_trait]
 impl ToolAdapter for PcapAdapter {
     fn tool_name(&self) -> &'static str {
@@ -144,7 +167,7 @@ impl ToolAdapter for PcapAdapter {
     }
 
     fn version(&self) -> &'static str {
-        "1.1.0"
+        pcap::phase3::PARSER_VERSION
     }
 
     fn supported_extensions(&self) -> &'static [&'static str] {
@@ -156,14 +179,10 @@ impl ToolAdapter for PcapAdapter {
             return Err(ToolAdapterError::FileNotFound(path.display().to_string()));
         }
 
-        let bytes = tokio::fs::read(path)
-            .await
-            .map_err(|e| ToolAdapterError::ExecutionFailed(e.to_string()))?;
+        let summary = pcap::phase3::parse_capture_file_with_sink(path, |_| Ok(()))
+            .map_err(ToolAdapterError::MalformedFormat)?;
 
-        let parsed_packets =
-            pcap::parse_binary_pcap(&bytes).map_err(ToolAdapterError::MalformedFormat)?;
-
-        let serialized = serde_json::to_vec(&parsed_packets)
+        let serialized = serde_json::to_vec(&summary)
             .map_err(|e| ToolAdapterError::ExecutionFailed(e.to_string()))?;
         let output_hash = blake3::hash(&serialized).to_hex().to_string();
 
@@ -283,8 +302,14 @@ mod tests {
         assert_eq!(res.tool_name, "pcap_parser");
         assert_eq!(res.exit_code, 0);
 
-        // Verify decoded JSON content
-        let parsed: Vec<pcap::ParsedPacket> = serde_json::from_slice(&res.stdout_bytes).unwrap();
+        let summary: pcap::phase3::PcapParseResult =
+            serde_json::from_slice(&res.stdout_bytes).unwrap();
+        assert_eq!(summary.packets_seen, 1);
+        assert_eq!(summary.packets_decoded, 1);
+
+        // Detailed assertions use the explicitly bounded compatibility API;
+        // the adapter contract itself remains summary-only.
+        let parsed = pcap::phase3::parse_capture_collect(&temp_file).unwrap();
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].src_ip.as_deref(), Some("192.168.1.105"));
         assert_eq!(parsed[0].dst_ip.as_deref(), Some("10.0.0.15"));
@@ -345,9 +370,11 @@ mod tests {
     async fn test_parse_real_binary_evtx_single_chunk() {
         let fixture_path =
             std::path::Path::new("../../tests/fixtures/forensics/system_single_chunk.evtx");
-        if !fixture_path.exists() {
-            return;
-        }
+        assert!(
+            fixture_path.exists(),
+            "required forensic fixture missing: {}",
+            fixture_path.display()
+        );
 
         let adapter = EvtxBinaryAdapter;
         let res = adapter.parse_artifact(fixture_path).await.unwrap();
@@ -358,8 +385,11 @@ mod tests {
         assert!(parsed.total_records > 0 || !parsed.records.is_empty());
         for rec in &parsed.records {
             assert!(rec.record_id > 0);
-            assert!(rec.record_locator.starts_with("evtx://chunk/"));
-            assert!(!rec.raw_record_hash.is_empty());
+            assert!(
+                rec.record_locator.starts_with("evtx://record/")
+                    || rec.record_locator.starts_with("evtx://chunk/")
+            );
+            assert!(!rec.decoded_record_hash.is_empty());
         }
     }
 }

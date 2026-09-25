@@ -8,7 +8,7 @@ pub mod parser;
 
 pub use issues::{ParseIssue, ParseQuality};
 pub use json_export::{EvtxJsonExportAdapter, JSON_EXPORT_PARSER_VERSION};
-pub use model::{EvtxParseResult, EvtxRecord, ParsedEvtxRecord};
+pub use model::{EvtxParseResult, EvtxParseSummary, EvtxRecord, ParsedEvtxRecord};
 pub use normalizer::{extract_data_field, parse_sysmon_hashes, EvtxNormalizer};
 pub use parser::{EvtxParser, PARSER_VERSION};
 

@@ -5,6 +5,7 @@ import { EvidenceSpace } from './evidence/evidence.js';
 import { RangeSpace } from './range/range.js';
 import { SystemSpace } from './system/system.js';
 import { TeamPresence } from './collaboration/presence.js';
+import { CtfApp } from './ctf/ctf_app.js';
 
 class SocDfirApplication {
   constructor() {
@@ -16,6 +17,11 @@ class SocDfirApplication {
     this.evidence = new EvidenceSpace(this.ipc);
     this.range = new RangeSpace(this.ipc, (missionId) => this.launchMission(missionId));
     this.system = new SystemSpace(this.ipc);
+    this.ctfApp = new CtfApp({
+      ipc: this.ipc,
+      onNavigateLegacy: (caseId) => this.switchCase(caseId)
+    });
+    this.ctfMounted = false;
 
     this.currentSpace = 'investigation';
     this.timerSeconds = 0;
@@ -30,6 +36,10 @@ class SocDfirApplication {
     try { await this.ensureActiveCase(); } catch (e) { console.warn('[Case]', e.message); }
     try { await this.workspace.init(); } catch (e) { console.warn('[Workspace]', e.message); }
     try { await this.presence.init(); } catch (e) { console.warn('[Presence]', e.message); }
+    if (typeof window !== 'undefined' && window.location && window.location.hash.startsWith('#ctf-')) {
+      const ctfBtn = document.getElementById('nav-ctf-workspace');
+      if (ctfBtn) ctfBtn.click();
+    }
   }
 
   /**
@@ -81,16 +91,32 @@ class SocDfirApplication {
     this.currentSpace = space;
     const invWorkspace = document.getElementById('investigationWorkspace');
     const contextPanel = document.querySelector('.context-panel');
+    const ctfView = document.getElementById('view-ctf');
     let altContainer = document.getElementById('altSpaceContainer');
 
     if (space === 'investigation') {
       if (invWorkspace) invWorkspace.style.display = 'grid';
       if (contextPanel) contextPanel.style.display = 'grid';
+      if (ctfView) ctfView.classList.add('hidden');
       if (altContainer) altContainer.style.display = 'none';
       this.workspace.render();
+    } else if (space === 'ctf') {
+      if (invWorkspace) invWorkspace.style.display = 'none';
+      if (contextPanel) contextPanel.style.display = 'none';
+      if (altContainer) altContainer.style.display = 'none';
+      if (ctfView) {
+        ctfView.classList.remove('hidden');
+        if (!this.ctfMounted) {
+          this.ctfApp.mount(ctfView);
+          this.ctfMounted = true;
+        } else {
+          this.ctfApp.render();
+        }
+      }
     } else {
       if (invWorkspace) invWorkspace.style.display = 'none';
       if (contextPanel) contextPanel.style.display = 'none';
+      if (ctfView) ctfView.classList.add('hidden');
 
       if (!altContainer) {
         altContainer = document.createElement('div');

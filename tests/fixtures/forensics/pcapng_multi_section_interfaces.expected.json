@@ -1,0 +1,28 @@
+{
+  "format": "pcapng",
+  "packets": 3,
+  "interfaces": 3,
+  "expectations": [
+    {
+      "section": 0,
+      "interface": 0,
+      "resolution": "decimal:6",
+      "offset_seconds": 0,
+      "precision_loss": false
+    },
+    {
+      "section": 0,
+      "interface": 1,
+      "resolution": "decimal:9",
+      "offset_seconds": 3600,
+      "precision_loss": false
+    },
+    {
+      "section": 1,
+      "interface": 0,
+      "resolution": "binary:10",
+      "offset_seconds": -3600,
+      "precision_loss": true
+    }
+  ]
+}

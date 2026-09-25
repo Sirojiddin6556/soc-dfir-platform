@@ -1,0 +1,8 @@
+﻿Invoke-WebRequest : Невозможно соединиться с удаленным сервером
+C:\Users\Siroj\Projects\soc-dfir-platform\scripts\capture-phase4-local-corpus.ps1:108 знак:17
++     $response = Invoke-WebRequest -Uri $uri -UseBasicParsing
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : InvalidOperation: (System.Net.HttpWebRequest:HttpWebRequest) [Invoke-WebRequest], WebExc 
+   eption
+    + FullyQualifiedErrorId : WebCmdletWebResponseException,Microsoft.PowerShell.Commands.InvokeWebRequestCommand
+ 

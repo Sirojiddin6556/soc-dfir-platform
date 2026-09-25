@@ -10,7 +10,9 @@ use workflow_dag::{ResourceLimiter, WorkflowScheduler};
 
 use std::path::PathBuf;
 
+pub mod analysis;
 pub mod collaboration;
+pub mod ctf_dispatch;
 pub mod dispatch;
 pub mod evidence;
 pub mod host_inspector;
@@ -43,6 +45,7 @@ pub struct EngineApp {
     pub diagram: DiagramEngine,
     pub verifier: scenario_verifier::ScenarioVerifier,
     pub scoring: scoring_engine::ScoringEngine,
+    pub job_engine: core_domain::ctf::LocalJobEngine,
 }
 
 impl EngineApp {
@@ -93,6 +96,7 @@ impl EngineApp {
             diagram: DiagramEngine::new(),
             verifier: scenario_verifier::ScenarioVerifier::new(),
             scoring: scoring_engine::ScoringEngine::new(),
+            job_engine: core_domain::ctf::LocalJobEngine::new(),
         }
     }
 }
