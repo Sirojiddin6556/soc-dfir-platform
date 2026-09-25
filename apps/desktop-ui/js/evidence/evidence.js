@@ -26,8 +26,9 @@ function fmtDate(iso) {
 }
 
 export class EvidenceSpace {
-  constructor(ipc) {
+  constructor(ipc, onOpenInCtf = null) {
     this.ipc = ipc;
+    this.onOpenInCtf = onOpenInCtf;
     this.activeTab = 'artifacts';
     this.container = null;
   }
@@ -45,7 +46,7 @@ export class EvidenceSpace {
             <h2 style="font-size: 18px; font-weight: 700; color: var(--text-primary); margin-bottom: 4px;">◉ ХРАНИЛИЩЕ УЛИК И ЦЕПОЧКА ВЛАДЕНИЯ</h2>
           </div>
           <div>
-            <input type="file" id="evidenceFileInput" accept=".pcap,.pcapng,.cap,.evtx" style="display:none;">
+            <input type="file" id="evidenceFileInput" accept="*" style="display:none;">
             <button id="evidenceUploadBtn" style="background:var(--accent-primary);color:#000;border:none;padding:6px 14px;border-radius:4px;cursor:pointer;">+ Добавить улику</button>
           </div>
         </div>
@@ -116,8 +117,10 @@ export class EvidenceSpace {
               <td style="padding:8px;">${fmt(a.size)}</td>
               <td style="padding:8px;">${escapeHtml(a.method)}</td>
               <td style="padding:8px;">${fmtDate(a.acquired_at)}</td>
-              <td style="padding:8px;display:flex;gap:4px;">
+              <td style="padding:8px;display:flex;gap:4px;flex-wrap:wrap;">
                 <button class="obs-btn" data-id="${escapeHtml(a.id)}" data-name="${escapeHtml(a.name)}" style="background:var(--bg-surface);border:1px solid var(--border-muted);color:var(--text-primary);cursor:pointer;padding:4px 8px;border-radius:4px;">Наблюдения</button>
+                <button class="hex-btn" data-id="${escapeHtml(a.id)}" data-name="${escapeHtml(a.name)}" data-hash="${escapeHtml(a.hash_blake3)}" data-size="${escapeHtml(a.size)}" style="background:var(--bg-surface);border:1px solid var(--accent-info);color:var(--accent-info);cursor:pointer;padding:4px 8px;border-radius:4px;" title="Открыть артефакт в Hex Viewer и Recipe Studio">🔬 В Hex/CTF</button>
+                <button class="chain-btn" data-hash="${escapeHtml(a.hash_blake3)}" style="background:var(--bg-surface);border:1px solid var(--border-muted);color:var(--text-primary);cursor:pointer;padding:4px 8px;border-radius:4px;" title="Посмотреть цепочку владения (Chain of Custody)">📜 Цепочка</button>
                 <button class="del-btn" data-id="${escapeHtml(a.id)}" style="background:none;border:1px solid var(--accent-critical);color:var(--accent-critical);cursor:pointer;padding:4px 8px;border-radius:4px;">Удалить</button>
               </td>
             </tr>
@@ -128,6 +131,30 @@ export class EvidenceSpace {
 
       area.querySelectorAll('.obs-btn').forEach(btn => {
         btn.addEventListener('click', (e) => this._showObservations(e.target.getAttribute('data-id'), e.target.getAttribute('data-name')));
+      });
+      area.querySelectorAll('.hex-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+          const id = e.currentTarget.getAttribute('data-id');
+          const name = e.currentTarget.getAttribute('data-name');
+          const hash = e.currentTarget.getAttribute('data-hash');
+          const size = Number(e.currentTarget.getAttribute('data-size')) || 1024;
+          if (this.onOpenInCtf) {
+            this.onOpenInCtf({ id, filename: name, artifact_id: id, hash_blake3: hash, size_bytes: size });
+          }
+        });
+      });
+      area.querySelectorAll('.chain-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+          const hash = e.currentTarget.getAttribute('data-hash');
+          this.container.querySelectorAll('.tab-btn').forEach(b => {
+            const isCustody = b.getAttribute('data-tab') === 'custody';
+            b.classList.toggle('active', isCustody);
+            b.style.color = isCustody ? 'var(--text-primary)' : 'var(--text-muted)';
+            b.style.fontWeight = isCustody ? 'bold' : 'normal';
+          });
+          this.activeTab = 'custody';
+          this._renderCustodyTab(hash);
+        });
       });
       area.querySelectorAll('.del-btn').forEach(btn => {
         btn.addEventListener('click', async (e) => {
@@ -212,18 +239,21 @@ export class EvidenceSpace {
     } catch(e) { area.innerHTML = `<div style="color:var(--accent-critical);padding:16px;">${escapeHtml(e.message)}</div>`; }
   }
 
-  _renderCustodyTab() {
+  _renderCustodyTab(prefillHash = '') {
     const area = this.container.querySelector('#tabContent');
     area.innerHTML = `
       <div style="padding:16px;">
         <div style="display:flex;gap:8px;margin-bottom:16px;">
-          <input id="custodyHashInput" placeholder="BLAKE3 hash (64 hex chars)" style="flex:1;background:var(--bg-surface);border:1px solid var(--border-muted);color:var(--text-primary);padding:6px 10px;border-radius:4px;font-family:var(--font-mono);font-size:11px;">
+          <input id="custodyHashInput" value="${escapeHtml(prefillHash)}" placeholder="BLAKE3 hash (64 hex chars)" style="flex:1;background:var(--bg-surface);border:1px solid var(--border-muted);color:var(--text-primary);padding:6px 10px;border-radius:4px;font-family:var(--font-mono);font-size:11px;">
           <button id="custodyLoadBtn" style="background:var(--accent-primary);color:#000;border:none;padding:6px 14px;border-radius:4px;cursor:pointer;">Загрузить</button>
         </div>
         <div id="custodyChain"></div>
       </div>
     `;
     this.container.querySelector('#custodyLoadBtn').addEventListener('click', () => this._loadCustody());
+    if (prefillHash) {
+      this._loadCustody();
+    }
   }
 
   async _loadCustody() {

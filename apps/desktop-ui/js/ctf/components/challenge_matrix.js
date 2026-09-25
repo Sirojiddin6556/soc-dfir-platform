@@ -39,6 +39,7 @@ export class ChallengeMatrix {
   constructor(options = {}) {
     this.store = options.store || workspaceStore;
     this.onSelectChallenge = options.onSelectChallenge || null;
+    this.onSeedDemo = options.onSeedDemo || null;
 
     this.container = null;
     this.selectedCategory = 'all';
@@ -107,6 +108,7 @@ export class ChallengeMatrix {
     const progressPercent = totalCount > 0 ? Math.round((solvedCount / totalCount) * 100) : 0;
 
     const compTitle = state.activeCompetition?.title || 'CTF Competition Matrix';
+    const hasCompetition = Boolean(state.activeCompetitionId);
 
     this.container.innerHTML = `
       <div class="ctf-matrix-view">
@@ -123,7 +125,19 @@ export class ChallengeMatrix {
               <div class="ctf-progress-bar-fill" style="width: ${progressPercent}%;"></div>
             </div>
           </div>
+          <div class="ctf-matrix-actions" style="display:flex;gap:8px;align-items:center;">
+            <label for="ctfCompetitionSelect">Соревнование</label>
+            <select id="ctfCompetitionSelect" aria-label="Выбрать CTF соревнование">
+              ${(state.competitions || []).map((item) => `<option value="${escapeHtml(item.id)}" ${item.id === state.activeCompetitionId ? 'selected' : ''}>${escapeHtml(item.name)}</option>`).join('')}
+            </select>
+            <button class="ctf-btn ctf-btn-secondary" id="ctfCreateCompetition">Новое соревнование</button>
+            <button class="ctf-btn ctf-btn-secondary" id="ctfSeedDemoBtn" title="Загрузить тренировочный CTF полигон">⚡ Demo Lab</button>
+            ${hasCompetition ? '<button class="ctf-btn ctf-btn-primary" id="ctfCreateChallenge">Добавить задание</button>' : ''}
+          </div>
         </div>
+
+        ${state.isLoading ? '<div role="status" class="ctf-empty-state">Загрузка соревнований…</div>' : ''}
+        ${state.error ? `<div role="alert" class="ctf-empty-state">Не удалось загрузить CTF данные: ${escapeHtml(state.error)} <button class="ctf-btn ctf-btn-secondary" id="ctfRetryLoad">Повторить</button></div>` : ''}
 
         <div class="ctf-matrix-filters">
           <button class="ctf-btn ${this.selectedCategory === 'all' ? 'ctf-btn-primary' : 'ctf-btn-secondary'}" data-cat="all">
@@ -143,11 +157,24 @@ export class ChallengeMatrix {
         </div>
 
         <div class="ctf-matrix-body">
-          ${filtered.length === 0 ? `
-            <div style="text-align: center; padding: 48px; color: var(--ctf-text-secondary); font-family: var(--ctf-font-mono);">
-              [!] Нет задач, удовлетворяющих заданным критериям фильтра
+          ${filtered.length === 0 ? (totalCount === 0 ? `
+              <div style="font-size:14px;font-weight:600;color:var(--ctf-text-primary);margin-bottom:8px;">
+                ${hasCompetition ? 'В этом соревновании пока нет заданий' : 'Платформа готова к работе'}
+              </div>
+              <div style="font-size:12px;margin-bottom:16px;">
+                ${hasCompetition ? 'Вы можете создать задание вручную или загрузить готовый тренировочный стенд.' : 'Создайте соревнование или мгновенно разверните тренировочный полигон (5 тасков с артефактами).'}
+              </div>
+              <div style="display:flex;gap:10px;justify-content:center;">
+                <button class="ctf-btn ctf-btn-primary" id="ctfSeedDemoEmptyBtn">⚡ Загрузить тренировочный полигон (Demo Lab)</button>
+                ${hasCompetition ? '<button class="ctf-btn ctf-btn-secondary" id="ctfCreateChallengeEmpty">+ Создать задание</button>' : '<button class="ctf-btn ctf-btn-secondary" id="ctfCreateCompetitionEmpty">+ Создать турнир</button>'}
+              </div>
             </div>
           ` : `
+            <div style="text-align: center; padding: 48px; color: var(--ctf-text-secondary); font-family: var(--ctf-font-mono);">
+              Ничего не найдено. Очистите поиск или фильтры.
+              <button class="ctf-btn ctf-btn-secondary" id="ctfClearFilters">Сбросить фильтры</button>
+            </div>
+          `) : `
             <div class="ctf-matrix-grid">
               ${filtered.map((chal) => this.renderCardHtml(chal, state.activeChallengeId)).join('')}
             </div>
@@ -193,6 +220,39 @@ export class ChallengeMatrix {
   bindEvents() {
     if (!this.container) return;
 
+    const select = this.container.querySelector('#ctfCompetitionSelect');
+    select?.addEventListener('change', async (e) => {
+      try { await this.store.loadCompetition(e.target.value); }
+      catch (_) { /* the store exposes the error state */ }
+    });
+    this.container.querySelector('#ctfRetryLoad')?.addEventListener('click', () => this.store.loadCompetitions().catch(() => {}));
+    this.container.querySelector('#ctfClearFilters')?.addEventListener('click', () => { this.selectedCategory = 'all'; this.searchQuery = ''; this.render(); });
+    const createCompetition = async () => {
+      const name = window.prompt('Название соревнования');
+      if (!name?.trim()) return;
+      try { await this.store.createCompetition({ name }); } catch (_) { /* visible store error */ }
+    };
+    this.container.querySelector('#ctfCreateCompetition')?.addEventListener('click', createCompetition);
+    this.container.querySelector('#ctfCreateCompetitionEmpty')?.addEventListener('click', createCompetition);
+    const triggerSeed = async () => {
+      if (this.onSeedDemo) {
+        await this.onSeedDemo();
+      }
+    };
+    this.container.querySelector('#ctfSeedDemoBtn')?.addEventListener('click', triggerSeed);
+    this.container.querySelector('#ctfSeedDemoEmptyBtn')?.addEventListener('click', triggerSeed);
+    const createChallenge = async () => {
+      const name = window.prompt('Название задания');
+      if (!name?.trim()) return;
+      const category = window.prompt('Категория (forensics, web, crypto, pwn, reverse, misc, osint, stego, network)', 'forensics');
+      if (!category?.trim()) return;
+      const expected_flag = window.prompt('Эталонный флаг (хранится в виде SHA-256, никогда не показывается участникам)');
+      if (!expected_flag?.trim()) return;
+      try { await this.store.createChallenge({ name, category: category.trim().toLowerCase(), expected_flag }); } catch (_) { /* visible store error */ }
+    };
+    this.container.querySelector('#ctfCreateChallenge')?.addEventListener('click', createChallenge);
+    this.container.querySelector('#ctfCreateChallengeEmpty')?.addEventListener('click', createChallenge);
+
     // Category filter clicks
     this.container.querySelectorAll('.ctf-matrix-filters button[data-cat]').forEach((btn) => {
       btn.addEventListener('click', (e) => {
@@ -213,7 +273,7 @@ export class ChallengeMatrix {
             this.onSelectChallenge(chalId);
           }
         } catch (err) {
-          console.error('[ChallengeMatrix] Failed to select challenge:', err);
+          this.store.setState({ error: err.message });
         }
       });
     });

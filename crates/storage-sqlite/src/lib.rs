@@ -86,6 +86,12 @@ impl SqliteStorage {
         conn.execute_batch(evidence::MIGRATION_006_SQL)?;
         conn.execute_batch(schema::MIGRATION_007_SQL)?;
         Self::apply_ctf_v002(&conn)?;
+        Self::apply_ctf_v003(&conn)?;
+        Ok(())
+    }
+
+    fn apply_ctf_v003(conn: &Connection) -> Result<(), SqliteStorageError> {
+        conn.execute_batch(include_str!("../migrations/V003_ctf_flag_answers.sql"))?;
         Ok(())
     }
 

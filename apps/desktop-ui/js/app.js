@@ -6,6 +6,7 @@ import { RangeSpace } from './range/range.js';
 import { SystemSpace } from './system/system.js';
 import { TeamPresence } from './collaboration/presence.js';
 import { CtfApp } from './ctf/ctf_app.js';
+import { ctfIpc } from './ctf/ctf_ipc.js';
 
 class SocDfirApplication {
   constructor() {
@@ -14,17 +15,27 @@ class SocDfirApplication {
     this.presence = new TeamPresence(this.ipc);
 
     this.operations = new OperationsSpace(this.ipc, (caseId) => this.switchCase(caseId));
-    this.evidence = new EvidenceSpace(this.ipc);
-    this.range = new RangeSpace(this.ipc, (missionId) => this.launchMission(missionId));
+    this.evidence = new EvidenceSpace(this.ipc, (art) => this.openInCtfHex(art));
+    this.range = new RangeSpace(this.ipc, (missionId) => this.launchMission(missionId), () => {
+      document.getElementById('nav-ctf-workspace')?.click();
+    });
     this.system = new SystemSpace(this.ipc);
     this.ctfApp = new CtfApp({
-      ipc: this.ipc,
+      ipc: ctfIpc,
       onNavigateLegacy: (caseId) => this.switchCase(caseId)
     });
     this.ctfMounted = false;
 
     this.currentSpace = 'investigation';
     this.timerSeconds = 0;
+  }
+
+  openInCtfHex(art) {
+    const ctfBtn = document.getElementById('nav-ctf-workspace');
+    if (ctfBtn) ctfBtn.click();
+    if (art && this.ctfApp) {
+      this.ctfApp.handleArtifactSelect(art.id || art.artifact_id, art);
+    }
   }
 
   async start() {

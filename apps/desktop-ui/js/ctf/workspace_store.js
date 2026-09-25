@@ -76,7 +76,8 @@ export class WorkspaceStore {
     try {
       const list = await this.ipc.listCompetitions(status);
       const competitions = Array.isArray(list) ? list : [];
-      this.setState({ competitions, isLoading: false });
+      const keepActive = competitions.some((item) => item.id === this.state.activeCompetitionId);
+      this.setState({ competitions, ...(keepActive ? {} : { activeCompetitionId: null, activeCompetition: null, challenges: {} }), isLoading: false });
       return competitions;
     } catch (err) {
       this.setState({ error: err.message, isLoading: false });
@@ -99,16 +100,49 @@ export class WorkspaceStore {
       const challengesMap = {};
       if (Array.isArray(chalList)) {
         for (const ch of chalList) {
-          challengesMap[ch.id] = ch;
+          challengesMap[ch.id] = this.normalizeChallenge(ch);
         }
       }
 
       this.setState({
         activeCompetitionId: compId,
-        activeCompetition: comp,
+        activeCompetition: { ...comp, title: comp.title || comp.name },
         challenges: challengesMap,
         isLoading: false
       });
+    } catch (err) {
+      this.setState({ error: err.message, isLoading: false });
+      throw err;
+    }
+  }
+
+  normalizeChallenge(challenge) {
+    const statusMap = { new: 'Unsolved', in_progress: 'InProgress', blocked: 'Blocked', solved: 'Solved', archived: 'Unsolved' };
+    return { ...challenge, title: challenge.title || challenge.name, status: statusMap[String(challenge.status || '').toLowerCase()] || challenge.status || 'Unsolved' };
+  }
+
+  async createCompetition({ name, description = '', format = 'jeopardy', flag_format = null }) {
+    this.setState({ isLoading: true, error: null });
+    try {
+      const result = await this.ipc.createCompetition({ name: name.trim(), description: description.trim() || null, format, flag_format });
+      await this.loadCompetitions();
+      const createdId = result?.id || result?.competition_id;
+      const created = this.state.competitions.find((item) => item.id === createdId) || this.state.competitions.find((item) => item.name === name.trim());
+      if (created) await this.loadCompetition(created.id);
+      return created || null;
+    } catch (err) {
+      this.setState({ error: err.message, isLoading: false });
+      throw err;
+    }
+  }
+
+  async createChallenge({ name, category, points = 100, target = null, expected_flag }) {
+    const competitionId = this.state.activeCompetitionId;
+    if (!competitionId) throw new Error('Сначала выберите соревнование');
+    this.setState({ isLoading: true, error: null });
+    try {
+      await this.ipc.createChallenge({ competition_id: competitionId, name: name.trim(), category, points: Number(points), target, expected_flag });
+      await this.loadCompetition(competitionId);
     } catch (err) {
       this.setState({ error: err.message, isLoading: false });
       throw err;
@@ -122,7 +156,7 @@ export class WorkspaceStore {
   async selectChallenge(challengeId) {
     this.setState({ isLoading: true, error: null });
     try {
-      const [challenge, rawArtifacts] = await Promise.all([
+      const [rawChallenge, rawArtifacts] = await Promise.all([
         this.ipc.getChallenge(challengeId),
         this.ipc.listChallengeArtifacts(challengeId)
       ]);
@@ -134,6 +168,7 @@ export class WorkspaceStore {
       }
 
       const tree = this.buildArtifactTree(artifactList);
+      const challenge = rawChallenge.challenge ? this.normalizeChallenge(rawChallenge.challenge) : this.normalizeChallenge(rawChallenge);
 
       this.setState((prev) => ({
         activeChallengeId: challengeId,

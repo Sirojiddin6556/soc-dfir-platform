@@ -128,8 +128,8 @@ export class CtfIpcClient extends IpcClient {
   }
 
   // --- Challenges Namespace ---
-  createChallenge({ competition_id, name, category, points, target }) {
-    return this.invoke('challenges.create', { competition_id, name, category, points, target });
+  createChallenge({ competition_id, name, category, points, target, expected_flag }) {
+    return this.invoke('challenges.create', { competition_id, name, category, points, target, expected_flag });
   }
 
   getChallenge(id) {

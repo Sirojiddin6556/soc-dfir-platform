@@ -32,6 +32,7 @@ export class WorkspaceView {
     this.onTabChange = options.onTabChange || null;
     this.onSelectArtifact = options.onSelectArtifact || null;
     this.onRenderSlots = options.onRenderSlots || null;
+    this.onNavigateBack = options.onNavigateBack || null;
 
     this.container = null;
     this.activeTab = options.initialTab || 'recipe'; // 'hex' | 'recipe' | 'writeup'
@@ -108,7 +109,7 @@ export class WorkspaceView {
     const chal = state.activeChallenge;
     const { left, bottom, rightDrawer } = state.activePanels;
 
-    const chalTitle = chal?.title || 'No Challenge Selected';
+    const chalTitle = chal?.title || chal?.name || 'No Challenge Selected';
     const chalCategory = (chal?.category || 'misc').toUpperCase();
     const chalPoints = chal?.points || 0;
     const chalStatus = chal?.status || 'Unsolved';
@@ -146,7 +147,8 @@ export class WorkspaceView {
         <!-- 2. CENTER PANE: Header & Main Tabs -->
         <div class="ctf-pane-center">
           <div class="ctf-pane-header" style="height: 44px; padding: 0 16px; border-bottom: 1px solid var(--ctf-border-default);">
-            <div class="ctf-pane-header-title" style="font-size: 14px;">
+            <div class="ctf-pane-header-title" style="font-size: 14px; display:flex; align-items:center; gap:8px;">
+              <button class="ctf-btn ctf-btn-ghost" id="ctfBackToMatrixBtn" title="Вернуться к матрице заданий" style="height:26px;font-size:11px;padding:0 6px;">◀ К матрице</button>
               <span class="ctf-badge ctf-badge-${chalCategory.toLowerCase()}">[${chalCategory.slice(0, 1)}] ${chalCategory}</span>
               <span style="font-weight: 700; color: var(--ctf-text-primary);">${escapeHtml(chalTitle)}</span>
               <span style="font-family: var(--ctf-font-mono); font-size: 12px; color: var(--ctf-accent-cyan); font-weight: 700;">(${chalPoints} pts)</span>
@@ -258,6 +260,10 @@ export class WorkspaceView {
 
   bindEvents() {
     if (!this.container) return;
+
+    this.container.querySelector('#ctfBackToMatrixBtn')?.addEventListener('click', () => {
+      if (this.onNavigateBack) this.onNavigateBack();
+    });
 
     // Tab buttons
     this.container.querySelectorAll('.ctf-tab-item[data-tab]').forEach((btn) => {

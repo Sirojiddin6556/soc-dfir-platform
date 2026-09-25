@@ -35,6 +35,7 @@ async fn test_ctf_dispatch_competition_and_challenge_flow() {
         "name": "Buffer Overflow Alpha",
         "category": "pwn",
         "points": 250,
+        "expected_flag": "bsides{b0f_expl0it_succ3ss}",
         "target": {
             "host": "10.10.10.5",
             "port": 1337,
@@ -66,6 +67,23 @@ async fn test_ctf_dispatch_competition_and_challenge_flow() {
         .await
         .unwrap();
     let candidate_id = flag_res["candidate_id"].as_str().unwrap();
+
+    let wrong_req = json!({
+        "challenge_id": chal_id,
+        "value": "bsides{wrong_answer}",
+        "source_ref": "manual"
+    });
+    let wrong_res = handle_ctf_command(&app, "flags.register", wrong_req)
+        .await
+        .unwrap();
+    let wrong_accept = handle_ctf_command(
+        &app,
+        "flags.accept",
+        json!({ "candidate_id": wrong_res["candidate_id"] }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(wrong_accept["accepted"], false);
 
     // 6. Accept flag
     let accept_req = json!({ "candidate_id": candidate_id });

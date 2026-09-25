@@ -72,6 +72,8 @@ pub struct ChallengeCreateReq {
     pub category: String,
     pub points: Option<u32>,
     pub target: Option<TargetScopeDto>,
+    #[serde(default)]
+    pub expected_flag: Option<String>,
 }
 
 impl ChallengeCreateReq {
@@ -104,6 +106,13 @@ impl ChallengeCreateReq {
             return Err(DomainError::Validation(format!(
                 "Invalid category '{cat}'. Valid categories: crypto, pwn, web, rev, reverse, forensics, misc, osint, stego, network"
             )));
+        }
+        if let Some(flag) = &self.expected_flag {
+            if flag.trim().is_empty() || flag.len() > 512 {
+                return Err(DomainError::Validation(
+                    "expected_flag must be between 1 and 512 characters".into(),
+                ));
+            }
         }
         Ok(())
     }
@@ -479,6 +488,7 @@ mod tests {
             category: "crypto".to_string(),
             points: Some(100),
             target: None,
+            expected_flag: None,
         };
         assert!(valid.validate().is_ok());
 
@@ -488,6 +498,7 @@ mod tests {
             category: "invalid_category".to_string(),
             points: Some(100),
             target: None,
+            expected_flag: None,
         };
         assert!(bad_cat.validate().is_err());
     }

@@ -100,7 +100,13 @@ export class FlagStore {
     this.setState({ isLoading: true, error: null, activeChallengeId: challengeId });
     try {
       const flags = await this.ipc.listFlags(challengeId);
-      const candidates = Array.isArray(flags) ? flags : [];
+      const candidates = (Array.isArray(flags) ? flags : []).map((candidate) => ({
+        ...candidate,
+        value: candidate.value ?? candidate.flag ?? '',
+        status: candidate.verification_status ?? candidate.status ?? 'candidate',
+        source: candidate.source ?? candidate.pattern_match ?? candidate.provenance_step_id ?? 'unknown',
+        timestamp: candidate.timestamp ?? candidate.created_at ?? candidate.submitted_at
+      }));
 
       this.setState({
         candidates,
@@ -177,7 +183,10 @@ export class FlagStore {
     if (!candidateId) return;
 
     try {
-      await this.ipc.acceptFlag(candidateId);
+      const result = await this.ipc.acceptFlag(candidateId);
+      if (!result?.accepted) {
+        throw new Error('Флаг неверный либо для задания не задан эталонный ответ. Задание не решено.');
+      }
 
       this.setState((prev) => ({
         candidates: prev.candidates.map((c) =>
@@ -185,12 +194,6 @@ export class FlagStore {
         )
       }));
 
-      // Auto-solve trigger: update challenge status to 'Solved'
-      if (this.workspaceStore && typeof this.workspaceStore.updateChallengeStatus === 'function') {
-        await this.workspaceStore.updateChallengeStatus('Solved', 'Flag accepted').catch((err) => {
-          console.warn('[FlagStore] Auto-solve status update warning:', err.message);
-        });
-      }
     } catch (err) {
       this.setState({ error: err.message });
       throw err;

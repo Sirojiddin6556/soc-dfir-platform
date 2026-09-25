@@ -7,6 +7,7 @@ use core_domain::ctf::writeup::{
 use core_domain::ctf::*;
 use core_domain::error::DomainError;
 use rusqlite::params;
+use sha2::{Digest, Sha256};
 use std::path::Path;
 use std::str::FromStr;
 
@@ -58,11 +59,11 @@ impl FlagService for SqliteStorage {
         let conn = self.conn.lock().unwrap();
         let now = chrono::Utc::now().to_rfc3339();
 
-        let chal_id: String = conn
+        let (chal_id, candidate_value): (String, String) = conn
             .query_row(
-                "SELECT challenge_id FROM flag_candidates WHERE id = ?1",
+                "SELECT challenge_id, value FROM flag_candidates WHERE id = ?1 AND verification_status = 'candidate'",
                 params![candidate_id],
-                |r| r.get(0),
+                |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .map_err(|e| match e {
                 rusqlite::Error::QueryReturnedNoRows => {
@@ -70,6 +71,21 @@ impl FlagService for SqliteStorage {
                 }
                 other => DomainError::Storage(other.to_string()),
             })?;
+
+        let expected_hash: Option<String> = conn
+            .query_row(
+                "SELECT expected_flag_sha256 FROM ctf_challenge_answers WHERE challenge_id = ?1",
+                params![chal_id],
+                |r| r.get(0),
+            )
+            .ok();
+        let Some(expected_hash) = expected_hash else {
+            return Ok(false);
+        };
+        let candidate_hash = hex::encode(Sha256::digest(candidate_value.trim().as_bytes()));
+        if candidate_hash != expected_hash {
+            return Ok(false);
+        }
 
         let rows_affected = conn.execute(
             "UPDATE flag_candidates SET verification_status = 'accepted', verified_at = ?1 WHERE id = ?2",

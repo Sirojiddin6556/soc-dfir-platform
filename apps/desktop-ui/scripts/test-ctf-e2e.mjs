@@ -352,8 +352,8 @@ ctfIpc.listChallengeArtifacts = async () => ([
   { id: 'art-1', artifact_id: 'art-1', filename: 'cipher.bin', size_bytes: 2048, role: 'Input' }
 ]);
 ctfIpc.registerFlagCandidate = async () => ({ id: 'cand-001', candidate_id: 'cand-001' });
-ctfIpc.acceptFlag = async () => ({ status: 'accepted' });
-ctfIpc.updateChallengeStatus = async () => ({ success: true });
+ctfIpc.acceptFlag = async () => ({ accepted: true });
+ctfIpc.updateChallengeStatus = async () => { throw new Error('UI must not decide flag correctness'); };
 ctfIpc.generateWriteupDraft = async () => ({
   markdown: '# Write-up: Crypto 101\n\n## Solution Steps\n1. Step A\n\n## Flag\nCTF{r3c1p3_succ3ss}'
 });
@@ -374,7 +374,13 @@ assert(flagStore.getState().candidates[0].status === 'accepted', 'Flag status tr
 assert(flagStore.getFilteredCandidates().length === 0, 'No pending flags in candidates filter');
 flagStore.setFilter('accepted');
 assert(flagStore.getFilteredCandidates().length === 1, '1 flag found in accepted filter');
-assert(workspaceStore.getState().challenges['c-1'].status === 'Solved', 'Challenge status auto-updated to Solved');
+assert(workspaceStore.getState().challenges['c-1'].status === 'Unsolved', 'Client does not mark a challenge solved independently of server verification');
+ctfIpc.acceptFlag = async () => ({ accepted: false });
+flagStore.setState({ candidates: [{ ...candidate, status: 'candidate' }], filter: 'all' });
+let incorrectFlagRejected = false;
+try { await flagStore.acceptFlag(candidate.id); } catch (_) { incorrectFlagRejected = true; }
+assert(incorrectFlagRejected, 'Server rejection for an incorrect flag is shown to the user');
+assert(flagStore.getState().candidates[0].status === 'candidate', 'Rejected flag remains pending and cannot solve the challenge');
 
 // 8. Write-up Studio & Redaction
 console.log('\n\x1b[1m[SUITE 8] Write-up Studio & SEC-ARCH-05 Redaction\x1b[0m');
@@ -390,6 +396,11 @@ assert(redacted.includes('[REDACTED]'), 'Replaced with [REDACTED] placeholder');
 // 9. CtfApp Simulation
 console.log('\n\x1b[1m[SUITE 9] CtfApp End-to-End Application Simulation\x1b[0m');
 const rootContainer = new MockElement('div');
+ctfIpc.listCompetitions = async () => ([{ id: 'comp-test', name: 'Practice CTF', format: 'jeopardy', status: 'active' }]);
+ctfIpc.getCompetition = async (id) => ({ id, name: 'Practice CTF', format: 'jeopardy', status: 'active' });
+ctfIpc.listChallenges = async () => ([{ id: 'c-1', competition_id: 'comp-test', name: 'Crypto 101', category: 'crypto', points: 150, status: 'new' }]);
+ctfIpc.listTools = async () => ([{ id: 'strings', name: 'Strings' }]);
+ctfIpc.listFlags = async () => ([]);
 const ctfApp = new CtfApp({ workspaceStore, hexStore, jobRunnerStore, recipeStore, flagStore, writeupStore });
 await ctfApp.mount(rootContainer);
 assert(ctfApp.isMounted === true, 'CtfApp mounted cleanly into root DOM container');

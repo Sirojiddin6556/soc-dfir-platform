@@ -279,6 +279,7 @@ pub struct CreateChallengeCmd {
     pub category: String,
     pub points: Option<u32>,
     pub target: Option<TargetScope>,
+    pub expected_flag: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

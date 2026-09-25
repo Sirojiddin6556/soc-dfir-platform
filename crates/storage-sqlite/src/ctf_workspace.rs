@@ -5,6 +5,7 @@ use core_domain::ctf::traits::WorkspaceService;
 use core_domain::ctf::*;
 use core_domain::error::DomainError;
 use rusqlite::params;
+use sha2::{Digest, Sha256};
 use std::str::FromStr;
 
 impl From<SqliteStorageError> for DomainError {
@@ -173,6 +174,9 @@ impl WorkspaceService for SqliteStorage {
             Some(ref t) => (Some(t.host.clone()), t.port, Some(t.protocol.clone())),
             None => (None, None, None),
         };
+        let expected_flag_hash = cmd
+            .expected_flag
+            .map(|flag| hex::encode(Sha256::digest(flag.trim().as_bytes())));
 
         let conn = self.conn.lock().unwrap();
         conn.execute(
@@ -193,6 +197,13 @@ impl WorkspaceService for SqliteStorage {
                 now
             ],
         ).map_err(|e| DomainError::Storage(format!("Failed to insert challenge: {}", e)))?;
+
+        if let Some(hash) = expected_flag_hash {
+            conn.execute(
+                "INSERT INTO ctf_challenge_answers (challenge_id, expected_flag_sha256) VALUES (?1, ?2)",
+                params![chal_id, hash],
+            ).map_err(|e| DomainError::Storage(format!("Failed to store challenge answer verifier: {}", e)))?;
+        }
 
         Ok(chal_id)
     }

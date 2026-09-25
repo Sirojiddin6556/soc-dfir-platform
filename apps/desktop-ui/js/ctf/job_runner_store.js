@@ -87,6 +87,8 @@ export class JobRunnerStore {
 
     this.state = {
       activeJobs: {},         // jobId -> JobRuntimeState
+      tools: [],
+      isLoadingTools: false,
       terminalBuffers: {},    // jobId -> TerminalRingBuffer
       isBackpressureActive: false,
       activeJobId: null,
@@ -117,6 +119,19 @@ export class JobRunnerStore {
       } catch (err) {
         console.error('[JobRunnerStore] Listener error:', err);
       }
+    }
+  }
+
+  async loadTools() {
+    this.setState({ isLoadingTools: true, error: null });
+    try {
+      const result = await this.ipc.listTools();
+      const tools = Array.isArray(result) ? result : (result?.tools || []);
+      this.setState({ tools, isLoadingTools: false });
+      return tools;
+    } catch (err) {
+      this.setState({ error: err.message, isLoadingTools: false });
+      throw err;
     }
   }
 

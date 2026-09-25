@@ -29,6 +29,8 @@ export class FlagDrawer {
     this.unsubscribe = this.store.subscribe(() => this.render());
     this.setupKeybindings();
     this.render();
+    const challengeId = this.store.workspaceStore?.getState?.().activeChallengeId;
+    if (challengeId) this.store.loadFlags(challengeId).catch(() => {});
   }
 
   destroy() {
@@ -121,9 +123,12 @@ export class FlagDrawer {
             style="flex: 1; height: 28px;"
           />
           <button class="ctf-btn ctf-btn-primary" id="ctfSubmitManualFlagBtn" style="height: 28px;">
-            + Register
+            + Отправить на проверку
           </button>
         </div>
+
+        ${state.isLoading ? '<div role="status">Загрузка флагов…</div>' : ''}
+        ${state.error ? `<div role="alert">${escapeHtml(state.error)}</div>` : ''}
 
         <!-- Candidate Pills List -->
         <div style="flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 8px;">
@@ -160,7 +165,8 @@ export class FlagDrawer {
       pillClass = 'rejected';
     }
 
-    const timeStr = c.submitted_at ? new Date(c.submitted_at).toLocaleTimeString() : '';
+    const flagValue = c.value ?? c.flag ?? '';
+    const timeStr = (c.timestamp || c.submitted_at) ? new Date(c.timestamp || c.submitted_at).toLocaleTimeString() : '';
 
     return `
       <div class="ctf-flag-candidate-pill ${pillClass}" data-candidate-id="${escapeHtml(c.id)}">
@@ -178,9 +184,9 @@ export class FlagDrawer {
 
         <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 4px 0;">
           <div class="ctf-flag-string">
-            ${escapeHtml(c.flag)}
+            ${escapeHtml(flagValue)}
           </div>
-          <button class="ctf-btn ctf-btn-ghost ctf-copy-flag-btn" data-flag="${escapeHtml(c.flag)}" style="height: 22px; padding: 0 6px;" title="Копировать в буфер">
+          <button class="ctf-btn ctf-btn-ghost ctf-copy-flag-btn" data-flag="${escapeHtml(flagValue)}" style="height: 22px; padding: 0 6px;" title="Копировать в буфер">
             📋
           </button>
         </div>
@@ -188,7 +194,7 @@ export class FlagDrawer {
         ${isCandidate ? `
           <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 4px;">
             <button class="ctf-btn ctf-btn-accept ctf-accept-flag-btn" data-candidate-id="${escapeHtml(c.id)}" style="height: 24px; font-size: 11px;" title="Принять флаг (Ctrl+Shift+A)">
-              ✔ Accept <span class="ctf-hotkey" style="font-size: 9px; padding: 0 3px;">^⇧A</span>
+              ✔ Проверить <span class="ctf-hotkey" style="font-size: 9px; padding: 0 3px;">^⇧A</span>
             </button>
             <button class="ctf-btn ctf-btn-reject ctf-reject-flag-btn" data-candidate-id="${escapeHtml(c.id)}" style="height: 24px; font-size: 11px;" title="Отклонить ложное срабатывание (Ctrl+Shift+R)">
               ✕ Reject <span class="ctf-hotkey" style="font-size: 9px; padding: 0 3px;">^⇧R</span>

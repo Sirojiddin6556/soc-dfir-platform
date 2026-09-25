@@ -73,6 +73,7 @@ async fn test_full_ctf_e2e_lifecycle_pipeline() {
             "name": "Quantum Vault Keygen",
             "category": "reverse",
             "points": 450,
+            "expected_flag": "defcamp{qkv_r3v_m4st3r_2026}",
             "target": {
                 "host": "quantum.defcamp.local",
                 "port": 9001,

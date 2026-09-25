@@ -39,6 +39,7 @@ async fn test_ctf_workspace_lifecycle_and_crud() {
             port: Some(31337),
             protocol: "tcp".into(),
         }),
+        expected_flag: None,
     };
     let chal_id = storage.create_challenge(chal_cmd).await.unwrap();
     assert!(chal_id.starts_with("chal-"));
@@ -109,6 +110,7 @@ async fn test_ctf_artifacts_and_lineage_pipeline() {
             category: "forensics".into(),
             points: Some(300),
             target: None,
+            expected_flag: None,
         })
         .await
         .unwrap();
@@ -180,6 +182,7 @@ async fn test_ctf_flag_verification_and_writeup_service() {
             category: "reverse".into(),
             points: Some(200),
             target: None,
+            expected_flag: Some("flag{cr4ckm3_succ3ss_2026}".into()),
         })
         .await
         .unwrap();
@@ -199,7 +202,22 @@ async fn test_ctf_flag_verification_and_writeup_service() {
     assert_eq!(flags.len(), 1);
     assert_eq!(flags[0].verification_status, VerificationStatus::Candidate);
 
-    // 2. Accept flag -> auto marks challenge solved
+    let wrong_id = storage
+        .register_candidate(&chal_id, "flag{wrong}".into(), "manual".into())
+        .await
+        .unwrap();
+    assert!(!storage.accept_flag(&wrong_id).await.unwrap());
+    assert_eq!(
+        storage
+            .get_challenge(&chal_id)
+            .await
+            .unwrap()
+            .challenge
+            .status,
+        ChallengeStatus::New
+    );
+
+    // 2. Accept matching flag -> marks challenge solved
     let accepted = storage.accept_flag(&cand_id).await.unwrap();
     assert!(accepted);
 

@@ -57,6 +57,9 @@ export class TerminalView {
     this.unsubscribe = this.store.subscribe(() => this.render());
     this.setupKeybindings();
     this.render();
+    if (typeof this.store.loadTools === 'function' && !(this.store.getState().tools || []).length) {
+      this.store.loadTools().catch(() => {});
+    }
   }
 
   destroy() {
@@ -114,6 +117,7 @@ export class TerminalView {
     const isRunning = Boolean(activeJob && (activeJob.status === 'running' || activeJob.status === 'pending'));
     const isBackpressureActive = Boolean(state.isBackpressureActive);
     const droppedBytes = ring?.droppedBytes || 0;
+    const tools = state.tools || [];
 
     this.container.innerHTML = `
       <div class="ctf-terminal-view">
@@ -168,19 +172,23 @@ export class TerminalView {
           ` : `
             <div>${lines.map((l) => ansiToHtml(l)).join('\n')}</div>
           `}
+          ${state.error ? `<div role="alert" style="color:var(--ctf-accent-red,#ff6b6b);padding:8px;">${escapeHtml(state.error)}</div>` : ''}
         </div>
 
         <!-- Command Input Runner -->
         <div class="ctf-terminal-input-bar">
-          <span style="color: var(--ctf-accent-cyan); font-weight: 700;">$</span>
+          <select id="ctfToolSelect" aria-label="Инструмент" ${state.isLoadingTools || tools.length === 0 ? 'disabled' : ''}>
+            ${tools.length ? tools.map((tool) => `<option value="${escapeHtml(tool.id)}">${escapeHtml(tool.name || tool.id)} (${escapeHtml(tool.id)})</option>`).join('') : '<option value="">Нет доступных инструментов</option>'}
+          </select>
           <input
             type="text"
             id="ctfCommandInput"
             class="ctf-terminal-input"
-            placeholder="Введите команду или аргументы (например: strings -a / tshark -r ...)"
+            placeholder="Аргументы через запятую; оболочка и команды запрещены"
+            aria-label="Аргументы инструмента"
           />
           <button class="ctf-btn ctf-btn-primary" id="ctfRunCommandBtn" style="height: 26px;">
-            Execute
+            ${state.isLoadingTools ? 'Загрузка…' : 'Запустить'}
           </button>
         </div>
       </div>
@@ -220,10 +228,12 @@ export class TerminalView {
     const runBtn = this.container.querySelector('#ctfRunCommandBtn');
 
     const submit = () => {
-      const val = input?.value.trim();
-      if (!val) return;
+      const raw = input?.value.trim();
+      const toolId = this.container.querySelector('#ctfToolSelect')?.value;
+      if (!toolId) return;
+      const argv = raw ? raw.split(',').map((arg) => arg.trim()).filter(Boolean) : [];
       if (this.onCommandSubmit) {
-        this.onCommandSubmit(val);
+        Promise.resolve(this.onCommandSubmit({ tool_id: toolId, argv })).catch((err) => this.store.setState({ error: err.message }));
       }
       if (input) input.value = '';
     };

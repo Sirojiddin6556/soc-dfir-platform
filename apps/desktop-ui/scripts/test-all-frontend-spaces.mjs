@@ -522,8 +522,9 @@ try {
   const rangeContainer = new MockElement('div');
   rangeSpace.render(rangeContainer);
 
-  assert(rangeContainer.innerHTML.includes('CYBER RANGE'), 'Cyber Range header and description rendered');
-  assert(rangeContainer.innerHTML.includes('scoring-engine'), 'Cyber Range backend integration details rendered');
+  assert(rangeContainer.innerHTML.includes('Cyber Range — сценарии'), 'Cyber Range header and description rendered');
+  assert(rangeContainer.innerHTML.includes('scenario.evaluate'), 'Cyber Range clearly describes the available scenario evaluation API');
+  assert(rangeContainer.innerHTML.includes('Запуск учебных миссий ещё не подключён'), 'Cyber Range does not imply missions can already be launched');
 } catch (e) {
   assert(false, `Cyber Range space threw error: ${e.message}`);
 }
@@ -588,4 +589,5 @@ if (failed > 0) {
   process.exit(1);
 } else {
   console.log('>>> 100% OF FRONTEND SPACES AND VIEWS ARE FULLY OPERATIONAL! <<<\n');
+  process.exit(0);
 }

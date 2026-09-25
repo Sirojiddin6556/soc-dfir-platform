@@ -131,6 +131,36 @@ export class HexStore {
   }
 
   /**
+   * Loads an in-memory buffer directly for instantaneous hex analysis without remote IPC.
+   * @param {Uint8Array|ArrayBuffer} bytes
+   * @param {string} [filename='buffer.bin']
+   */
+  loadBuffer(bytes, filename = 'buffer.bin') {
+    const raw = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+    const totalSize = raw.length;
+    const totalRows = Math.ceil(totalSize / BYTES_PER_ROW);
+
+    this.inFlightRequests.clear();
+    const newCache = new Map();
+    for (let offset = 0; offset < totalSize; offset += CHUNK_SIZE) {
+      const chunkIdx = Math.floor(offset / CHUNK_SIZE);
+      newCache.set(chunkIdx, raw.subarray(offset, Math.min(offset + CHUNK_SIZE, totalSize)));
+    }
+
+    this.setState({
+      artifact: { artifact_id: 'buffer_' + Date.now(), filename, size_bytes: totalSize },
+      totalSize,
+      totalRows,
+      chunkCache: newCache,
+      cursorOffset: 0,
+      selection: null,
+      searchHits: [],
+      currentHitIndex: -1,
+      error: null
+    });
+  }
+
+  /**
    * Fetches a 64KB chunk by chunk index with LRU caching.
    * @param {number} chunkIndex
    * @returns {Promise<Uint8Array>}

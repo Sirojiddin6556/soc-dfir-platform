@@ -26,6 +26,11 @@ import { WriteupView } from './components/writeup_view.js';
 import { HexViewer } from './components/hex_viewer.js';
 import { EntropyMinimap } from './components/entropy_minimap.js';
 import { ByteDistributionChart } from './components/byte_distribution_chart.js';
+import { seedDemoLab as seedDemoLabHelper } from './demo_lab.js';
+
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
+}
 
 export class CtfApp {
   /**
@@ -112,6 +117,7 @@ export class CtfApp {
             <div style="display:flex; align-items:center; gap:8px; font-weight:700; color:var(--ctf-accent-cyan, #00E5FF); letter-spacing:0.5px;">
               <span style="font-size:16px;">⬡</span>
               <span style="color:var(--ctf-text-primary, #F0F6FC); font-size:13px;">CTF UNIFIED WORKSPACE</span>
+              <span style="font-size:10px;color:var(--ctf-text-muted,#8b949e);font-weight:400;">Учебный режим · данные CTF не входят в кейс расследования</span>
             </div>
 
             <nav class="ctf-subnav" style="display:flex; align-items:center; gap:4px;">
@@ -261,9 +267,21 @@ export class CtfApp {
 
   async mountCompetitionsRoute() {
     this.destroyActiveComponents();
+    try {
+      const competitions = await this.workspaceStore.loadCompetitions();
+      const active = this.workspaceStore.getState().activeCompetitionId;
+      if (competitions.length > 0 && !competitions.some((item) => item.id === active)) {
+        await this.workspaceStore.loadCompetition(competitions[0].id);
+      } else if (active) {
+        await this.workspaceStore.loadCompetition(active);
+      }
+    } catch (_) {
+      // The store keeps the error for the matrix retry state.
+    }
     this.challengeMatrix = new ChallengeMatrix({
       store: this.workspaceStore,
-      onSelectChallenge: (id) => this.navigate(`#ctf-challenge/${id}`)
+      onSelectChallenge: (id) => this.navigate(`#ctf-challenge/${id}`),
+      onSeedDemo: () => this.seedDemoLab()
     });
     this.challengeMatrix.mount(this.viewportEl);
   }
@@ -274,14 +292,18 @@ export class CtfApp {
     try {
       await this.workspaceStore.selectChallenge(challengeId);
     } catch (err) {
-      console.warn('[CtfApp] Could not hydrate challenge from IPC:', err);
+      this.viewportEl.innerHTML = `<div role="alert" class="ctf-empty-state">Не удалось открыть задание: ${String(err.message).replace(/[&<>"']/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]))}<button class="ctf-btn ctf-btn-secondary" id="ctfRetryChallenge">Повторить</button><button class="ctf-btn ctf-btn-ghost" id="ctfBackToChallenges">К списку заданий</button></div>`;
+      this.viewportEl.querySelector('#ctfRetryChallenge')?.addEventListener('click', () => this.mountChallengeRoute(challengeId));
+      this.viewportEl.querySelector('#ctfBackToChallenges')?.addEventListener('click', () => this.navigate('#ctf-competitions'));
+      return;
     }
 
     this.workspaceView = new WorkspaceView({
       store: this.workspaceStore,
       onTabChange: (tab) => this.mountWorkspaceCenterTab(tab),
       onSelectArtifact: (artId) => this.handleArtifactSelect(artId),
-      onRenderSlots: (slots) => this.mountWorkspaceSlots(slots)
+      onRenderSlots: (slots) => this.mountWorkspaceSlots(slots),
+      onNavigateBack: () => this.navigate('#ctf-competitions')
     });
 
     this.workspaceView.mount(this.viewportEl);
@@ -292,6 +314,7 @@ export class CtfApp {
 
     // 1. Right Slot: FlagDrawer
     if (slots.right) {
+      this.flagStore.workspaceStore = this.workspaceStore;
       if (!this.flagDrawer) {
         this.flagDrawer = new FlagDrawer({ store: this.flagStore });
       }
@@ -303,7 +326,7 @@ export class CtfApp {
       if (!this.terminalView) {
         this.terminalView = new TerminalView({
           store: this.jobRunnerStore,
-          onCommandSubmit: (cmd) => this.jobRunnerStore.submitJob('custom-cmd', [cmd])
+          onCommandSubmit: (job) => this.jobRunnerStore.submitJob({ ...job, challenge_id: this.workspaceStore.getState().activeChallengeId })
         });
       }
       this.terminalView.mount(slots.bottom);
@@ -383,7 +406,10 @@ export class CtfApp {
     try {
       await this.workspaceStore.selectChallenge(challengeId);
     } catch (err) {
-      console.warn('[CtfApp] Writeup challenge hydration:', err);
+      this.viewportEl.innerHTML = `<div role="alert" class="ctf-empty-state">Не удалось загрузить задание для write-up: ${escapeHtml(err.message)} <button class="ctf-btn ctf-btn-secondary" id="ctfRetryWriteup">Повторить</button><button class="ctf-btn ctf-btn-ghost" id="ctfBackFromWriteup">К списку заданий</button></div>`;
+      this.viewportEl.querySelector('#ctfRetryWriteup')?.addEventListener('click', () => this.mountWriteupRoute(challengeId));
+      this.viewportEl.querySelector('#ctfBackFromWriteup')?.addEventListener('click', () => this.navigate('#ctf-competitions'));
+      return;
     }
 
     this.viewportEl.innerHTML = `
@@ -410,6 +436,11 @@ export class CtfApp {
       workspace: this.workspaceStore
     });
     this.writeupView.mount(slot);
+  }
+
+  async seedDemoLab() {
+    await seedDemoLabHelper(this.workspaceStore);
+    this.render();
   }
 
   render() {

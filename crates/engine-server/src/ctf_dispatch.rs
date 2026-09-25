@@ -66,6 +66,7 @@ pub async fn handle_ctf_command(
                 category: category.to_string(),
                 points: req.points,
                 target: req.target.map(TargetScope::from),
+                expected_flag: req.expected_flag,
             };
             let chal_id = app.storage.create_challenge(cmd).await?;
             Ok(json!({ "id": chal_id, "challenge_id": chal_id }))
