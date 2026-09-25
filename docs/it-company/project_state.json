@@ -159,6 +159,7 @@
     "config/nginx/nginx.conf",
     "config/.env.example",
     "scripts/run-all-tests.ps1",
+    "docs/it-company/retrospective.md",
     "docs/it-company/project_state.json"
   ]
 }
