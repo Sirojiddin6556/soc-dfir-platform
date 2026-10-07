@@ -104,12 +104,12 @@ impl SuspiciousProcess {
             let exe = dir.join(file);
             if std::fs::copy(source, &exe).is_ok() {
                 // A noexec mount makes spawn fail; try the next directory.
-                if let Ok(child) = std::process::Command::new(&exe)
-                    .args(args)
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .spawn()
-                {
+                if let Ok(child) = spawn_retrying_busy(
+                    std::process::Command::new(&exe)
+                        .args(args)
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null()),
+                ) {
                     return Self { child, dir };
                 }
             }
@@ -119,6 +119,22 @@ impl SuspiciousProcess {
             "could not execute a binary from any world-writable directory {:?}",
             bases
         );
+    }
+}
+
+/// Executing a file right after copying it can fail with ETXTBSY when
+/// another test thread forks while the copy's write handle is still open;
+/// the forked child drops it on exec, so retry briefly.
+fn spawn_retrying_busy(cmd: &mut std::process::Command) -> std::io::Result<std::process::Child> {
+    let mut attempts = 0;
+    loop {
+        match cmd.spawn() {
+            Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy && attempts < 50 => {
+                attempts += 1;
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            other => return other,
+        }
     }
 }
 

@@ -543,6 +543,25 @@ mod tests {
         assert_eq!(mine["executable_path"], exe.to_str().unwrap());
     }
 
+    /// Executing a file right after copying it fails with ETXTBSY when
+    /// another test thread forks while the copy's write handle is still
+    /// open; the forked child drops it on exec, so retry briefly.
+    #[cfg(target_os = "linux")]
+    fn spawn_retrying_busy(
+        cmd: &mut std::process::Command,
+    ) -> std::io::Result<std::process::Child> {
+        let mut attempts = 0;
+        loop {
+            match cmd.spawn() {
+                Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy && attempts < 50 => {
+                    attempts += 1;
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                other => return other,
+            }
+        }
+    }
+
     /// End to end on the real host: a process genuinely running from /tmp
     /// must be collected and flagged by CORR-LIN-001b.
     #[cfg(target_os = "linux")]
@@ -557,9 +576,7 @@ mod tests {
             .find(|p| std::path::Path::new(p).exists())
             .expect("coreutils sleep");
         std::fs::copy(src, &sleeper).unwrap();
-        let mut child = std::process::Command::new(&sleeper)
-            .arg("60")
-            .spawn()
+        let mut child = spawn_retrying_busy(std::process::Command::new(&sleeper).arg("60"))
             .expect("/tmp must allow exec for this test");
 
         let local = crate::default_host_id();
