@@ -262,8 +262,18 @@ async function main() {
     check(problems.length === 0, problems.length ? `problems:\n    ${problems.join('\n    ')}` : 'clean run');
   } finally {
     await browser.close();
+    // Wait for the engine to actually exit before deleting its data dir:
+    // on Windows an open SQLite file cannot be unlinked (EBUSY).
+    const exited = child.exitCode !== null || child.signalCode !== null
+      ? Promise.resolve()
+      : new Promise((resolve) => child.once('exit', resolve));
     child.kill();
-    fs.rmSync(dataDir, { recursive: true, force: true });
+    await Promise.race([exited, new Promise((resolve) => setTimeout(resolve, 10000))]);
+    try {
+      fs.rmSync(dataDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+    } catch (e) {
+      console.warn(`could not remove ${dataDir}: ${e.message}`);
+    }
   }
 
   console.log(`\nPASSED: ${passed}  FAILED: ${failures.length}`);
