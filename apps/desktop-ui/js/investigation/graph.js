@@ -1,4 +1,5 @@
 import { filterGraphByLayer } from './layers.js';
+import { escapeHtml } from '../util/html.js';
 
 export class InvestigationGraph {
   constructor(canvas) {
@@ -334,13 +335,13 @@ export class InvestigationGraph {
     this.tooltipEl.innerHTML = `
       <div class="graph-tooltip-title">
         <span>${icon}</span>
-        <span>${node.label || node.id}</span>
-        <span class="badge ${node.in_attack_path ? 'badge-critical' : 'badge-net'}" style="margin-left: auto; font-size: 8px;">${node.type.toUpperCase()}</span>
+        <span>${escapeHtml(node.label || node.id)}</span>
+        <span class="badge ${node.in_attack_path ? 'badge-critical' : 'badge-net'}" style="margin-left: auto; font-size: 8px;">${escapeHtml(String(node.type ?? '').toUpperCase())}</span>
       </div>
       <div class="graph-tooltip-detail">
-        <div>ID: <strong style="color: #f8fafc;">${node.id}</strong></div>
-        ${node.subtitle ? `<div>Инфо: ${node.subtitle}</div>` : ''}
-        ${node.path ? `<div>Путь: ${node.path}</div>` : ''}
+        <div>ID: <strong style="color: #f8fafc;">${escapeHtml(node.id)}</strong></div>
+        ${node.subtitle ? `<div>Инфо: ${escapeHtml(node.subtitle)}</div>` : ''}
+        ${node.path ? `<div>Путь: ${escapeHtml(node.path)}</div>` : ''}
         <div style="margin-top: 4px; color: ${statusColor}; font-weight: 600;">
           ${node.in_attack_path ? '⚠ Угроза зафиксирована в цепи атаки' : '✓ Статус верифицирован (Normal)'}
         </div>

@@ -1,8 +1,4 @@
-function escapeHtml(str) {
-  const div = document.createElement('div');
-  div.textContent = String(str ?? '');
-  return div.innerHTML;
-}
+import { escapeAttr, escapeHtml } from '../util/html.js';
 
 export class OperationsSpace {
   constructor(ipc, onSelectCase) {
@@ -33,7 +29,7 @@ export class OperationsSpace {
             type="text"
             id="opsSearchInput"
             placeholder="Поиск по названию или ID..."
-            value="${escapeHtml(this.searchQuery)}"
+            value="${escapeAttr(this.searchQuery)}"
             style="width: 260px; height: 30px; background: var(--bg-surface); border: 1px solid var(--border-muted); border-radius: 4px; padding: 0 10px; color: var(--text-primary); font-size: 12px;"
           />
           <div style="display: flex; gap: 4px;">
@@ -127,7 +123,7 @@ export class OperationsSpace {
         const dateStr = c.created_at ? new Date(c.created_at).toLocaleString('ru-RU') : 'Не указана';
 
         return `
-          <div class="op-case-card" data-case="${escapeHtml(id)}" style="background: var(--bg-surface); border: 1px solid var(--border-muted); border-radius: 8px; padding: 16px; cursor: pointer; display: flex; flex-direction: column; justify-content: space-between; transition: border-color 0.15s ease;">
+          <div class="op-case-card" data-case="${escapeAttr(id)}" style="background: var(--bg-surface); border: 1px solid var(--border-muted); border-radius: 8px; padding: 16px; cursor: pointer; display: flex; flex-direction: column; justify-content: space-between; transition: border-color 0.15s ease;">
             <div>
               <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
                 <span style="font-family: var(--font-mono); font-weight: bold; font-size: 12px; color: var(--accent-info);">${escapeHtml(shortId)}</span>

@@ -1,3 +1,5 @@
+import { escapeAttr, escapeHtml } from '../util/html.js';
+
 export class TeamPresence {
   constructor(ipc) {
     this.ipc = ipc;
@@ -32,11 +34,14 @@ export class TeamPresence {
           </div>
         `;
       } else {
-        container.innerHTML = this.presences.map(p => `
-          <span title="${p.user_id}: ${p.status_text || 'Online'}" style="width: 22px; height: 22px; border-radius: 50%; background: var(--accent-info); color: #fff; display: inline-flex; align-items: center; justify-content: center; font-size: 10px; font-weight: bold; border: 1.5px solid ${p.is_online ? 'var(--accent-success)' : 'var(--text-muted)'};">
-            ${p.user_id.charAt(0).toUpperCase()}
+        container.innerHTML = this.presences.map(p => {
+          const userId = String(p.user_id ?? '');
+          return `
+          <span title="${escapeAttr(`${userId}: ${p.status_text || 'Online'}`)}" style="width: 22px; height: 22px; border-radius: 50%; background: var(--accent-info); color: #fff; display: inline-flex; align-items: center; justify-content: center; font-size: 10px; font-weight: bold; border: 1.5px solid ${p.is_online ? 'var(--accent-success)' : 'var(--text-muted)'};">
+            ${escapeHtml(userId.charAt(0).toUpperCase())}
           </span>
-        `).join('');
+        `;
+        }).join('');
       }
     }
 

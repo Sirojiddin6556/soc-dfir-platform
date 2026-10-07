@@ -27,10 +27,7 @@ import { HexViewer } from './components/hex_viewer.js';
 import { EntropyMinimap } from './components/entropy_minimap.js';
 import { ByteDistributionChart } from './components/byte_distribution_chart.js';
 import { seedDemoLab as seedDemoLabHelper } from './demo_lab.js';
-
-function escapeHtml(value) {
-  return String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
-}
+import { escapeHtml } from '../util/html.js';
 
 export class CtfApp {
   /**
@@ -292,7 +289,7 @@ export class CtfApp {
     try {
       await this.workspaceStore.selectChallenge(challengeId);
     } catch (err) {
-      this.viewportEl.innerHTML = `<div role="alert" class="ctf-empty-state">Не удалось открыть задание: ${String(err.message).replace(/[&<>"']/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]))}<button class="ctf-btn ctf-btn-secondary" id="ctfRetryChallenge">Повторить</button><button class="ctf-btn ctf-btn-ghost" id="ctfBackToChallenges">К списку заданий</button></div>`;
+      this.viewportEl.innerHTML = `<div role="alert" class="ctf-empty-state">Не удалось открыть задание: ${escapeHtml(err.message)}<button class="ctf-btn ctf-btn-secondary" id="ctfRetryChallenge">Повторить</button><button class="ctf-btn ctf-btn-ghost" id="ctfBackToChallenges">К списку заданий</button></div>`;
       this.viewportEl.querySelector('#ctfRetryChallenge')?.addEventListener('click', () => this.mountChallengeRoute(challengeId));
       this.viewportEl.querySelector('#ctfBackToChallenges')?.addEventListener('click', () => this.navigate('#ctf-competitions'));
       return;
@@ -419,7 +416,7 @@ export class CtfApp {
             ◀ Back to Workspace
           </button>
           <span style="font-size:12px; font-weight:700; color:var(--ctf-text-secondary);">
-            Write-up Studio: ${challengeId}
+            Write-up Studio: ${escapeHtml(challengeId)}
           </span>
         </div>
         <div id="ctfWriteupSlot" style="flex:1; min-height:0; overflow:hidden;"></div>
