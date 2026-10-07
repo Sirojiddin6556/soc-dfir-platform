@@ -351,8 +351,33 @@ mod tests {
         assert_ne!(proc_val["status"], "not_found");
 
         let fw_op = PrivilegedOperation::ReadFirewallRules { direction: None };
-        let fw_res = broker.execute_operation(fw_op).await.unwrap();
-        assert!(!fw_res.is_empty());
+        let fw_res = broker.execute_operation(fw_op).await;
+        // Reading netfilter rules needs root. Unprivileged (as on CI runners)
+        // the broker must refuse with the tool's own error, never answer with
+        // an invented rule set.
+        #[cfg(target_os = "linux")]
+        if !running_as_root() {
+            match fw_res {
+                Ok(rules) => assert!(!rules.is_empty()),
+                Err(BrokerError::ExecutionFailed(m)) => assert!(m.contains("iptables"), "{m}"),
+                Err(e) => panic!("unexpected error: {e:?}"),
+            }
+            return;
+        }
+        assert!(!fw_res.unwrap().is_empty());
+    }
+
+    #[cfg(target_os = "linux")]
+    fn running_as_root() -> bool {
+        // Effective uid is the second field of the "Uid:" line.
+        std::fs::read_to_string("/proc/self/status")
+            .ok()
+            .and_then(|s| {
+                s.lines()
+                    .find(|l| l.starts_with("Uid:"))
+                    .and_then(|l| l.split_whitespace().nth(2).map(|uid| uid == "0"))
+            })
+            .unwrap_or(false)
     }
 
     /// Reads a real registry key; only meaningful on Windows.
