@@ -7,6 +7,12 @@ use tokio::net::TcpListener;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // `engine-server --healthcheck` probes a running instance and exits 0/1,
+    // so container images need no curl.
+    if std::env::args().nth(1).as_deref() == Some("--healthcheck") {
+        std::process::exit(if healthcheck().await { 0 } else { 1 });
+    }
+
     tracing_subscriber::fmt::init();
     tracing::info!("============================================================");
     tracing::info!("  SOC / DFIR PLATFORM & BLUE TEAM CYBER RANGE (DESKTOP)     ");
@@ -118,6 +124,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .await
     .map_err(|e| e as Box<dyn std::error::Error>)
+}
+
+async fn healthcheck() -> bool {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let bind = std::env::var("SOC_BIND").unwrap_or_else(|_| "127.0.0.1:8080".to_string());
+    let port = bind.rsplit(':').next().unwrap_or("8080");
+    let probe = async {
+        let mut stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{port}")).await?;
+        stream
+            .write_all(b"GET /health/live HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
+            .await?;
+        let mut buf = Vec::new();
+        stream.read_to_end(&mut buf).await?;
+        Ok::<bool, std::io::Error>(buf.starts_with(b"HTTP/1.1 200"))
+    };
+    matches!(
+        tokio::time::timeout(std::time::Duration::from_secs(4), probe).await,
+        Ok(Ok(true))
+    )
 }
 
 fn env_path(name: &str) -> Option<PathBuf> {

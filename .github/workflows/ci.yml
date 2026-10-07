@@ -12,7 +12,7 @@ env:
 
 jobs:
   test:
-    name: Cross-Platform Test Suite (${{ matrix.os }})
+    name: Rust + frontend tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -27,6 +27,12 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
+
+      - name: Install WebView build dependencies (desktop-app, Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev libxdo-dev
 
       - name: Cache Cargo Dependencies
         uses: actions/cache@v4
@@ -46,7 +52,7 @@ jobs:
         with:
           node-version: 20
 
-      - name: Frontend Syntax & CTF E2E Tests
+      - name: Frontend syntax, XSS and component tests
         run: npm test --prefix apps/desktop-ui
 
       - name: Check Code Formatting
@@ -56,9 +62,85 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Workspace Unit & Integration Tests
-        run: cargo test --workspace --verbose
+        run: cargo test --workspace
 
-      - name: Verify Docker Container Build (Linux only)
-        if: matrix.os == 'ubuntu-latest'
+  e2e:
+    # Starts the real engine-server binary and drives the real UI in Chromium:
+    # first-run setup, login, evidence ingest, live host collection, every
+    # space, with zero console/page errors allowed. On Windows this exercises
+    # the PowerShell collectors against a real Windows host.
+    name: Real-engine browser E2E (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-e2e-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-e2e-
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Build engine-server
+        run: cargo build -p engine-server
+
+      - name: Install Playwright Chromium
+        working-directory: apps/desktop-ui
+        run: |
+          npm install --no-save playwright@1.56.1
+          npx playwright install --with-deps chromium
+
+      - name: Run end-to-end test
+        working-directory: apps/desktop-ui
+        env:
+          E2E_SCREENSHOTS: ${{ github.workspace }}/e2e-screenshots
+        run: |
+          mkdir -p "$E2E_SCREENSHOTS"
+          node scripts/e2e-real-engine.mjs
+        shell: bash
+
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-screenshots-${{ matrix.os }}
+          path: e2e-screenshots
+          if-no-files-found: ignore
+
+  docker:
+    name: Docker image builds and serves the app
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
         run: docker build -f config/docker/Dockerfile -t soc-dfir/engine-server:ci .
 
+      - name: Start container and check health, UI and auth gate
+        run: |
+          docker run -d --name soc -p 127.0.0.1:18080:8080 soc-dfir/engine-server:ci
+          for i in $(seq 1 30); do
+            [ "$(docker inspect -f '{{.State.Health.Status}}' soc)" = "healthy" ] && break
+            sleep 2
+          done
+          docker inspect -f '{{.State.Health.Status}}' soc | grep -q healthy
+          curl -fsS http://127.0.0.1:18080/ | grep -q "SOC/DFIR"
+          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:18080/rpc \
+            -d '{"api_version":1,"request_id":"ci","method":"cases.list","params":{}}')
+          test "$code" = "401"
+          docker logs soc
