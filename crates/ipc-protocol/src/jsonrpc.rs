@@ -116,9 +116,10 @@ impl JsonRpcError {
 impl From<DomainError> for JsonRpcError {
     fn from(err: DomainError) -> Self {
         match err {
-            DomainError::NotFound { entity, id } if entity == "Method" => {
-                Self::new(METHOD_NOT_FOUND, format!("Method not found: {id}"))
-            }
+            DomainError::NotFound {
+                entity: "Method",
+                id,
+            } => Self::new(METHOD_NOT_FOUND, format!("Method not found: {id}")),
             DomainError::NotFound { entity, id } => Self::new(
                 ENTITY_NOT_FOUND,
                 format!("Entity not found: {entity} with id {id}"),

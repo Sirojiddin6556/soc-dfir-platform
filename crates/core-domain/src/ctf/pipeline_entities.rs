@@ -6,19 +6,14 @@ pub type JobId = String;
 pub type RecipeId = String;
 pub type CandidateId = String;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum JobRuntime {
+    #[default]
     Native,
     Wsl2,
     Container,
     Microvm,
-}
-
-impl Default for JobRuntime {
-    fn default() -> Self {
-        Self::Native
-    }
 }
 
 impl std::fmt::Display for JobRuntime {
@@ -45,9 +40,10 @@ impl std::str::FromStr for JobRuntime {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum JobStatus {
+    #[default]
     Queued,
     Preparing,
     Running,
@@ -56,12 +52,6 @@ pub enum JobStatus {
     Cancelled,
     TimedOut,
     Interrupted,
-}
-
-impl Default for JobStatus {
-    fn default() -> Self {
-        Self::Queued
-    }
 }
 
 impl std::fmt::Display for JobStatus {
@@ -199,18 +189,13 @@ pub struct RecipeMeta {
     pub ops_summary: Vec<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum VerificationStatus {
+    #[default]
     Candidate,
     Accepted,
     Rejected,
-}
-
-impl Default for VerificationStatus {
-    fn default() -> Self {
-        Self::Candidate
-    }
 }
 
 impl std::fmt::Display for VerificationStatus {

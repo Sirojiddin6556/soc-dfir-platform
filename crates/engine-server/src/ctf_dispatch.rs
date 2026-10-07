@@ -93,8 +93,7 @@ pub async fn handle_ctf_command(
             let req: ChallengeUpdateStatusReq = serde_json::from_value(params).map_err(|e| {
                 DomainError::Validation(format!("Invalid ChallengeUpdateStatusReq: {e}"))
             })?;
-            let status =
-                ChallengeStatus::from_str(&req.status).map_err(|e| DomainError::Validation(e))?;
+            let status = ChallengeStatus::from_str(&req.status).map_err(DomainError::Validation)?;
             let reason = req.reason.map(BlockedReason);
             app.storage
                 .update_challenge_status(&req.id, status, reason)

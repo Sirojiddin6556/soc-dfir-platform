@@ -57,7 +57,7 @@ impl HttpPolicy {
 
     fn allows_host_header(&self, value: &str) -> bool {
         let name = strip_port(value.trim()).to_ascii_lowercase();
-        self.allowed_hosts.iter().any(|h| *h == name)
+        self.allowed_hosts.contains(&name)
     }
 
     fn allows_origin(&self, origin: &str) -> bool {

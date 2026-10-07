@@ -63,18 +63,19 @@ impl JobStatus {
             return false;
         }
 
-        match (self, next) {
-            (Self::Queued, Self::Preparing) | (Self::Queued, Self::Cancelled) => true,
-            (Self::Preparing, Self::Running)
-            | (Self::Preparing, Self::Failed)
-            | (Self::Preparing, Self::Cancelled) => true,
-            (Self::Running, Self::Succeeded)
-            | (Self::Running, Self::Failed)
-            | (Self::Running, Self::Cancelled)
-            | (Self::Running, Self::TimedOut)
-            | (Self::Running, Self::Interrupted) => true,
-            _ => false,
-        }
+        matches!(
+            (self, next),
+            (Self::Queued, Self::Preparing)
+                | (Self::Queued, Self::Cancelled)
+                | (Self::Preparing, Self::Running)
+                | (Self::Preparing, Self::Failed)
+                | (Self::Preparing, Self::Cancelled)
+                | (Self::Running, Self::Succeeded)
+                | (Self::Running, Self::Failed)
+                | (Self::Running, Self::Cancelled)
+                | (Self::Running, Self::TimedOut)
+                | (Self::Running, Self::Interrupted)
+        )
     }
 }
 

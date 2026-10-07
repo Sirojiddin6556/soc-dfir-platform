@@ -284,7 +284,7 @@ impl<'a> CollabHandler<'a> {
             channel_id,
             author_id: user.id,
             author_name: user.display_name.clone(),
-            author_role: user.role.clone(),
+            author_role: user.role,
             body: body.to_string(),
             reply_to_id: None,
             references,

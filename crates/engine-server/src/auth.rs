@@ -128,6 +128,7 @@ impl Default for LoginThrottle {
 }
 
 /// Handles the `auth.*` methods.
+#[allow(clippy::result_large_err)]
 pub fn handle_auth(
     app: &EngineApp,
     method: &str,
@@ -221,6 +222,7 @@ pub fn handle_auth(
     }
 }
 
+#[allow(clippy::result_large_err)]
 fn str_param<'a>(params: &'a serde_json::Value, name: &str) -> Result<&'a str, ProblemDetails> {
     params
         .get(name)

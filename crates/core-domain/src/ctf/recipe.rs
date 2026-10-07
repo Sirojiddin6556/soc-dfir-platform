@@ -57,9 +57,9 @@ pub fn apply_op(input: &[u8], op: &RecipeOp) -> Result<Vec<u8>, DomainError> {
         RecipeOp::Rot13 => {
             let mut out = Vec::with_capacity(input.len());
             for &b in input {
-                if (b'a'..=b'z').contains(&b) {
+                if b.is_ascii_lowercase() {
                     out.push(b'a' + (b - b'a' + 13) % 26);
-                } else if (b'A'..=b'Z').contains(&b) {
+                } else if b.is_ascii_uppercase() {
                     out.push(b'A' + (b - b'A' + 13) % 26);
                 } else {
                     out.push(b);
