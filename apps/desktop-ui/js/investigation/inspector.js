@@ -1,4 +1,5 @@
 import { escapeHtml } from '../util/html.js';
+import { isElevatedRisk } from './risk.js';
 
 export class EntityInspector {
   constructor(container, store) {
@@ -62,26 +63,26 @@ export class EntityInspector {
       <div class="inspector-header">
         <div>
           <div class="inspector-title">💻 ${escapeHtml(h.hostname || h.label || h.id)}</div>
-          <div class="inspector-subtitle">${escapeHtml(h.os || 'Windows Enterprise')}</div>
+          <div class="inspector-subtitle">${escapeHtml(h.os || h.subtitle || '—')}</div>
         </div>
-        <span class="badge ${h.severity === 'high' || h.risk === 'HIGH' ? 'badge-critical' : 'badge-host'}">${escapeHtml(h.risk || 'NORMAL')}</span>
+        <span class="badge ${isElevatedRisk(h.risk) ? 'badge-critical' : 'badge-host'}">Риск: ${escapeHtml(h.risk || '—')}</span>
       </div>
 
       <div class="inspector-grid">
         <span class="inspector-label">IP адрес:</span>
-        <span class="inspector-value">${escapeHtml(h.ip || '127.0.0.1')}</span>
+        <span class="inspector-value">${escapeHtml(h.ip || '—')}</span>
 
-        <span class="inspector-label">Статус:</span>
-        <span class="inspector-value" style="color: var(--accent-success);">В сети (Боевой агент)</span>
+        <span class="inspector-label">Источник:</span>
+        <span class="inspector-value" style="color: var(--accent-success);">Живой сбор с локального хоста</span>
 
-        <span class="inspector-label">Критичность:</span>
-        <span class="inspector-value">${escapeHtml(h.criticality || 'Tier-1')}</span>
+        <span class="inspector-label">Собрано:</span>
+        <span class="inspector-value">${escapeHtml(h.collected_at ? new Date(h.collected_at).toLocaleString('ru-RU') : '—')}</span>
 
         <span class="inspector-label">Процессы:</span>
         <span class="inspector-value">${escapeHtml(h.processes_count ?? 0)} активных</span>
 
         <span class="inspector-label">Соединения:</span>
-        <span class="inspector-value">${escapeHtml(h.sockets_count ?? 0)} портов</span>
+        <span class="inspector-value">${escapeHtml(h.sockets_count ?? 0)} сокетов</span>
 
         <span class="inspector-label">Находки:</span>
         <span class="inspector-value" style="color: var(--accent-critical); font-weight: bold;">${escapeHtml(h.findings_count ?? 0)}</span>

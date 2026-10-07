@@ -41,6 +41,38 @@ async function loadPlaywright() {
   throw new Error('playwright is not installed: npm i --no-save playwright (or set PLAYWRIGHT_MODULE)');
 }
 
+/** Copies a harmless system binary into a world-writable dir and runs it. */
+function plantSuspiciousProcess() {
+  const win = process.platform === 'win32';
+  const bases = win ? ['C:\\Users\\Public'] : ['/tmp', '/var/tmp', '/dev/shm'];
+  const sources = win ? ['C:\\Windows\\System32\\PING.EXE'] : ['/bin/sleep', '/usr/bin/sleep'];
+  const args = win ? ['-n', '300', '127.0.0.1'] : ['300'];
+  const source = sources.find((s) => fs.existsSync(s));
+  if (!source) throw new Error('no harmless system binary to copy');
+  for (const base of bases) {
+    const dir = path.join(base, `soc-e2e-${process.pid}-${Date.now()}`);
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+      const exe = path.join(dir, win ? 'ping.exe' : 'sleep');
+      fs.copyFileSync(source, exe);
+      fs.chmodSync(exe, 0o755);
+      const child = spawn(exe, args, { stdio: 'ignore' });
+      if (!child.pid) throw new Error('spawn failed');
+      return {
+        pid: child.pid,
+        exe,
+        cleanup() {
+          child.kill();
+          setTimeout(() => fs.rmSync(dir, { recursive: true, force: true }), 500);
+        },
+      };
+    } catch (_) {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }
+  throw new Error('could not run a binary from a world-writable directory');
+}
+
 let passed = 0;
 const failures = [];
 function check(cond, label) {
@@ -153,17 +185,58 @@ async function main() {
       check(true, `space "${space}" opened`);
     }
 
-    console.log('\n[5] Live host collection');
-    await page.click('.global-nav button[data-space="investigation"]');
-    await page.click('#startCollection');
-    await page.waitForTimeout(6000);
-    const overview = await page.evaluate(async () => {
-      const token = localStorage.getItem('soc_session_token');
-      const r = await fetch('/rpc', { method: 'POST', body: JSON.stringify({ api_version: 1, request_id: 't', method: 'host.overview', params: { token } }) });
-      return (await r.json()).result;
-    });
-    check(overview && overview.counts && overview.counts.processes > 0, `host snapshot has real processes (${overview?.counts?.processes})`);
-    await shot('04-collection');
+    console.log('\n[5] Live host collection detects a real suspicious process');
+    // A harmless binary copied into a world-writable directory and started:
+    // exactly what CORR-LIN-001b / CORR-WIN-001f exist to catch.
+    const planted = plantSuspiciousProcess();
+    try {
+      await page.click('.global-nav button[data-space="investigation"]');
+      await page.click('#startCollection');
+      await page.waitForFunction(() => {
+        const b = document.getElementById('startCollection');
+        return b && !b.disabled && b.textContent.includes('Запустить сбор');
+      }, null, { timeout: 120000 });
+      const token = await page.evaluate(() => localStorage.getItem('soc_session_token'));
+      const caseId = (await page.textContent('#caseId')).trim();
+      const rpcCall = async (method, params) => {
+        const r = await fetch(`${base}/rpc`, {
+          method: 'POST',
+          body: JSON.stringify({ api_version: 1, request_id: 't', method, params: { ...params, token } }),
+        });
+        return (await r.json()).result;
+      };
+      const overview = await rpcCall('host.overview', {});
+      check(overview && overview.counts && overview.counts.processes > 0,
+        `host snapshot has real processes (${overview?.counts?.processes}), os: ${overview?.os}`);
+      const procs = await rpcCall('host.processes', {});
+      const seen = (procs?.processes || []).find((p) => p.pid === planted.pid);
+      check(Boolean(seen), `snapshot contains the planted process pid ${planted.pid} (${seen?.executable_path})`);
+      const facts = await rpcCall('facts.list', { case_id: caseId });
+      const needle = JSON.stringify(planted.exe).slice(1, -1);
+      const hit = (facts || []).find((f) => JSON.stringify(f).includes(needle));
+      check(Boolean(hit), `correlation raised a finding for ${planted.exe}`);
+      await page.waitForFunction(() => Number(document.getElementById('findingCount')?.textContent || 0) > 0,
+        null, { timeout: 15000 }).catch(() => {});
+      const shown = Number(await page.textContent('#findingCount'));
+      check(shown > 0, `UI status bar shows findings (${shown})`);
+      const snap = await rpcCall('investigation.snapshot', { case_id: caseId });
+      check(shown === snap.findings.length,
+        `status bar findings (${shown}) match the engine (${snap.findings.length})`);
+      const evidenceShown = Number(await page.textContent('#evidenceCount'));
+      check(evidenceShown === snap.metrics.evidence && evidenceShown > 0,
+        `status bar evidence (${evidenceShown}) is the ingested artifact count (${snap.metrics.evidence})`);
+      const panel = await page.textContent('#entityInspector');
+      const panelFindings = Number((panel.match(/Находки:\s*(\d+)/) || [])[1]);
+      check(panelFindings === snap.findings.length,
+        `context panel is refreshed after collection (findings ${panelFindings})`);
+      check(panel.includes(`Риск: ${snap.case.risk}`), `context panel shows the real risk (${snap.case.risk})`);
+      const plantedNode = snap.graph.nodes.find((n) => n.id === `proc-${planted.pid}`);
+      check(Boolean(plantedNode && plantedNode.in_attack_path),
+        'planted process is on the attack path in the graph');
+      await shot('04-collection');
+    } finally {
+      planted.cleanup();
+    }
 
     console.log('\n[6] Session survives reload, logout and login work');
     await page.reload();

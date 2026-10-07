@@ -182,6 +182,35 @@ async fn test_case_id_required_and_data_survives_restart() {
         #[cfg(target_os = "windows")]
         assert_eq!(finding.data["rule_id"], "CORR-WIN-001f");
 
+        // Re-running collection (the workspace does it on every load) must
+        // not store the same finding again.
+        let finding_count = |facts: &[core_domain::fact::Fact]| {
+            facts
+                .iter()
+                .filter(|f| f.data["pid"] == suspicious_pid)
+                .count()
+        };
+        assert_eq!(finding_count(&facts), 1);
+        for _ in 0..2 {
+            app.dispatch_request(&correlate_req).await;
+            let snapshot_req = format!(
+                r#"{{"api_version": 1, "request_id": "r3b", "method": "investigation.snapshot", "params": {{"case_id": "{}"}}}}"#,
+                case_id
+            );
+            let snap: serde_json::Value =
+                serde_json::from_str(&app.dispatch_request(&snapshot_req).await).unwrap();
+            // The graph links the finding to the process it is about.
+            let edges = snap["result"]["graph"]["edges"].as_array().unwrap();
+            let finding_node = format!("finding-{}", finding.id);
+            assert!(
+                edges.iter().any(|e| e["target"] == finding_node.as_str()
+                    && e["source"] == format!("proc-{suspicious_pid}").as_str()),
+                "finding must hang off pid {suspicious_pid}"
+            );
+        }
+        let facts_again = app.storage.get_facts_for_case(cid).unwrap();
+        assert_eq!(finding_count(&facts_again), 1, "no duplicate findings");
+
         (case_id, finding.id)
     }; // app dropped here, simulating the application closing
     drop(suspicious);

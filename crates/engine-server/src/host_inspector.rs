@@ -366,6 +366,8 @@ pub fn handle_host_correlation(
     let mut mitre_entries = Vec::new();
 
     for f in &findings {
+        // Same finding seen again keeps its original id and first-seen time.
+        let (fact_id, first_seen) = storage.insert_fact_dedup(f).unwrap_or((f.id, f.created_at));
         if f.severity == Severity::Critical {
             critical_count += 1;
         } else if f.severity == Severity::High {
@@ -401,7 +403,7 @@ pub fn handle_host_correlation(
         }
 
         findings_json.push(json!({
-            "id": f.id.to_string(),
+            "id": fact_id.to_string(),
             "fact_type": f.fact_type,
             "title": f.data.get("title").and_then(|v| v.as_str()).unwrap_or(&f.fact_type),
             "severity": format!("{:?}", f.severity),
@@ -412,10 +414,8 @@ pub fn handle_host_correlation(
             "mitre_tactic": f.data.get("mitre_tactic").and_then(|v| v.as_str()),
             "pid": f.data.get("pid").or_else(|| f.data.get("owning_pid")),
             "verification_state": format!("{:?}", f.verification_state),
-            "created_at": f.created_at.to_rfc3339()
+            "created_at": first_seen.to_rfc3339()
         }));
-
-        let _ = storage.insert_fact(f);
     }
 
     let risk_level = if max_risk >= 80.0 {

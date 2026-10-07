@@ -82,11 +82,23 @@ impl<'a> InvestigationHandler<'a> {
         let risk_score = corr
             .get("risk_score")
             .and_then(|s| s.as_f64())
-            .unwrap_or(75.0);
+            .unwrap_or(0.0);
         let risk_level = corr
             .get("risk_level")
             .and_then(|l| l.as_str())
-            .unwrap_or("HIGH");
+            .unwrap_or("НИЗКИЙ");
+        let evidence_count = self
+            .storage
+            .list_artifacts_for_case(cid)
+            .map(|a| a.len())
+            .unwrap_or(0);
+
+        // PIDs that a finding is about. Only these are marked suspicious and
+        // put on the attack path -- never a guess from the process name.
+        let flagged_pids: std::collections::HashSet<u64> = findings_arr
+            .iter()
+            .filter_map(|f| f.get("pid").and_then(|p| p.as_u64()))
+            .collect();
 
         // 3. Construct Graph nodes and edges
         let mut nodes = Vec::new();
@@ -97,32 +109,42 @@ impl<'a> InvestigationHandler<'a> {
             "id": host_id,
             "type": "host",
             "label": snap.host,
+            "hostname": snap.host,
+            "os": snap.os,
             "subtitle": snap.os,
             "state": "active",
             "severity": if findings_arr.is_empty() { "info" } else { "high" },
+            "risk": risk_level,
             "verification": "corroborated",
             "host_id": host_id,
             "in_attack_path": !findings_arr.is_empty(),
             "ip": snap.host_ip,
             "processes_count": snap.processes.len(),
             "sockets_count": snap.sockets.len(),
-            "findings_count": findings_arr.len()
+            "findings_count": findings_arr.len(),
+            "evidence_count": evidence_count,
+            "collected_at": snap.collected_at
         }));
 
-        // Processes Nodes
-        for p in snap.processes.iter().take(30) {
+        // Process nodes: every process a finding points at, then the first
+        // others up to a readable total.
+        const MAX_PROCESS_NODES: usize = 30;
+        let mut shown_procs: Vec<&_> = snap
+            .processes
+            .iter()
+            .filter(|p| flagged_pids.contains(&(p.pid as u64)))
+            .collect();
+        for p in &snap.processes {
+            if shown_procs.len() >= MAX_PROCESS_NODES {
+                break;
+            }
+            if !flagged_pids.contains(&(p.pid as u64)) {
+                shown_procs.push(p);
+            }
+        }
+        for p in &shown_procs {
             let pid_str = format!("proc-{}", p.pid);
-            // Only flag genuinely notable process types here. "svchost.exe"
-            // used to match too and got flagged on almost every process on a
-            // healthy Windows host, which is why the Атака/ATT&CK layers
-            // showed nearly every entity instead of only the relevant ones --
-            // svchost.exe is one of the most common, ordinarily benign
-            // Windows processes and its name alone says nothing about intent.
-            // Genuine detections still show up as their own "finding" nodes
-            // from the correlation engine (CORR-WIN-001..004) regardless of
-            // this flag.
-            let is_suspicious = p.name.to_lowercase().contains("powershell")
-                || p.name.to_lowercase().contains("cmd");
+            let is_suspicious = flagged_pids.contains(&(p.pid as u64));
 
             nodes.push(json!({
                 "id": pid_str,
@@ -138,6 +160,8 @@ impl<'a> InvestigationHandler<'a> {
                 "ppid": p.ppid,
                 "path": p.executable_path,
                 "command_line": p.command_line,
+                "username": p.username,
+                "started_at": p.started_at,
                 "sha256": p.sha256
             }));
 
@@ -151,9 +175,17 @@ impl<'a> InvestigationHandler<'a> {
                 "in_attack_path": is_suspicious
             }));
         }
+        let shown_pids: std::collections::HashSet<u32> =
+            shown_procs.iter().map(|p| p.pid).collect();
 
-        // Network Sockets Nodes
-        for s in snap.sockets.iter().take(20) {
+        // Network Sockets Nodes (only those whose owning process is shown,
+        // so every edge has both ends)
+        for s in snap
+            .sockets
+            .iter()
+            .filter(|s| shown_pids.contains(&s.pid))
+            .take(20)
+        {
             let sock_id = format!("net-{}-{}", s.protocol, s.local_port);
             nodes.push(json!({
                 "id": sock_id,
@@ -179,15 +211,10 @@ impl<'a> InvestigationHandler<'a> {
             }));
         }
 
-        // Findings Nodes
+        // Findings Nodes, each linked to the process it is about (or to the
+        // host when the finding is not about a single process).
         for (i, f) in findings_arr.iter().enumerate() {
-            // Facts don't carry a "finding_id" field -- that lookup always
-            // missed and fell back to the same literal "FIND-01" for every
-            // finding, giving every finding node an identical id. Since
-            // nodePositions is keyed by id, all findings then collapsed onto
-            // the same single position on the graph. "id" is the fact's real,
-            // unique EntityId and is always present.
-            let f_id = f.get("id").and_then(|s| s.as_str()).unwrap_or("FIND-01");
+            let f_id = f.get("id").and_then(|s| s.as_str()).unwrap_or("");
             let node_f_id = format!("finding-{}", f_id);
             let title = f.get("title").and_then(|s| s.as_str()).unwrap_or("Угроза");
             let tech = f.get("mitre_technique").and_then(|s| s.as_str());
@@ -198,75 +225,110 @@ impl<'a> InvestigationHandler<'a> {
                 "label": title,
                 "subtitle": tech.unwrap_or("TTP"),
                 "state": "alert",
-                "severity": "critical",
+                "severity": f.get("severity").and_then(|s| s.as_str()).unwrap_or("High").to_lowercase(),
                 "verification": "corroborated",
                 "host_id": host_id,
+                "in_attack_path": true,
+                "rule_id": f.get("rule_id"),
+                "pid": f.get("pid")
+            }));
+
+            let source = match f.get("pid").and_then(|p| p.as_u64()) {
+                Some(pid) if shown_pids.contains(&(pid as u32)) => format!("proc-{pid}"),
+                _ => host_id.to_string(),
+            };
+            edges.push(json!({
+                "id": format!("edge-f-{}-{}", i, source),
+                "source": source,
+                "target": node_f_id,
+                "relation": "triggers",
+                "confidence": 1.0,
+                "supported_by": [f.get("rule_id").and_then(|r| r.as_str()).unwrap_or("corr_rule")],
                 "in_attack_path": true
             }));
-
-            if let Some(proc_node) = nodes
-                .iter()
-                .find(|n| n["type"] == "process" && n["in_attack_path"] == true)
-            {
-                if let Some(target) = proc_node["id"].as_str() {
-                    edges.push(json!({
-                        "id": format!("edge-f-{}-{}", i, target),
-                        "source": target,
-                        "target": node_f_id,
-                        "relation": "triggers",
-                        "confidence": 0.95,
-                        "supported_by": ["corr_rule"],
-                        "in_attack_path": true
-                    }));
-                }
-            }
         }
 
-        // 4. Construct Timeline Events
-        let mut timeline = Vec::new();
-        let now = Utc::now();
+        // 4. Timeline: real times only. Processes at their start time (when
+        // the collector could read it), connections and findings at the time
+        // they were observed.
+        let mut timeline: Vec<(chrono::DateTime<Utc>, serde_json::Value)> = Vec::new();
+        let parse_time = |s: &str| {
+            chrono::DateTime::parse_from_rfc3339(s)
+                .ok()
+                .map(|d| d.with_timezone(&Utc))
+        };
+        let collected_at = parse_time(&snap.collected_at).unwrap_or_else(Utc::now);
 
-        for (idx, p) in snap.processes.iter().take(25).enumerate() {
-            let is_sec = p.name.to_lowercase().contains("powershell")
-                || p.name.to_lowercase().contains("cmd");
-            timeline.push(json!({
-                "id": format!("evt-proc-{}", p.pid),
-                "timestamp": (now - chrono::Duration::minutes(idx as i64 * 3 + 2)).format("%H:%M:%S").to_string(),
-                "category": if is_sec { "security" } else { "process" },
-                "title": format!("Процесс {} запущен", p.name),
-                "detail": format!("PID: {}, PPID: {}, путь: {}", p.pid, p.ppid, p.executable_path.as_deref().unwrap_or("N/A")),
-                "severity": if is_sec { "high" } else { "info" },
-                "entity_id": format!("proc-{}", p.pid)
-            }));
+        for p in shown_procs.iter().take(25) {
+            let Some(started) = p.started_at.as_deref().and_then(parse_time) else {
+                continue;
+            };
+            let flagged = flagged_pids.contains(&(p.pid as u64));
+            timeline.push((
+                started,
+                json!({
+                    "id": format!("evt-proc-{}", p.pid),
+                    "category": if flagged { "security" } else { "process" },
+                    "title": format!("Процесс {} запущен", p.name),
+                    "detail": format!("PID: {}, PPID: {}, путь: {}", p.pid, p.ppid, p.executable_path.as_deref().unwrap_or("N/A")),
+                    "severity": if flagged { "high" } else { "info" },
+                    "entity_id": format!("proc-{}", p.pid)
+                }),
+            ));
         }
 
-        for (idx, s) in snap.sockets.iter().take(15).enumerate() {
-            timeline.push(json!({
-                "id": format!("evt-net-{}", idx),
-                "timestamp": (now - chrono::Duration::minutes(idx as i64 * 4 + 5)).format("%H:%M:%S").to_string(),
-                "category": "network",
-                "title": format!("Сетевое соединение {}:{}", s.protocol, s.local_port),
-                "detail": format!("Удаленный адрес: {}:{}, Статус: {}", s.remote_address, s.remote_port, s.state),
-                "severity": "info",
-                "entity_id": format!("net-{}-{}", s.protocol, s.local_port)
-            }));
+        for (idx, s) in snap
+            .sockets
+            .iter()
+            .filter(|s| shown_pids.contains(&s.pid))
+            .take(15)
+            .enumerate()
+        {
+            timeline.push((
+                collected_at,
+                json!({
+                    "id": format!("evt-net-{}", idx),
+                    "category": "network",
+                    "title": format!("Сетевое соединение {}:{}", s.protocol, s.local_port),
+                    "detail": format!("Удаленный адрес: {}:{}, Статус: {} (на момент сбора)", s.remote_address, s.remote_port, s.state),
+                    "severity": "info",
+                    "entity_id": format!("net-{}-{}", s.protocol, s.local_port)
+                }),
+            ));
         }
 
-        for (idx, f) in findings_arr.iter().enumerate() {
+        for f in &findings_arr {
             let title = f.get("title").and_then(|s| s.as_str()).unwrap_or("Находка");
-            timeline.push(json!({
-                "id": format!("evt-finding-{}", idx),
-                "timestamp": (now - chrono::Duration::minutes(idx as i64 * 6 + 1)).format("%H:%M:%S").to_string(),
-                "category": "security",
-                "title": format!("ОБНАРУЖЕНО: {}", title),
-                "detail": f.get("description").and_then(|s| s.as_str()).unwrap_or(""),
-                "severity": "critical",
-                "entity_id": format!("finding-{}", f.get("id").and_then(|s| s.as_str()).unwrap_or(""))
-            }));
+            let when = f
+                .get("created_at")
+                .and_then(|s| s.as_str())
+                .and_then(parse_time)
+                .unwrap_or(collected_at);
+            timeline.push((
+                when,
+                json!({
+                    "id": format!("evt-finding-{}", f.get("id").and_then(|s| s.as_str()).unwrap_or("")),
+                    "category": "security",
+                    "title": format!("ОБНАРУЖЕНО: {}", title),
+                    "detail": format!("Правило {}", f.get("rule_id").and_then(|s| s.as_str()).unwrap_or("—")),
+                    "severity": "critical",
+                    "entity_id": format!("finding-{}", f.get("id").and_then(|s| s.as_str()).unwrap_or(""))
+                }),
+            ));
         }
 
-        // Sort timeline by reverse timestamp
-        timeline.sort_by(|a, b| b["timestamp"].as_str().cmp(&a["timestamp"].as_str()));
+        // Newest first, ordered by the full timestamp (not the clock string,
+        // which breaks across midnight).
+        timeline.sort_by_key(|e| std::cmp::Reverse(e.0));
+        let timeline: Vec<serde_json::Value> = timeline
+            .into_iter()
+            .map(|(when, mut ev)| {
+                let local = when.with_timezone(&chrono::Local);
+                ev["timestamp"] = json!(local.format("%H:%M:%S").to_string());
+                ev["datetime"] = json!(when.to_rfc3339());
+                ev
+            })
+            .collect();
 
         // 5. Assets list
         let assets = vec![json!({
@@ -274,13 +336,13 @@ impl<'a> InvestigationHandler<'a> {
             "hostname": snap.host,
             "ip": snap.host_ip,
             "os": snap.os,
+            "platform": snap.platform,
             "status": "online",
             "risk": risk_level,
-            "criticality": "Tier-1 (Рабочая станция аналитика)",
             "processes_count": snap.processes.len(),
             "sockets_count": snap.sockets.len(),
             "findings_count": findings_arr.len(),
-            "evidence_count": snap.autoruns.len() + snap.scheduled_tasks.len()
+            "evidence_count": evidence_count
         })];
 
         // 6. MITRE Matrix summary
@@ -302,7 +364,8 @@ impl<'a> InvestigationHandler<'a> {
             "processes": snap.processes,
             "connections": snap.sockets,
             "findings": findings_arr,
-            "evidence": snap.autoruns,
+            "autoruns": snap.autoruns,
+            "collection_errors": snap.collection_errors,
             "timeline": timeline,
             "graph": {
                 "nodes": nodes,
@@ -311,7 +374,7 @@ impl<'a> InvestigationHandler<'a> {
             "mitre": mitre,
             "metrics": {
                 "findings": findings_arr.len(),
-                "evidence": snap.autoruns.len() + snap.scheduled_tasks.len(),
+                "evidence": evidence_count,
                 "assets": 1
             }
         }))

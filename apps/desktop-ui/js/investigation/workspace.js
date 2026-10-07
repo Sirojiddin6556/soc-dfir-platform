@@ -4,6 +4,7 @@ import { InvestigationTimeline } from './timeline.js';
 import { EntityInspector } from './inspector.js';
 import { ContextDiscussion } from '../collaboration/discussion.js';
 import { escapeHtml } from '../util/html.js';
+import { isElevatedRisk } from './risk.js';
 
 export class InvestigationWorkspace {
   constructor(ipc) {
@@ -42,8 +43,19 @@ export class InvestigationWorkspace {
     this.timeline.render(this.store.timeline);
     this.updateMetrics();
 
+    // After a new collection the selected entity's graph node carries new
+    // counts; re-render it from the fresh node so the context panel never
+    // disagrees with the status bar.
+    const selected = this.store.selectedEntity;
+    const fresh = selected && this.store.graph.nodes.find(n => n.id === selected.id);
+    if (fresh) {
+      this.store.selectEntity(fresh);
+      this.loadEntity(fresh);
+      return;
+    }
+
     // Select first asset or attack entity by default if none selected
-    if (!this.store.selectedEntity && this.store.assets.length > 0) {
+    if (this.store.assets.length > 0) {
       const defaultEnt = this.store.graph.nodes.find(n => n.in_attack_path) || this.store.graph.nodes[0];
       if (defaultEnt) {
         this.store.selectEntity(defaultEnt);
@@ -160,13 +172,15 @@ export class InvestigationWorkspace {
     const riskEl = document.getElementById('riskLevel');
 
     if (findingsEl) findingsEl.textContent = this.store.findings.length;
-    if (evidenceEl) evidenceEl.textContent = this.store.evidence.length;
+    // Evidence is what was ingested into the case (CAS artifacts), not the
+    // host's autorun entries.
+    if (evidenceEl) evidenceEl.textContent = this.store.metrics.evidence ?? 0;
     if (hostsEl) hostsEl.textContent = this.store.assets.length;
 
     if (riskEl) {
       const risk = this.store.case && this.store.case.risk;
       riskEl.textContent = risk || '—';
-      riskEl.style.color = (risk === 'HIGH' || risk === 'CRITICAL') ? 'var(--accent-critical)' : 'var(--accent-info)';
+      riskEl.style.color = isElevatedRisk(risk) ? 'var(--accent-critical)' : 'var(--accent-info)';
     }
   }
 
