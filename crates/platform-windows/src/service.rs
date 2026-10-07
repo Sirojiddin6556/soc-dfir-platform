@@ -1,25 +1,16 @@
 #![forbid(unsafe_code)]
 
-use chrono::Utc;
-use serde::{Deserialize, Serialize};
-use std::process::Command;
+use crate::ps::{get_str, get_u64};
+use host_snapshot::json_items;
+pub use host_snapshot::ServiceObservation;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ServiceObservation {
-    pub service_name: String,
-    pub display_name: String,
-    pub state: String,
-    pub start_type: String,
-    pub binary_path: String,
-    pub account: String,
-    pub pid: Option<u32>,
-    pub executable_hash: Option<String>,
-    pub path_quoted: bool,
-    pub unquoted_risk: bool,
-    pub collected_at: String,
-}
+pub const SERVICE_SCRIPT: &str = r#"
+$items = @(Get-CimInstance Win32_Service -ErrorAction SilentlyContinue | Select-Object Name,DisplayName,State,StartMode,PathName,StartName,ProcessId)
+ConvertTo-Json -InputObject $items -Compress
+"#;
 
-fn check_unquoted_path_risk(raw_path: &str) -> (bool, bool) {
+/// (path is quoted, unquoted-path hijack risk) for a service ImagePath.
+pub fn check_unquoted_path_risk(raw_path: &str) -> (bool, bool) {
     let trimmed = raw_path.trim();
     let is_quoted = trimmed.starts_with('"') || trimmed.starts_with('\'');
     let exe_sub = if let Some(idx) = trimmed.to_lowercase().find(".exe") {
@@ -32,93 +23,65 @@ fn check_unquoted_path_risk(raw_path: &str) -> (bool, bool) {
     (is_quoted, risk)
 }
 
-/// Enumerates real Windows services with unquoted path vulnerability analysis
-pub fn enumerate_services_deep() -> Vec<ServiceObservation> {
-    let now = Utc::now().to_rfc3339();
-    #[cfg(target_os = "windows")]
-    {
-        let ps_cmd = "(Get-CimInstance Win32_Service | Select-Object -First 50 -Property Name,DisplayName,State,StartMode,PathName,StartName,ProcessId) | ConvertTo-Json -Compress";
-        let output = Command::new("powershell.exe")
-            .args(["-NoProfile", "-NonInteractive", "-Command", ps_cmd])
-            .output();
+pub fn parse_services_json(json: &str, collected_at: &str) -> Vec<ServiceObservation> {
+    json_items(json)
+        .iter()
+        .filter_map(|item| {
+            let name = get_str(item, "Name")?;
+            let path = get_str(item, "PathName").unwrap_or_default();
+            let (path_quoted, unquoted_risk) = check_unquoted_path_risk(&path);
+            Some(ServiceObservation {
+                display_name: get_str(item, "DisplayName").unwrap_or_else(|| name.clone()),
+                service_name: name,
+                state: get_str(item, "State").unwrap_or_else(|| "Unknown".to_string()),
+                start_type: get_str(item, "StartMode").unwrap_or_else(|| "Unknown".to_string()),
+                binary_path: path,
+                account: get_str(item, "StartName").unwrap_or_default(),
+                // Win32_Service reports ProcessId 0 for stopped services.
+                pid: get_u64(item, "ProcessId")
+                    .filter(|p| *p != 0)
+                    .map(|p| p as u32),
+                executable_hash: None,
+                path_quoted,
+                unquoted_risk,
+                collected_at: collected_at.to_string(),
+                source: "scm".to_string(),
+                unit_file: None,
+            })
+        })
+        .collect()
+}
 
-        if let Ok(out) = output {
-            if out.status.success() {
-                let json_str = String::from_utf8_lossy(&out.stdout);
-                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&json_str) {
-                    let items = if let Some(arr) = val.as_array() {
-                        arr.clone()
-                    } else if val.is_object() {
-                        vec![val]
-                    } else {
-                        Vec::new()
-                    };
+/// Enumerates Windows services with unquoted path analysis.
+#[cfg(target_os = "windows")]
+pub fn enumerate_services_deep() -> Result<Vec<ServiceObservation>, String> {
+    let now = chrono::Utc::now().to_rfc3339();
+    let json = crate::ps::run(SERVICE_SCRIPT)?;
+    Ok(parse_services_json(&json, &now))
+}
 
-                    let mut list = Vec::new();
-                    for item in items {
-                        let name = item
-                            .get("Name")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        let display = item
-                            .get("DisplayName")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or(&name)
-                            .to_string();
-                        let state = item
-                            .get("State")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("Stopped")
-                            .to_string();
-                        let start_mode = item
-                            .get("StartMode")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("Manual")
-                            .to_string();
-                        let path = item
-                            .get("PathName")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        let account = item
-                            .get("StartName")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("LocalSystem")
-                            .to_string();
-                        let pid = item
-                            .get("ProcessId")
-                            .and_then(|v| v.as_u64())
-                            .map(|p| p as u32);
+#[cfg(not(target_os = "windows"))]
+pub fn enumerate_services_deep() -> Result<Vec<ServiceObservation>, String> {
+    Err(crate::ps::unsupported("Win32_Service"))
+}
 
-                        let (quoted, unquoted_risk) = check_unquoted_path_risk(&path);
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-                        list.push(ServiceObservation {
-                            service_name: name,
-                            display_name: display,
-                            state,
-                            start_type: start_mode,
-                            binary_path: path,
-                            account,
-                            pid,
-                            executable_hash: None,
-                            path_quoted: quoted,
-                            unquoted_risk,
-                            collected_at: now.clone(),
-                        });
-                    }
+    const SAMPLE: &str = r#"[{"Name":"AdobeARMservice","DisplayName":"Adobe Acrobat Update Service","State":"Running","StartMode":"Auto","PathName":"\"C:\\Program Files (x86)\\Common Files\\Adobe\\ARM\\1.0\\armsvc.exe\"","StartName":"LocalSystem","ProcessId":4012},{"Name":"VulnSvc","DisplayName":"Vendor Agent","State":"Stopped","StartMode":"Manual","PathName":"C:\\Program Files\\Vendor App\\agent.exe -service","StartName":"LocalSystem","ProcessId":0},{"Name":"Dhcp","DisplayName":"DHCP Client","State":"Running","StartMode":"Auto","PathName":"C:\\Windows\\system32\\svchost.exe -k LocalServiceNetworkRestricted -p","StartName":"NT Authority\\LocalService","ProcessId":1544}]"#;
 
-                    if !list.is_empty() {
-                        return list;
-                    }
-                }
-            }
-        }
+    #[test]
+    fn parses_services_and_flags_unquoted_paths() {
+        let svcs = parse_services_json(SAMPLE, "t");
+        assert_eq!(svcs.len(), 3);
+        assert!(svcs[0].path_quoted && !svcs[0].unquoted_risk);
+        assert_eq!(svcs[0].pid, Some(4012));
+        assert!(svcs[1].unquoted_risk);
+        assert_eq!(svcs[1].pid, None, "stopped service has no pid");
+        assert_eq!(svcs[1].state, "Stopped");
+        assert!(!svcs[2].unquoted_risk, "no spaces before .exe");
+        assert_eq!(svcs[2].account, "NT Authority\\LocalService");
+        assert!(svcs.iter().all(|s| s.source == "scm"));
     }
-
-    // Live collection failed or is unavailable on this platform. Return an
-    // honest empty result rather than fabricating a forensic finding.
-    tracing::warn!("enumerate_services_deep: live collection unavailable, returning empty result");
-    let _ = now;
-    Vec::new()
 }

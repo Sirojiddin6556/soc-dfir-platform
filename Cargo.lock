@@ -979,8 +979,10 @@ dependencies = [
  "evidence-engine",
  "graph-engine",
  "hex",
+ "host-snapshot",
  "ipc-protocol",
  "normalization-engine",
+ "platform-linux",
  "platform-windows",
  "privilege-broker",
  "report-engine",
@@ -1587,6 +1589,16 @@ name = "hex"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
+
+[[package]]
+name = "host-snapshot"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2",
+]
 
 [[package]]
 name = "html5ever"
@@ -2565,10 +2577,14 @@ checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 name = "platform-linux"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "core-domain",
+ "host-snapshot",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -2577,10 +2593,9 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "core-domain",
- "hex",
+ "host-snapshot",
  "serde",
  "serde_json",
- "sha2",
  "thiserror 1.0.69",
  "tracing",
  "uuid",
