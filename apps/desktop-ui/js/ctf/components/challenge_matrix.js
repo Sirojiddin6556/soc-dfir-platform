@@ -5,6 +5,7 @@
  */
 
 import { workspaceStore } from '../workspace_store.js';
+import { escapeAttr, escapeHtml } from '../../util/html.js';
 
 const CATEGORY_META = {
   web: { label: 'Web', code: 'W', glyph: '◈', badgeClass: 'ctf-badge-web' },
@@ -23,12 +24,6 @@ const STATUS_META = {
   Solved: { label: 'Solved', glyph: '◼', badgeClass: 'ctf-status-solved' },
   Blocked: { label: 'Blocked', glyph: '▲', badgeClass: 'ctf-status-blocked' }
 };
-
-function escapeHtml(str) {
-  const div = document.createElement('div');
-  div.textContent = String(str ?? '');
-  return div.innerHTML;
-}
 
 export class ChallengeMatrix {
   /**
@@ -128,7 +123,7 @@ export class ChallengeMatrix {
           <div class="ctf-matrix-actions" style="display:flex;gap:8px;align-items:center;">
             <label for="ctfCompetitionSelect">Соревнование</label>
             <select id="ctfCompetitionSelect" aria-label="Выбрать CTF соревнование">
-              ${(state.competitions || []).map((item) => `<option value="${escapeHtml(item.id)}" ${item.id === state.activeCompetitionId ? 'selected' : ''}>${escapeHtml(item.name)}</option>`).join('')}
+              ${(state.competitions || []).map((item) => `<option value="${escapeAttr(item.id)}" ${item.id === state.activeCompetitionId ? 'selected' : ''}>${escapeHtml(item.name)}</option>`).join('')}
             </select>
             <button class="ctf-btn ctf-btn-secondary" id="ctfCreateCompetition">Новое соревнование</button>
             <button class="ctf-btn ctf-btn-secondary" id="ctfSeedDemoBtn" title="Загрузить тренировочный CTF полигон">⚡ Demo Lab</button>
@@ -195,13 +190,13 @@ export class ChallengeMatrix {
     const isInProgress = chal.status === 'InProgress';
 
     return `
-      <div class="ctf-challenge-card ${isSelected ? 'selected' : ''} ${isSolved ? 'solved' : ''} ${isInProgress ? 'inprogress' : ''}" data-challenge-id="${escapeHtml(chal.id)}">
+      <div class="ctf-challenge-card ${isSelected ? 'selected' : ''} ${isSolved ? 'solved' : ''} ${isInProgress ? 'inprogress' : ''}" data-challenge-id="${escapeAttr(chal.id)}">
         <div class="ctf-card-header">
           <span class="ctf-badge ${catMeta.badgeClass}">[${catMeta.code}] ${catMeta.glyph} ${catMeta.label}</span>
-          <span class="ctf-card-points">${chal.points || 100} pts</span>
+          <span class="ctf-card-points">${escapeHtml(chal.points || 100)} pts</span>
         </div>
 
-        <div class="ctf-card-title" title="${escapeHtml(chal.title || chal.id)}">
+        <div class="ctf-card-title" title="${escapeAttr(chal.title || chal.id)}">
           ${escapeHtml(chal.title || 'Untitled Challenge')}
         </div>
 

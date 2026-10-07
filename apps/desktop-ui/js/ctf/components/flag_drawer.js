@@ -5,12 +5,7 @@
  */
 
 import { flagStore } from '../flag_store.js';
-
-function escapeHtml(str) {
-  const div = document.createElement('div');
-  div.textContent = String(str ?? '');
-  return div.innerHTML;
-}
+import { escapeAttr, escapeHtml } from '../../util/html.js';
 
 export class FlagDrawer {
   /**
@@ -169,7 +164,7 @@ export class FlagDrawer {
     const timeStr = (c.timestamp || c.submitted_at) ? new Date(c.timestamp || c.submitted_at).toLocaleTimeString() : '';
 
     return `
-      <div class="ctf-flag-candidate-pill ${pillClass}" data-candidate-id="${escapeHtml(c.id)}">
+      <div class="ctf-flag-candidate-pill ${pillClass}" data-candidate-id="${escapeAttr(c.id)}">
         <div style="display: flex; align-items: center; justify-content: space-between; font-size: 11px;">
           <span style="font-weight: 700; color: ${isAccepted ? 'var(--ctf-accent-emerald)' : isRejected ? 'var(--ctf-accent-rose)' : 'var(--ctf-accent-amber)'};">
             ${glyph} ${statusLabel} #${String(idx + 1).padStart(2, '0')}
@@ -178,7 +173,7 @@ export class FlagDrawer {
             SRC: ${escapeHtml(c.source || 'unknown')}
           </span>
           <span style="font-family: var(--ctf-font-mono); font-size: 10px; color: var(--ctf-text-muted);">
-            ${timeStr}
+            ${escapeHtml(timeStr)}
           </span>
         </div>
 
@@ -186,17 +181,17 @@ export class FlagDrawer {
           <div class="ctf-flag-string">
             ${escapeHtml(flagValue)}
           </div>
-          <button class="ctf-btn ctf-btn-ghost ctf-copy-flag-btn" data-flag="${escapeHtml(flagValue)}" style="height: 22px; padding: 0 6px;" title="Копировать в буфер">
+          <button class="ctf-btn ctf-btn-ghost ctf-copy-flag-btn" data-flag="${escapeAttr(flagValue)}" style="height: 22px; padding: 0 6px;" title="Копировать в буфер">
             📋
           </button>
         </div>
 
         ${isCandidate ? `
           <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 4px;">
-            <button class="ctf-btn ctf-btn-accept ctf-accept-flag-btn" data-candidate-id="${escapeHtml(c.id)}" style="height: 24px; font-size: 11px;" title="Принять флаг (Ctrl+Shift+A)">
+            <button class="ctf-btn ctf-btn-accept ctf-accept-flag-btn" data-candidate-id="${escapeAttr(c.id)}" style="height: 24px; font-size: 11px;" title="Принять флаг (Ctrl+Shift+A)">
               ✔ Проверить <span class="ctf-hotkey" style="font-size: 9px; padding: 0 3px;">^⇧A</span>
             </button>
-            <button class="ctf-btn ctf-btn-reject ctf-reject-flag-btn" data-candidate-id="${escapeHtml(c.id)}" style="height: 24px; font-size: 11px;" title="Отклонить ложное срабатывание (Ctrl+Shift+R)">
+            <button class="ctf-btn ctf-btn-reject ctf-reject-flag-btn" data-candidate-id="${escapeAttr(c.id)}" style="height: 24px; font-size: 11px;" title="Отклонить ложное срабатывание (Ctrl+Shift+R)">
               ✕ Reject <span class="ctf-hotkey" style="font-size: 9px; padding: 0 3px;">^⇧R</span>
             </button>
           </div>

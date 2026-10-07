@@ -5,12 +5,7 @@
  */
 
 import { jobRunnerStore } from '../job_runner_store.js';
-
-function escapeHtml(str) {
-  const div = document.createElement('div');
-  div.textContent = String(str ?? '');
-  return div.innerHTML;
-}
+import { escapeAttr, escapeHtml } from '../../util/html.js';
 
 /**
  * Basic ANSI-to-HTML converter for terminal logs.
@@ -178,7 +173,7 @@ export class TerminalView {
         <!-- Command Input Runner -->
         <div class="ctf-terminal-input-bar">
           <select id="ctfToolSelect" aria-label="Инструмент" ${state.isLoadingTools || tools.length === 0 ? 'disabled' : ''}>
-            ${tools.length ? tools.map((tool) => `<option value="${escapeHtml(tool.id)}">${escapeHtml(tool.name || tool.id)} (${escapeHtml(tool.id)})</option>`).join('') : '<option value="">Нет доступных инструментов</option>'}
+            ${tools.length ? tools.map((tool) => `<option value="${escapeAttr(tool.id)}">${escapeHtml(tool.name || tool.id)} (${escapeHtml(tool.id)})</option>`).join('') : '<option value="">Нет доступных инструментов</option>'}
           </select>
           <input
             type="text"

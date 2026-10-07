@@ -8,15 +8,10 @@
 
 import { hexStore, BYTES_PER_ROW } from '../hex_store.js';
 import { EntropyMinimap } from './entropy_minimap.js';
+import { escapeHtml } from '../../util/html.js';
 
 export const ROW_HEIGHT = 20; // 20px fixed row height per design spec
 export const OVERSCAN_ROWS = 15;
-
-function escapeHtml(str) {
-  const div = document.createElement('div');
-  div.textContent = String(str ?? '');
-  return div.innerHTML;
-}
 
 export class HexViewer {
   /**
@@ -351,7 +346,7 @@ export class HexViewer {
 
     this.tooltipEl.innerHTML = `
       <div style="font-weight:700; color:var(--ctf-text-offset, #79C0FF); margin-bottom:2px;">Offset: 0x${offset.toString(16).padStart(8, '0').toUpperCase()} (${offset})</div>
-      <div>Hex: <strong style="color:var(--ctf-accent-cyan, #00E5FF);">0x${b0.toString(16).padStart(2, '0').toUpperCase()}</strong> (${ch})</div>
+      <div>Hex: <strong style="color:var(--ctf-accent-cyan, #00E5FF);">0x${b0.toString(16).padStart(2, '0').toUpperCase()}</strong> (${escapeHtml(ch)})</div>
       <div>uint8: <strong>${b0}</strong> | int8: <strong>${s8}</strong></div>
       <div>Binary: <span style="letter-spacing:0.1em; color:var(--ctf-accent-emerald, #10B981);">${binStr}</span></div>
       <div>uint16 LE: <strong>${u16}</strong> (0x${u16.toString(16).toUpperCase()})</div>

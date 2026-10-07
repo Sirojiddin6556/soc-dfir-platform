@@ -1,11 +1,4 @@
-function escapeHtml(str) {
-  if (str === null || str === undefined) return '';
-  return String(str)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-}
+import { escapeAttr, escapeHtml } from '../util/html.js';
 
 const SCENARIOS = [
   {
@@ -103,7 +96,7 @@ export class RangeSpace {
             ${this.scenarios.map(s => {
               const isSel = s.id === this.selectedScenarioId;
               return `
-                <div class="range-card" data-id="${escapeHtml(s.id)}" style="background:var(--bg-surface);border:1px solid ${isSel ? 'var(--accent-primary)' : 'var(--border-muted)'};border-radius:6px;padding:14px;cursor:pointer;transition:border-color 0.2s;">
+                <div class="range-card" data-id="${escapeAttr(s.id)}" style="background:var(--bg-surface);border:1px solid ${isSel ? 'var(--accent-primary)' : 'var(--border-muted)'};border-radius:6px;padding:14px;cursor:pointer;transition:border-color 0.2s;">
                   <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
                     <span style="font-size:10px;font-weight:700;color:${s.badgeColor};background:rgba(255,255,255,0.05);padding:2px 6px;border-radius:4px;">${escapeHtml(s.difficulty)}</span>
                     <span style="font-size:11px;color:var(--text-muted);">${escapeHtml(s.category)}</span>
@@ -146,7 +139,7 @@ export class RangeSpace {
               <div style="display:flex;flex-direction:column;gap:8px;">
                 ${active.objectives.map((obj, idx) => `
                   <label style="display:flex;align-items:center;gap:10px;background:var(--bg-canvas);border:1px solid var(--border-muted);padding:8px 12px;border-radius:4px;cursor:pointer;">
-                    <input type="checkbox" class="range-obj-chk" data-obj="${escapeHtml(obj.id)}" ${obj.done ? 'checked' : ''} style="cursor:pointer;">
+                    <input type="checkbox" class="range-obj-chk" data-obj="${escapeAttr(obj.id)}" ${obj.done ? 'checked' : ''} style="cursor:pointer;">
                     <span style="font-size:12px;color:${obj.done ? 'var(--text-muted)' : 'var(--text-primary)'};text-decoration:${obj.done ? 'line-through' : 'none'};flex:1;">
                       ${idx + 1}. ${escapeHtml(obj.title)}
                     </span>

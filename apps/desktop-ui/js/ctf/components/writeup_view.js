@@ -6,12 +6,7 @@
 
 import { writeupStore } from '../writeup_store.js';
 import { workspaceStore } from '../workspace_store.js';
-
-function escapeHtml(str) {
-  const div = document.createElement('div');
-  div.textContent = String(str ?? '');
-  return div.innerHTML;
-}
+import { escapeAttr, escapeHtml } from '../../util/html.js';
 
 /**
  * Lightweight safe markdown formatter with secret redaction pill rendering.
@@ -33,11 +28,11 @@ function renderMarkdown(md) {
   html = html.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
   html = html.replace(/\*(.*?)\*/g, '<em>$1</em>');
 
-  // Fenced Code blocks
-  html = html.replace(/```([\s\S]*?)```/g, '<pre style="background: var(--ctf-bg-surface-1); border: 1px solid var(--ctf-border-default); border-radius: var(--ctf-radius-sm); padding: 10px; font-family: var(--ctf-font-mono); font-size: 12px; overflow-x: auto; margin: 8px 0;"><code>$1</code></pre>');
+  // Fenced Code blocks (backticks arrive escaped as &#96;)
+  html = html.replace(/&#96;&#96;&#96;([\s\S]*?)&#96;&#96;&#96;/g, '<pre style="background: var(--ctf-bg-surface-1); border: 1px solid var(--ctf-border-default); border-radius: var(--ctf-radius-sm); padding: 10px; font-family: var(--ctf-font-mono); font-size: 12px; overflow-x: auto; margin: 8px 0;"><code>$1</code></pre>');
 
   // Inline Code
-  html = html.replace(/`([^`]+)`/g, '<code style="background: var(--ctf-bg-surface-2); padding: 1px 4px; border-radius: 2px; font-family: var(--ctf-font-mono); font-size: 12px; color: var(--ctf-text-offset);">$1</code>');
+  html = html.replace(/&#96;((?:(?!&#96;)[\s\S])+)&#96;/g, '<code style="background: var(--ctf-bg-surface-2); padding: 1px 4px; border-radius: 2px; font-family: var(--ctf-font-mono); font-size: 12px; color: var(--ctf-text-offset);">$1</code>');
 
   // Bullet Lists
   html = html.replace(/^\- (.*$)/gim, '<li style="margin-left: 20px;">$1</li>');
@@ -126,7 +121,7 @@ export class WriteupView {
             <textarea
               id="ctfWriteupEditorTextarea"
               class="ctf-writeup-textarea"
-              placeholder="# Write-up: ${activeChal?.title || 'Challenge'}&#10;&#10;## Overview&#10;Describe vulnerability and approach...&#10;&#10;## Solution Steps&#10;1. Ingest artifact&#10;2. Apply transformation..."
+              placeholder="# Write-up: ${escapeAttr(activeChal?.title || 'Challenge')}&#10;&#10;## Overview&#10;Describe vulnerability and approach...&#10;&#10;## Solution Steps&#10;1. Ingest artifact&#10;2. Apply transformation..."
             >${escapeHtml(md)}</textarea>
           </div>
 

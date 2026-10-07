@@ -3,6 +3,7 @@ import { InvestigationGraph } from './graph.js';
 import { InvestigationTimeline } from './timeline.js';
 import { EntityInspector } from './inspector.js';
 import { ContextDiscussion } from '../collaboration/discussion.js';
+import { escapeHtml } from '../util/html.js';
 
 export class InvestigationWorkspace {
   constructor(ipc) {
@@ -143,12 +144,12 @@ export class InvestigationWorkspace {
     if (!target) return;
 
     target.innerHTML = `
-      <div style="font-weight: 700; font-size: 13px; color: var(--text-primary); margin-bottom: 4px;">${event.title}</div>
-      <div style="font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); margin-bottom: 12px;">Время: ${event.timestamp} • Категория: ${event.category}</div>
+      <div style="font-weight: 700; font-size: 13px; color: var(--text-primary); margin-bottom: 4px;">${escapeHtml(event.title)}</div>
+      <div style="font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); margin-bottom: 12px;">Время: ${escapeHtml(event.timestamp)} • Категория: ${escapeHtml(event.category)}</div>
       <div style="background: var(--bg-surface); border: 1px solid var(--border-muted); border-radius: 6px; padding: 10px; font-size: 11px; line-height: 1.5; color: var(--text-primary); margin-bottom: 12px;">
-        ${event.detail || 'Нет дополнительных сведений.'}
+        ${escapeHtml(event.detail || 'Нет дополнительных сведений.')}
       </div>
-      <pre style="font-size: 10px; color: var(--text-secondary); background: var(--bg-canvas); border: 1px solid var(--border-muted); padding: 8px; border-radius: 4px; overflow-x: auto;">${JSON.stringify(event, null, 2)}</pre>
+      <pre style="font-size: 10px; color: var(--text-secondary); background: var(--bg-canvas); border: 1px solid var(--border-muted); padding: 8px; border-radius: 4px; overflow-x: auto;">${escapeHtml(JSON.stringify(event, null, 2))}</pre>
     `;
   }
 

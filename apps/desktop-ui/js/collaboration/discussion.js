@@ -1,3 +1,5 @@
+import { escapeHtml } from '../util/html.js';
+
 export class ContextDiscussion {
   constructor(ipc) {
     this.ipc = ipc;
@@ -86,8 +88,8 @@ export class ContextDiscussion {
       const time = m.created_at ? new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
       html += `
         <div class="discussion-msg">
-          <div class="discussion-author">${m.author_name || 'Аналитик'} <span style="font-size: 9px; color: var(--text-muted); font-weight: normal; margin-left: 4px;">${time}</span></div>
-          <div style="color: var(--text-primary); font-size: 11px;">${m.body}</div>
+          <div class="discussion-author">${escapeHtml(m.author_name || 'Аналитик')} <span style="font-size: 9px; color: var(--text-muted); font-weight: normal; margin-left: 4px;">${escapeHtml(time)}</span></div>
+          <div style="color: var(--text-primary); font-size: 11px;">${escapeHtml(m.body)}</div>
         </div>
       `;
     }

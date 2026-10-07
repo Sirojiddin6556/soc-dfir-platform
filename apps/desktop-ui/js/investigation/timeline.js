@@ -1,3 +1,5 @@
+import { escapeAttr, escapeHtml } from '../util/html.js';
+
 export class InvestigationTimeline {
   constructor(container) {
     this.container = container;
@@ -42,14 +44,14 @@ export class InvestigationTimeline {
       const activeClass = isSelected ? 'active' : '';
 
       html += `
-        <div class="timeline-event ${catClass} ${activeClass}" data-event-id="${evt.id}">
-          <div class="timeline-time">${evt.timestamp || '00:00:00'}</div>
+        <div class="timeline-event ${escapeAttr(catClass)} ${activeClass}" data-event-id="${escapeAttr(evt.id)}">
+          <div class="timeline-time">${escapeHtml(evt.timestamp || '00:00:00')}</div>
           <div>
             <div class="timeline-event-header">
-              <span class="timeline-event-title">${evt.title}</span>
-              <span class="badge ${evt.severity === 'critical' || evt.severity === 'high' ? 'badge-critical' : 'badge-net'}" style="font-size: 8px;">${evt.category || 'EVENT'}</span>
+              <span class="timeline-event-title">${escapeHtml(evt.title)}</span>
+              <span class="badge ${evt.severity === 'critical' || evt.severity === 'high' ? 'badge-critical' : 'badge-net'}" style="font-size: 8px;">${escapeHtml(evt.category || 'EVENT')}</span>
             </div>
-            <div class="timeline-event-detail">${evt.detail || ''}</div>
+            <div class="timeline-event-detail">${escapeHtml(evt.detail || '')}</div>
           </div>
         </div>
       `;
