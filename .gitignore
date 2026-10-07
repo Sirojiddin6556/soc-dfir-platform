@@ -11,3 +11,4 @@ data/
 .DS_Store
 Thumbs.db
 elevated-groups.txt*
+.claude/worktrees/

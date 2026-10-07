@@ -1,4 +1,4 @@
-use core_domain::collaboration::{ChatMessage, EntityRef, ReferenceType, Role, User};
+use core_domain::collaboration::{ChatMessage, EntityRef, ReferenceType, User};
 use core_domain::id::EntityId;
 use ipc_protocol::ProblemDetails;
 use storage_sqlite::SqliteStorage;
@@ -13,15 +13,22 @@ impl<'a> CollabHandler<'a> {
         Self { storage }
     }
 
+    /// The user owning the session token in `params`. Identity always comes
+    /// from the session, never from client-supplied names or ids.
+    fn session_user(&self, params: &serde_json::Value) -> Result<User, ProblemDetails> {
+        let token = params.get("token").and_then(|t| t.as_str()).unwrap_or("");
+        self.storage
+            .get_user_by_token(token)
+            .map_err(|e| ProblemDetails::bad_request(&e.to_string(), vec![]))?
+            .ok_or_else(|| ProblemDetails::unauthorized("Сессия не найдена или истекла"))
+    }
+
     pub fn handle(
         &self,
         method: &str,
         params: serde_json::Value,
     ) -> Result<serde_json::Value, ProblemDetails> {
         match method {
-            "auth.login" => self.handle_login(params),
-            "auth.logout" => self.handle_logout(params),
-            "auth.session" => self.handle_session(params),
             "auth.update_profile" => self.handle_update_profile(params),
             "entity.get" => self.handle_entity_get(params),
             "team.list" => self.handle_team_list(),
@@ -47,67 +54,6 @@ impl<'a> CollabHandler<'a> {
         }
     }
 
-    fn handle_login(&self, params: serde_json::Value) -> Result<serde_json::Value, ProblemDetails> {
-        let username = params
-            .get("username")
-            .and_then(|u| u.as_str())
-            .ok_or_else(|| {
-                ProblemDetails::bad_request(
-                    "Имя пользователя обязательно",
-                    vec!["username".to_string()],
-                )
-            })?;
-        let password = params
-            .get("password")
-            .and_then(|p| p.as_str())
-            .unwrap_or("");
-
-        let user = self
-            .storage
-            .verify_user_password(username, password)
-            .map_err(|e| {
-                ProblemDetails::bad_request(&format!("Ошибка аутентификации: {}", e), vec![])
-            })?
-            .ok_or_else(|| ProblemDetails::unauthorized("Неверное имя пользователя или пароль"))?;
-
-        let session = self
-            .storage
-            .create_session(user.id, &user.username)
-            .map_err(|e| {
-                ProblemDetails::bad_request(&format!("Ошибка создания сессии: {}", e), vec![])
-            })?;
-
-        Ok(serde_json::json!({
-            "user": user,
-            "session": session
-        }))
-    }
-
-    fn handle_logout(
-        &self,
-        params: serde_json::Value,
-    ) -> Result<serde_json::Value, ProblemDetails> {
-        let token = params.get("token").and_then(|t| t.as_str()).unwrap_or("");
-        self.storage
-            .delete_session(token)
-            .map_err(|e| ProblemDetails::bad_request(&format!("Ошибка выхода: {}", e), vec![]))?;
-        Ok(serde_json::json!({ "success": true }))
-    }
-
-    fn handle_session(
-        &self,
-        params: serde_json::Value,
-    ) -> Result<serde_json::Value, ProblemDetails> {
-        let token = params.get("token").and_then(|t| t.as_str()).unwrap_or("");
-        let user = self
-            .storage
-            .get_user_by_token(token)
-            .map_err(|e| ProblemDetails::bad_request(&format!("Ошибка сессии: {}", e), vec![]))?
-            .ok_or_else(|| ProblemDetails::unauthorized("Сессия не найдена или истекла"))?;
-
-        Ok(serde_json::json!({ "user": user }))
-    }
-
     fn handle_entity_get(
         &self,
         params: serde_json::Value,
@@ -124,31 +70,24 @@ impl<'a> CollabHandler<'a> {
         &self,
         params: serde_json::Value,
     ) -> Result<serde_json::Value, ProblemDetails> {
-        let user_id_str = params.get("user_id").and_then(|u| u.as_str()).unwrap_or("");
-        let user_id = EntityId::parse(user_id_str).unwrap_or_else(|_| EntityId::new_v7());
-        let display_name = params
-            .get("display_name")
-            .and_then(|d| d.as_str())
-            .unwrap_or("Сироҷиддин");
-        let email = params
-            .get("email")
-            .and_then(|e| e.as_str())
-            .unwrap_or("sirojiddin@soc.local");
-        let dept = params
-            .get("department")
-            .and_then(|d| d.as_str())
-            .unwrap_or("SOC");
-        let tz = params
-            .get("timezone")
-            .and_then(|t| t.as_str())
-            .unwrap_or("Asia/Tashkent");
-        let lang = params
-            .get("language")
-            .and_then(|l| l.as_str())
-            .unwrap_or("ru");
+        let user = self.session_user(&params)?;
+        let field = |name: &str, current: &str| -> String {
+            params
+                .get(name)
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .unwrap_or(current)
+                .to_string()
+        };
+        let display_name = field("display_name", &user.display_name);
+        let email = field("email", &user.email);
+        let dept = field("department", &user.department);
+        let tz = field("timezone", &user.timezone);
+        let lang = field("language", &user.language);
 
         self.storage
-            .update_user_profile(user_id, display_name, email, dept, tz, lang)
+            .update_user_profile(user.id, &display_name, &email, &dept, &tz, &lang)
             .map_err(|e| {
                 ProblemDetails::bad_request(&format!("Ошибка обновления профиля: {}", e), vec![])
             })?;
@@ -247,14 +186,7 @@ impl<'a> CollabHandler<'a> {
             }
         };
 
-        let author_name = params
-            .get("author_name")
-            .and_then(|a| a.as_str())
-            .unwrap_or("Сироҷиддин");
-        let author_role_str = params
-            .get("author_role")
-            .and_then(|r| r.as_str())
-            .unwrap_or("Owner");
+        let user = self.session_user(&params)?;
         let body = params
             .get("body")
             .and_then(|b| b.as_str())
@@ -347,30 +279,12 @@ impl<'a> CollabHandler<'a> {
             }
         }
 
-        let user = self
-            .storage
-            .get_user_by_username("sirojiddin")
-            .ok()
-            .flatten()
-            .unwrap_or(User {
-                id: EntityId::new_v7(),
-                username: "sirojiddin".to_string(),
-                display_name: author_name.to_string(),
-                email: "sirojiddin@soc.local".to_string(),
-                role: Role::from_str(author_role_str),
-                department: "SOC".to_string(),
-                timezone: "Asia/Tashkent".to_string(),
-                language: "ru".to_string(),
-                avatar_url: None,
-                created_at: chrono::Utc::now(),
-            });
-
         let msg = ChatMessage {
             id: EntityId::new_v7(),
             channel_id,
             author_id: user.id,
-            author_name: author_name.to_string(),
-            author_role: Role::from_str(author_role_str),
+            author_name: user.display_name.clone(),
+            author_role: user.role.clone(),
             body: body.to_string(),
             reply_to_id: None,
             references,
@@ -406,23 +320,7 @@ impl<'a> CollabHandler<'a> {
             .unwrap_or("В сети");
         let active_case = params.get("active_case_id").and_then(|c| c.as_str());
 
-        let user = self
-            .storage
-            .get_user_by_username("sirojiddin")
-            .ok()
-            .flatten()
-            .unwrap_or(User {
-                id: EntityId::new_v7(),
-                username: "sirojiddin".to_string(),
-                display_name: "Сироҷиддин".to_string(),
-                email: "sirojiddin@soc.local".to_string(),
-                role: Role::Owner,
-                department: "SOC".to_string(),
-                timezone: "Asia/Tashkent".to_string(),
-                language: "ru".to_string(),
-                avatar_url: None,
-                created_at: chrono::Utc::now(),
-            });
+        let user = self.session_user(&params)?;
 
         self.storage
             .update_presence(user.id, is_online, active_case, status)

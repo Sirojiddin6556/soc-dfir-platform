@@ -17,6 +17,7 @@ impl From<SqliteStorageError> for DomainError {
             }
             SqliteStorageError::Json(e) => DomainError::Storage(format!("JSON error: {}", e)),
             SqliteStorageError::Io(e) => DomainError::Storage(format!("IO error: {}", e)),
+            SqliteStorageError::Validation(msg) => DomainError::Validation(msg),
         }
     }
 }

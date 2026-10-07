@@ -229,3 +229,91 @@
   align-items: center;
   justify-content: center;
 }
+
+/* ---------- Auth overlay (first-run setup / login) ---------- */
+.auth-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-canvas);
+}
+
+.auth-overlay[hidden] {
+  display: none;
+}
+
+.auth-card {
+  width: min(380px, calc(100vw - 32px));
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 28px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-muted);
+  border-radius: 10px;
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+}
+
+.auth-brand {
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--accent-info);
+}
+
+.auth-card h2 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.auth-hint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.auth-card label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.auth-card label[hidden] {
+  display: none;
+}
+
+.auth-card input {
+  background: var(--bg-canvas);
+  border: 1px solid var(--border-muted);
+  border-radius: 6px;
+  padding: 8px 10px;
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+.auth-card input:focus {
+  outline: none;
+  border-color: var(--accent-info);
+}
+
+.auth-error {
+  min-height: 16px;
+  font-size: 12px;
+  color: var(--accent-critical);
+}
+
+.auth-submit {
+  padding: 9px 12px;
+  font-size: 13px;
+}
+
+.auth-submit:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}

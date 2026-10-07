@@ -35,6 +35,9 @@ pub enum SqliteStorageError {
 
     #[error("Entity not found: {0}")]
     NotFound(String),
+
+    #[error("{0}")]
+    Validation(String),
 }
 
 #[derive(Clone)]

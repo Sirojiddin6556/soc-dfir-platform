@@ -984,6 +984,7 @@ dependencies = [
  "platform-windows",
  "privilege-broker",
  "report-engine",
+ "rusqlite",
  "scan-engine",
  "scenario-engine",
  "scenario-verifier",

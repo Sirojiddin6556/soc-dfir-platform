@@ -7,6 +7,7 @@ import { SystemSpace } from './system/system.js';
 import { TeamPresence } from './collaboration/presence.js';
 import { CtfApp } from './ctf/ctf_app.js';
 import { ctfIpc } from './ctf/ctf_ipc.js';
+import { ensureSession, clearSessionToken, logout } from './auth.js';
 
 class SocDfirApplication {
   constructor() {
@@ -43,7 +44,14 @@ class SocDfirApplication {
     this.setupLiveTimer();
     this.setupGlobalSearch();
 
-    try { await this.ensureLocalAuth(); } catch (e) { console.warn('[Auth]', e.message); }
+    try {
+      this.user = await ensureSession(this.ipc);
+    } catch (e) {
+      console.error('[Auth]', e.message);
+      this.showFatal(`Движок недоступен: ${e.message}`);
+      return;
+    }
+    this.setupSessionHandling();
     try { await this.ensureActiveCase(); } catch (e) { console.warn('[Case]', e.message); }
     try { await this.workspace.init(); } catch (e) { console.warn('[Workspace]', e.message); }
     try { await this.presence.init(); } catch (e) { console.warn('[Presence]', e.message); }
@@ -75,13 +83,27 @@ class SocDfirApplication {
     }
   }
 
-  async ensureLocalAuth() {
-    const token = typeof localStorage !== 'undefined' ? localStorage.getItem('soc_session_token') : null;
-    if (!token) {
-      const res = await this.ipc.call('auth.login', { username: 'sirojiddin', password: 'admin' });
-      if (res && res.session) {
-        localStorage.setItem('soc_session_token', res.session.token);
-      }
+  setupSessionHandling() {
+    const nameEl = document.getElementById('currentUserName');
+    if (nameEl && this.user) nameEl.textContent = this.user.display_name || this.user.username;
+    document.getElementById('logoutButton')?.addEventListener('click', () => logout(this.ipc));
+    // A session that expires or is revoked mid-work sends the user back to login.
+    window.addEventListener('soc:unauthorized', () => {
+      clearSessionToken();
+      window.location.reload();
+    }, { once: true });
+  }
+
+  showFatal(message) {
+    const overlay = document.getElementById('authOverlay');
+    const error = document.getElementById('authError');
+    const form = document.getElementById('authForm');
+    if (overlay && error && form) {
+      form.querySelectorAll('label, button').forEach(el => { el.hidden = true; });
+      document.getElementById('authTitle').textContent = 'Нет связи с движком';
+      document.getElementById('authHint').textContent = '';
+      error.textContent = message;
+      overlay.hidden = false;
     }
   }
 

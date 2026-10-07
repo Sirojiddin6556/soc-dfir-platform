@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>SOC/DFIR Platform</title>
+  <link rel="icon" href="data:,">
   <link rel="stylesheet" href="css/theme.css">
   <link rel="stylesheet" href="css/shell.css">
   <link rel="stylesheet" href="css/investigation.css">
@@ -40,6 +41,7 @@
       </button>
       <input id="globalSearch" class="global-search" placeholder="Поиск (Ctrl+K)...">
       <button id="startCollection" class="primary-action">▶ Запустить сбор</button>
+      <button id="logoutButton" class="icon-button" title="Выйти">⎋ <span id="currentUserName">—</span></button>
     </div>
   </header>
 
@@ -183,6 +185,31 @@
     <span>Engine: <strong>LOCAL</strong></span>
     <span id="teamSyncState">Team: OFFLINE</span>
   </footer>
+</div>
+
+<!-- ===================================================== -->
+<!-- AUTH: first-run setup and login                       -->
+<!-- ===================================================== -->
+<div id="authOverlay" class="auth-overlay" hidden role="dialog" aria-modal="true" aria-labelledby="authTitle">
+  <form id="authForm" class="auth-card" novalidate>
+    <div class="auth-brand">⬡ SOC/DFIR ПЛАТФОРМА</div>
+    <h2 id="authTitle">Вход</h2>
+    <p id="authHint" class="auth-hint"></p>
+    <label id="authUserRow">Имя пользователя
+      <input id="authUsername" name="username" autocomplete="username" spellcheck="false">
+    </label>
+    <label id="authCurrentRow" hidden>Текущий пароль
+      <input id="authCurrent" type="password" autocomplete="current-password">
+    </label>
+    <label>Пароль
+      <input id="authPassword" type="password" name="password" autocomplete="current-password">
+    </label>
+    <label id="authConfirmRow" hidden>Повторите пароль
+      <input id="authConfirm" type="password" autocomplete="new-password">
+    </label>
+    <div id="authError" class="auth-error" role="alert"></div>
+    <button type="submit" class="primary-action auth-submit" id="authSubmit">Войти</button>
+  </form>
 </div>
 
 <script type="module" src="js/app.js"></script>
