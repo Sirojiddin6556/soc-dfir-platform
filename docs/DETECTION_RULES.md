@@ -110,6 +110,89 @@
 
 ---
 
+### Группа 5: Live-инспекция Linux (`CORR-LIN-*`)
+
+Правила работают по наблюдениям, которые `host_inspector` строит из live-снимка Linux-хоста (`crates/platform-linux`): процессы из `/proc` (путь из `/proc/<pid>/exe`, флаг удалённого образа `exe_deleted`, полная командная строка), сокеты из `/proc/net/{tcp,tcp6,udp,udp6}` с привязкой к PID через `/proc/<pid>/fd`, точки закрепления (cron, systemd, rc.local, XDG autostart, `/etc/ld.so.preload`) с нормализованным полем `mechanism`. Шаблоны командных строк проверяются только тогда, когда их **исполняет** соответствующая программа: `grep /dev/tcp/` или редактор с таким текстом не являются находкой.
+
+Общедоступными для записи каталогами считаются `/tmp/`, `/var/tmp/`, `/dev/shm/`.
+
+#### `CORR-LIN-001a`: Командная строка реверс-шелла
+- **Сущность**: Процесс (`EntityType::Process`), ключ `<host>:proc:revshell:<pid>`
+- **Условие**: одно из (процесс-исполнитель указан в скобках):
+  - перенаправление в `/dev/tcp/` или `/dev/udp/` (оболочка: `sh`, `bash`, `dash`, `zsh`, `ksh`, ...);
+  - `nc`/`ncat`/`netcat` с флагом исполнения `-e`, `-c`, `--exec`, `--sh-exec` (netcat или оболочка);
+  - именованный канал `mkfifo`/`mknod` + netcat (оболочка);
+  - однострочник `python`/`perl`/`ruby`/`php`/`node`/`lua` с сокетом (`socket`, `fsockopen`) и запуском оболочки (`pty`, `subprocess`, `dup2`, `/bin/sh`, `exec`, `spawn`);
+  - `socat` с `exec:`/`system:` и транспортом `tcp`/`udp`/`ssl`.
+- **Серьезность**: `Critical` | **Базовый риск**: 95.0 | **Достоверность**: 0.95
+- **MITRE ATT&CK**: Tactic: *Execution* | Technique: `T1059.004` (Command and Scripting Interpreter: Unix Shell)
+- **Пирамида боли**: `TTPs`
+
+#### `CORR-LIN-001b`: Процесс запущен из общедоступного для записи каталога
+- **Сущность**: Процесс, ключ `<host>:proc:ww_exec:<path>`
+- **Условие**: исполняемый файл процесса находится в `/tmp/`, `/var/tmp/` или `/dev/shm/`.
+- **Серьезность**: `High` | **Базовый риск**: 75.0 | **Достоверность**: 0.80
+- **MITRE ATT&CK**: Tactic: *Defense Evasion* | Technique: `T1036.005` (Masquerading: Match Legitimate Name or Location) — Linux-аналог `CORR-WIN-001f`
+- **Пирамида боли**: `Host Artifacts`
+- **Обоснование**: пакетное ПО устанавливается в `/usr`, `/opt`; дропперы и загрузчики первой стадии запускаются из каталогов, доступных на запись любому пользователю.
+
+#### `CORR-LIN-001c`: Исполняемый файл работающего процесса удалён с диска
+- **Сущность**: Процесс, ключ `<host>:proc:deleted_exe:<path>`
+- **Условие**: `/proc/<pid>/exe` указывает на `... (deleted)` (кроме memfd, см. `001e`).
+- **Серьезность**: `High`, риск 80.0; если путь в `/usr/`, `/bin/`, `/sbin/`, `/lib*`, `/opt/` — `Medium`, риск 45.0 (типичная причина — обновление пакета без перезапуска службы, требует проверки).
+- **MITRE ATT&CK**: Tactic: *Defense Evasion* | Technique: `T1070.004` (Indicator Removal: File Deletion)
+- **Пирамида боли**: `Host Artifacts`
+
+#### `CORR-LIN-001d`: Загрузка и исполнение через конвейер в оболочку
+- **Сущность**: Процесс, ключ `<host>:proc:download_exec:<pid>`
+- **Условие**: процесс-оболочка выполняет конвейер, в котором вывод `curl`/`wget`/`fetch` передаётся в оболочку или интерпретатор (`curl ... | sh`, `wget -O- ... | sudo bash`).
+- **Серьезность**: `High` | **Базовый риск**: 80.0 | **Достоверность**: 0.85
+- **MITRE ATT&CK**: Tactic: *Command and Control* | Technique: `T1105` (Ingress Tool Transfer)
+- **Пирамида боли**: `Tools`
+
+#### `CORR-LIN-001e`: Бесфайловое исполнение из memfd
+- **Сущность**: Процесс, ключ `<host>:proc:memfd:<path>`
+- **Условие**: образ процесса — анонимный файл в памяти (`/proc/<pid>/exe` → `/memfd:<name> (deleted)`).
+- **Серьезность**: `High` | **Базовый риск**: 80.0 | **Достоверность**: 0.85
+- **MITRE ATT&CK**: Tactic: *Defense Evasion* | Technique: `T1620` (Reflective Code Loading)
+- **Пирамида боли**: `TTPs`
+- **Обоснование**: `memfd_create` + `fexecve` позволяет запускать код, никогда не записанный на диск. Техника встречается и у легитимного ПО (например, агентов телеметрии песочниц) — факт фиксирует технику, а не вердикт о вредоносности.
+
+#### `CORR-LIN-002a`: Подозрительная точка закрепления Linux
+- **Сущность**: Хост (`EntityType::Host`), ключ `<host>:persist:<mechanism>:<имя>`
+- **Условие**: команда записи cron, таймера/службы systemd, `rc.local` или XDG autostart:
+  - запускает программу из `/tmp/`, `/var/tmp/`, `/dev/shm/` (учитываются обёртки `nohup`, `env`, `sudo`, `sh -c`; просто упоминание `/tmp` в аргументах, например `find /tmp -delete`, не срабатывает) — `High`, риск 85.0;
+  - или содержит загрузку с конвейером в оболочку — `High`, риск 85.0;
+  - или содержит реверс-шелл (шаблоны `001a`, без проверки исполнителя) — `Critical`, риск 95.0.
+- **MITRE ATT&CK** (tactic *Persistence*), техника по механизму:
+  - `cron`, `cron_periodic` → `T1053.003` (Scheduled Task/Job: Cron)
+  - `systemd_timer` → `T1053.006` (Scheduled Task/Job: Systemd Timers)
+  - `systemd_service`, `systemd_user_service` → `T1543.002` (Create or Modify System Process: Systemd Service)
+  - `rc_local` → `T1037.004` (Boot or Logon Initialization Scripts: RC Scripts)
+  - `xdg_autostart` → `T1547.013` (Boot or Logon Autostart Execution: XDG Autostart Entries)
+- **Пирамида боли**: `TTPs` | **Достоверность**: 0.90
+
+#### `CORR-LIN-002b`: Принудительная подгрузка библиотеки через `/etc/ld.so.preload`
+- **Сущность**: Хост, ключ `<host>:persist:ld_preload:<lib>`
+- **Условие**: в `/etc/ld.so.preload` перечислена библиотека.
+- **Серьезность**: `High` | **Базовый риск**: 80.0 | **Достоверность**: 0.85
+- **MITRE ATT&CK**: Tactic: *Defense Evasion* | Technique: `T1574.006` (Hijack Execution Flow: Dynamic Linker Hijacking)
+- **Пирамида боли**: `Host Artifacts`
+- **Обоснование**: файл почти никогда не используется штатно; это классический механизм руткитов уровня пользователя (например, `libprocesshider`).
+
+#### `CORR-LIN-003`: Командная оболочка держит внешнее сетевое соединение
+- **Сущность**: Сетевой сокет, ключ `<remote_ip>:<port>`
+- **Условие**: сокет в состоянии `Established`, принадлежащий процессу `sh`/`bash`/`dash`/`zsh`/`ksh`/..., удалённый адрес не loopback и не unspecified (включая `::ffff:127.0.0.1`).
+- **Серьезность**: `Critical` | **Базовый риск**: 94.0 | **Достоверность**: 0.95
+- **MITRE ATT&CK**: Tactic: *Command and Control* | Technique: `T1071` (Application Layer Protocol) — Linux-аналог `CORR-WIN-003b`
+- **Пирамида боли**: `Network Artifacts`
+- **Обоснование**: обнаруживает реверс-шелл, запущенный интерактивно (`bash -i >& /dev/tcp/...` из другой оболочки), когда шаблон не виден в командной строке.
+
+#### Область действия `CORR-WIN-001d` на Linux
+Флаг `-enc` специфичен для PowerShell. Для наблюдений с `platform = "linux"` правило срабатывает только если процесс — `pwsh`/`powershell`; наблюдения без поля `platform` (EVTX, Sysmon) обрабатываются как прежде.
+
+---
+
 ## 3. Модель верификации доказательств (Corroboration)
 
 Если одно и то же правило фиксирует появление признака из нескольких различных источников телеметрии (например, сначала из журнала EVTX `EventID 4688`, а затем из активного снимка процессов WinAPI), система автоматически выполняет подтверждение:

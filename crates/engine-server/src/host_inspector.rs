@@ -1,41 +1,115 @@
 #![forbid(unsafe_code)]
 
+//! Live inspection of the machine the engine runs on.
+//!
+//! Collection is dispatched at compile time to the collector for the
+//! running OS (`platform-linux` on Linux, `platform-windows` on Windows).
+//! Live collection can only observe the local machine: a `host_id` that
+//! does not designate it is answered with an empty snapshot that says so in
+//! `collection_errors` -- never with this machine's data relabelled.
+
 use chrono::Utc;
 use core_domain::epistemic::{PainLevel, Severity};
 use core_domain::id::EntityId;
 use core_domain::observation::Observation;
 use correlation_engine::DeterministicCorrelationEngine;
-use platform_windows::{WindowsHostSnapshot, WindowsPlatformHooks};
+use host_snapshot::HostSnapshot;
 use serde_json::json;
+use std::collections::BTreeMap;
 use std::sync::Mutex;
 use storage_sqlite::SqliteStorage;
 
-static LATEST_SNAPSHOT: Mutex<Option<WindowsHostSnapshot>> = Mutex::new(None);
+/// Snapshots keyed by canonical host key. Only the local machine can be
+/// collected, so in practice this holds at most one entry: the real
+/// hostname.
+static SNAPSHOTS: Mutex<BTreeMap<String, HostSnapshot>> = Mutex::new(BTreeMap::new());
 
-/// Collects or gets cached deep Windows host snapshot
-pub fn get_or_collect_snapshot(host_id: &str) -> WindowsHostSnapshot {
-    let mut guard = LATEST_SNAPSHOT.lock().unwrap_or_else(|p| p.into_inner());
-    if let Some(ref snap) = *guard {
-        return snap.clone();
+/// Returns the canonical cache key (the real hostname) when `host_id`
+/// designates the machine the engine runs on: an empty id, a loopback alias
+/// (`local`, `localhost`, `h_local`, `127.0.0.1`, `::1`), the hostname (or
+/// its short form) or the primary IP address.
+pub fn local_host_key(host_id: &str) -> Option<String> {
+    let hostname = crate::default_host_id();
+    let id = host_id.trim().to_ascii_lowercase();
+    let host_lower = hostname.to_ascii_lowercase();
+    let short = host_lower.split('.').next().unwrap_or(&host_lower);
+    let is_local = id.is_empty()
+        || matches!(
+            id.as_str(),
+            "local" | "localhost" | "h_local" | "127.0.0.1" | "::1"
+        )
+        || id == host_lower
+        || id == short
+        || host_snapshot::primary_ip().is_some_and(|ip| ip.to_string() == id);
+    is_local.then(|| hostname.to_string())
+}
+
+fn collect_local() -> HostSnapshot {
+    #[cfg(target_os = "linux")]
+    {
+        platform_linux::collect_host_snapshot()
     }
+    #[cfg(target_os = "windows")]
+    {
+        platform_windows::collect_windows_snapshot()
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    {
+        let mut snap = HostSnapshot::empty(
+            format!("SNAP-{}", uuid::Uuid::now_v7()),
+            crate::default_host_id().to_string(),
+            std::env::consts::OS,
+            Utc::now().to_rfc3339(),
+        );
+        snap.collection_errors.push(format!(
+            "Live-инспекция для ОС '{}' не реализована",
+            std::env::consts::OS
+        ));
+        snap
+    }
+}
 
-    let hooks = WindowsPlatformHooks::new();
-    let snap = hooks
-        .collect_snapshot(host_id)
-        .unwrap_or_else(|_| platform_windows::collect_windows_snapshot(host_id, vec![]));
-
-    *guard = Some(snap.clone());
+/// Answer for a host that is not this machine: nothing is collected.
+fn not_local_snapshot(host_id: &str) -> HostSnapshot {
+    let mut snap = HostSnapshot::empty(
+        format!("SNAP-{}", uuid::Uuid::now_v7()),
+        host_id.to_string(),
+        "unknown",
+        Utc::now().to_rfc3339(),
+    );
+    snap.collection_errors.push(format!(
+        "Хост '{}' не является машиной, на которой работает движок ({}): live-инспекция \
+         выполняется только локально, данные не собирались",
+        host_id,
+        crate::default_host_id()
+    ));
     snap
 }
 
-/// Forces a fresh live snapshot collection
-pub fn refresh_snapshot(host_id: &str) -> WindowsHostSnapshot {
-    let mut guard = LATEST_SNAPSHOT.lock().unwrap_or_else(|p| p.into_inner());
-    let hooks = WindowsPlatformHooks::new();
-    let snap = hooks
-        .collect_snapshot(host_id)
-        .unwrap_or_else(|_| platform_windows::collect_windows_snapshot(host_id, vec![]));
-    *guard = Some(snap.clone());
+/// Returns the cached live snapshot of the local machine, collecting it on
+/// first use.
+pub fn get_or_collect_snapshot(host_id: &str) -> HostSnapshot {
+    let Some(key) = local_host_key(host_id) else {
+        return not_local_snapshot(host_id);
+    };
+    // Held during collection so concurrent first requests collect once.
+    let mut guard = SNAPSHOTS.lock().unwrap_or_else(|p| p.into_inner());
+    if let Some(snap) = guard.get(&key) {
+        return snap.clone();
+    }
+    let snap = collect_local();
+    guard.insert(key, snap.clone());
+    snap
+}
+
+/// Forces a fresh live collection of the local machine.
+pub fn refresh_snapshot(host_id: &str) -> HostSnapshot {
+    let Some(key) = local_host_key(host_id) else {
+        return not_local_snapshot(host_id);
+    };
+    let mut guard = SNAPSHOTS.lock().unwrap_or_else(|p| p.into_inner());
+    let snap = collect_local();
+    guard.insert(key, snap.clone());
     snap
 }
 
@@ -46,8 +120,17 @@ pub fn handle_host_overview(host_id: &str) -> serde_json::Value {
         "snapshot_id": snap.snapshot_id,
         "host": snap.host,
         "host_ip": snap.host_ip,
+        "ip_addresses": snap.ip_addresses,
         "os": snap.os,
+        "platform": snap.platform,
+        "os_family": snap.os_family,
+        "os_version": snap.os_version,
+        "os_codename": snap.os_codename,
+        "kernel": snap.kernel,
+        "architecture": snap.architecture,
         "collected_at": snap.collected_at,
+        "collector_version": snap.collector_version,
+        "collection_errors": snap.collection_errors,
         "counts": {
             "processes": snap.processes.len(),
             "sockets": snap.sockets.len(),
@@ -81,7 +164,7 @@ pub fn handle_host_sockets(host_id: &str) -> serde_json::Value {
     })
 }
 
-/// Returns Windows services telemetry with unquoted path analysis
+/// Returns services (Windows SCM / systemd / SysV)
 pub fn handle_host_services(host_id: &str) -> serde_json::Value {
     let snap = get_or_collect_snapshot(host_id);
     json!({
@@ -111,14 +194,30 @@ pub fn handle_host_software(host_id: &str) -> serde_json::Value {
     })
 }
 
-/// Correlates live host snapshot telemetry against detection rules
-pub fn handle_host_correlation(
-    host_id: &str,
-    case_id: EntityId,
-    storage: &SqliteStorage,
-    correlator: &DeterministicCorrelationEngine,
-) -> serde_json::Value {
-    let snap = get_or_collect_snapshot(host_id);
+/// Turns a snapshot into correlation observations. Field names follow the
+/// conventions the correlation rules read (`process_name`, `command_line`,
+/// `destination_ip`, `mechanism`, ...); `platform` lets rules scope
+/// OS-specific semantics.
+pub fn snapshot_observations(snap: &HostSnapshot, case_id: EntityId) -> Vec<Observation> {
+    let platform = if snap.platform.is_empty() {
+        "host"
+    } else {
+        snap.platform.as_str()
+    };
+    let now = Utc::now();
+    let observation = |collector: &str, event_type: &str, data: serde_json::Value| Observation {
+        id: EntityId::new_v7(),
+        case_id,
+        artifact_id: None,
+        tool_run_id: None,
+        source_tool: format!("{}_{}_collector", platform, collector),
+        raw_event_type: event_type.to_string(),
+        source_timestamp: Some(now),
+        ingest_timestamp: now,
+        data,
+        network_quality: None,
+        network_provenance: None,
+    };
     let mut observations = Vec::new();
 
     let pid_map: std::collections::HashMap<u32, &str> = snap
@@ -129,16 +228,10 @@ pub fn handle_host_correlation(
 
     for p in &snap.processes {
         let parent_name = pid_map.get(&p.ppid).copied().unwrap_or("");
-        observations.push(Observation {
-            id: EntityId::new_v7(),
-            case_id,
-            artifact_id: None,
-            tool_run_id: None,
-            source_tool: "windows_process_collector".to_string(),
-            raw_event_type: "process".to_string(),
-            source_timestamp: Some(Utc::now()),
-            ingest_timestamp: Utc::now(),
-            data: json!({
+        observations.push(observation(
+            "process",
+            "process",
+            json!({
                 "process_name": p.name,
                 "pid": p.pid,
                 "ppid": p.ppid,
@@ -146,25 +239,23 @@ pub fn handle_host_correlation(
                 "executable_path": p.executable_path,
                 "command_line": p.command_line,
                 "username": p.username,
+                "uid": p.uid,
+                "exe_deleted": p.exe_deleted,
+                "sha256": p.sha256,
+                "started_at": p.started_at,
+                "platform": platform,
                 "host": snap.host,
                 "host_ip": snap.host_ip
             }),
-            network_quality: None,
-            network_provenance: None,
-        });
+        ));
     }
 
     for s in &snap.sockets {
-        observations.push(Observation {
-            id: EntityId::new_v7(),
-            case_id,
-            artifact_id: None,
-            tool_run_id: None,
-            source_tool: "windows_socket_collector".to_string(),
-            raw_event_type: "network_socket".to_string(),
-            source_timestamp: Some(Utc::now()),
-            ingest_timestamp: Utc::now(),
-            data: json!({
+        observations.push(observation(
+            "socket",
+            "network_socket",
+            json!({
+                "protocol": s.protocol,
                 "local_address": s.local_address,
                 "local_port": s.local_port,
                 "destination_ip": s.remote_address,
@@ -172,83 +263,86 @@ pub fn handle_host_correlation(
                 "state": s.state,
                 "owning_pid": s.pid,
                 "process_name": s.process_name,
+                "platform": platform,
                 "host": snap.host,
                 "host_ip": snap.host_ip
             }),
-            network_quality: None,
-            network_provenance: None,
-        });
+        ));
     }
 
     for srv in &snap.services {
-        observations.push(Observation {
-            id: EntityId::new_v7(),
-            case_id,
-            artifact_id: None,
-            tool_run_id: None,
-            source_tool: "windows_service_collector".to_string(),
-            raw_event_type: "service".to_string(),
-            source_timestamp: Some(Utc::now()),
-            ingest_timestamp: Utc::now(),
-            data: json!({
+        observations.push(observation(
+            "service",
+            "service",
+            json!({
                 "service_name": srv.service_name,
                 "display_name": srv.display_name,
                 "status": srv.state,
+                "start_type": srv.start_type,
                 "binary_path": srv.binary_path,
+                "account": srv.account,
                 "unquoted_risk": srv.unquoted_risk,
+                "platform": platform,
                 "host": snap.host,
                 "host_ip": snap.host_ip
             }),
-            network_quality: None,
-            network_provenance: None,
-        });
+        ));
     }
 
     for a in &snap.autoruns {
-        observations.push(Observation {
-            id: EntityId::new_v7(),
-            case_id,
-            artifact_id: None,
-            tool_run_id: None,
-            source_tool: "windows_autorun_collector".to_string(),
-            raw_event_type: "autorun".to_string(),
-            source_timestamp: Some(Utc::now()),
-            ingest_timestamp: Utc::now(),
-            data: json!({
+        observations.push(observation(
+            "autorun",
+            "autorun",
+            json!({
                 "autorun_key": a.key,
                 "item_name": a.value_name,
                 "target_path": a.resolved_executable,
                 "value_data": a.value_data,
+                "mechanism": a.mechanism,
+                "owner": a.owner,
+                "platform": platform,
                 "host": snap.host,
                 "host_ip": snap.host_ip
             }),
-            network_quality: None,
-            network_provenance: None,
-        });
+        ));
     }
 
     for t in &snap.scheduled_tasks {
-        observations.push(Observation {
-            id: EntityId::new_v7(),
-            case_id,
-            artifact_id: None,
-            tool_run_id: None,
-            source_tool: "windows_task_collector".to_string(),
-            raw_event_type: "scheduled_task".to_string(),
-            source_timestamp: Some(Utc::now()),
-            ingest_timestamp: Utc::now(),
-            data: json!({
+        // The full command (executable + arguments) is what runs.
+        let action = match (&t.action, &t.arguments) {
+            (Some(a), Some(args)) if !args.trim().is_empty() => Some(format!("{} {}", a, args)),
+            (a, _) => a.clone(),
+        };
+        observations.push(observation(
+            "task",
+            "scheduled_task",
+            json!({
                 "task_name": t.task_name,
                 "task_path": t.task_path,
                 "state": t.state,
-                "action": t.action,
+                "action": action,
+                "arguments": t.arguments,
+                "mechanism": t.mechanism,
+                "schedule": t.schedule,
+                "user": t.user,
+                "platform": platform,
                 "host": snap.host,
                 "host_ip": snap.host_ip
             }),
-            network_quality: None,
-            network_provenance: None,
-        });
+        ));
     }
+    observations
+}
+
+/// Correlates live host snapshot telemetry against detection rules
+pub fn handle_host_correlation(
+    host_id: &str,
+    case_id: EntityId,
+    storage: &SqliteStorage,
+    correlator: &DeterministicCorrelationEngine,
+) -> serde_json::Value {
+    let snap = get_or_collect_snapshot(host_id);
+    let observations = snapshot_observations(&snap, case_id);
 
     let raw_facts = correlator.correlate(&observations).unwrap_or_default();
 
@@ -316,6 +410,7 @@ pub fn handle_host_correlation(
             "rule_id": f.data.get("rule_id").and_then(|v| v.as_str()).unwrap_or(""),
             "mitre_technique": f.data.get("mitre_technique").and_then(|v| v.as_str()),
             "mitre_tactic": f.data.get("mitre_tactic").and_then(|v| v.as_str()),
+            "pid": f.data.get("pid").or_else(|| f.data.get("owning_pid")),
             "verification_state": format!("{:?}", f.verification_state),
             "created_at": f.created_at.to_rfc3339()
         }));
@@ -335,8 +430,11 @@ pub fn handle_host_correlation(
 
     json!({
         "host": snap.host,
+        "platform": snap.platform,
         "case_id": case_id.to_string(),
         "status": if findings.is_empty() { "baseline_clean" } else { "anomalies_detected" },
+        "observations_evaluated": observations.len(),
+        "collection_errors": snap.collection_errors,
         "findings_count": findings.len(),
         "critical_count": critical_count,
         "high_count": high_count,
@@ -360,32 +458,141 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_host_inspector_handlers() {
-        let overview = handle_host_overview("PC-3002");
-        assert!(overview.get("host").is_some());
-        assert!(overview.get("counts").is_some());
+    fn local_aliases_resolve_to_the_real_hostname() {
+        let hostname = crate::default_host_id();
+        for alias in ["", "local", "localhost", "h_local", "127.0.0.1", hostname] {
+            assert_eq!(local_host_key(alias).as_deref(), Some(hostname), "{alias}");
+        }
+        assert_eq!(
+            local_host_key(&hostname.to_ascii_uppercase()).as_deref(),
+            Some(hostname)
+        );
+        assert_eq!(local_host_key("PC-3002-definitely-not-this-host"), None);
+    }
 
-        let procs = handle_host_processes("PC-3002");
-        assert!(procs.get("processes").is_some());
-
-        let socks = handle_host_sockets("PC-3002");
-        assert!(socks.get("sockets").is_some());
-
-        let srvs = handle_host_services("PC-3002");
-        assert!(srvs.get("services").is_some());
-
-        let persist = handle_host_persistence("PC-3002");
-        assert!(persist.get("autoruns").is_some());
-
-        let soft = handle_host_software("PC-3002");
-        assert!(soft.get("software").is_some());
+    #[test]
+    fn remote_host_ids_are_not_answered_with_local_data() {
+        let remote = "PC-3002-definitely-not-this-host";
+        let overview = handle_host_overview(remote);
+        assert_eq!(overview["host"], remote);
+        assert_eq!(overview["counts"]["processes"], 0);
+        assert_eq!(overview["host_ip"], "");
+        assert!(!overview["collection_errors"].as_array().unwrap().is_empty());
+        assert_eq!(handle_host_processes(remote)["count"], 0);
+        assert_eq!(handle_host_software(remote)["count"], 0);
 
         let storage = SqliteStorage::open_in_memory().unwrap();
-        let correlator = DeterministicCorrelationEngine::new();
-        let cid = EntityId::new_v7();
-        let res = handle_host_correlation("PC-3002", cid, &storage, &correlator);
+        let res = handle_host_correlation(
+            remote,
+            EntityId::new_v7(),
+            &storage,
+            &DeterministicCorrelationEngine::new(),
+        );
+        assert_eq!(res["findings_count"], 0);
+        assert_eq!(res["observations_evaluated"], 0);
+    }
+
+    #[test]
+    fn handlers_return_the_expected_shape() {
+        let local = crate::default_host_id();
+        assert!(handle_host_processes(local).get("processes").is_some());
+        assert!(handle_host_sockets(local).get("sockets").is_some());
+        assert!(handle_host_services(local).get("services").is_some());
+        let persist = handle_host_persistence(local);
+        assert!(persist.get("autoruns").is_some());
+        assert!(persist.get("scheduled_tasks").is_some());
+        assert!(handle_host_software(local).get("software").is_some());
+
+        let storage = SqliteStorage::open_in_memory().unwrap();
+        let res = handle_host_correlation(
+            local,
+            EntityId::new_v7(),
+            &storage,
+            &DeterministicCorrelationEngine::new(),
+        );
         assert!(res.get("findings").is_some());
         assert!(res.get("pyramid").is_some());
         assert!(res.get("mitre_matrix").is_some());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_overview_describes_this_machine() {
+        let local = crate::default_host_id();
+        let overview = handle_host_overview(local);
+        assert_eq!(overview["platform"], "linux");
+        assert_eq!(overview["host"], local);
+        assert_ne!(overview["host_ip"], "127.0.0.1");
+        assert!(!overview["os"].as_str().unwrap().contains("Windows"));
+        let kernel = std::fs::read_to_string("/proc/sys/kernel/osrelease").unwrap();
+        assert_eq!(overview["kernel"], kernel.trim());
+        assert!(overview["counts"]["processes"].as_u64().unwrap() > 0);
+        assert!(overview["counts"]["users"].as_u64().unwrap() > 0);
+
+        let procs = handle_host_processes("localhost");
+        let me = std::process::id();
+        let exe = std::env::current_exe().unwrap().canonicalize().unwrap();
+        // Every snapshot taken inside this test binary includes the binary
+        // itself, whichever test triggered the collection.
+        let mine = procs["processes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["pid"] == me)
+            .expect("current process in snapshot");
+        assert_eq!(mine["executable_path"], exe.to_str().unwrap());
+    }
+
+    /// End to end on the real host: a process genuinely running from /tmp
+    /// must be collected and flagged by CORR-LIN-001b.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_correlation_flags_real_process_running_from_tmp() {
+        let dir = std::path::Path::new("/tmp")
+            .join(format!("soc-dfir-inspector-test-{}", uuid::Uuid::now_v7()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let sleeper = dir.join("sleep");
+        let src = ["/bin/sleep", "/usr/bin/sleep"]
+            .into_iter()
+            .find(|p| std::path::Path::new(p).exists())
+            .expect("coreutils sleep");
+        std::fs::copy(src, &sleeper).unwrap();
+        let mut child = std::process::Command::new(&sleeper)
+            .arg("60")
+            .spawn()
+            .expect("/tmp must allow exec for this test");
+
+        let local = crate::default_host_id();
+        refresh_snapshot(local);
+        let storage = SqliteStorage::open_in_memory().unwrap();
+        let case = EntityId::new_v7();
+        storage
+            .insert_case(case, "Live /tmp execution", None)
+            .unwrap();
+        let res = handle_host_correlation(
+            local,
+            case,
+            &storage,
+            &DeterministicCorrelationEngine::new(),
+        );
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let finding = res["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["rule_id"] == "CORR-LIN-001b" && f["pid"] == child.id())
+            .unwrap_or_else(|| panic!("no CORR-LIN-001b finding for pid {}: {}", child.id(), res));
+        assert_eq!(finding["mitre_technique"], "T1036.005");
+        assert!(finding["title"]
+            .as_str()
+            .unwrap()
+            .contains(sleeper.to_str().unwrap()));
+        let stored = storage.get_facts_for_case(case).unwrap();
+        assert!(stored
+            .iter()
+            .any(|f| f.data["rule_id"] == "CORR-LIN-001b" && f.data["pid"] == child.id()));
     }
 }

@@ -115,9 +115,11 @@ impl PrivilegeBroker {
                         }
                     }
                 }
+                // The pid is not among the live processes (or enumeration is
+                // unavailable): say so instead of claiming it is running.
                 let info = serde_json::json!({
                     "pid": pid,
-                    "status": "running",
+                    "status": "not_found",
                     "source": "broker_query"
                 });
                 serde_json::to_vec(&info).map_err(|e| BrokerError::ExecutionFailed(e.to_string()))
@@ -342,15 +344,19 @@ mod tests {
         let my_pid = std::process::id();
         let proc_op = PrivilegedOperation::CollectProcessMetadata { pid: my_pid };
         let proc_res = broker.execute_operation(proc_op).await.unwrap();
-        assert!(!proc_res.is_empty());
-        let proc_str = String::from_utf8_lossy(&proc_res);
-        assert!(proc_str.contains(&my_pid.to_string()) || proc_str.contains("pid"));
+        let proc_val: serde_json::Value = serde_json::from_slice(&proc_res).unwrap();
+        assert_eq!(proc_val["pid"], my_pid);
+        // On a supported OS the broker must find the calling process itself.
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
+        assert_ne!(proc_val["status"], "not_found");
 
         let fw_op = PrivilegedOperation::ReadFirewallRules { direction: None };
         let fw_res = broker.execute_operation(fw_op).await.unwrap();
         assert!(!fw_res.is_empty());
     }
 
+    /// Reads a real registry key; only meaningful on Windows.
+    #[cfg(target_os = "windows")]
     #[tokio::test]
     async fn test_broker_registry_collection_real_key() {
         let broker = PrivilegeBroker::new(vec![BrokerCapability::ReadRegistry]);
@@ -359,8 +365,28 @@ mod tests {
             subpath: "Software\\Microsoft\\Windows NT\\CurrentVersion".to_string(),
         };
         let res = broker.execute_operation(op).await.unwrap();
-        let str_res = String::from_utf8_lossy(&res);
-        assert!(str_res.contains("CurrentVersion"));
+        let val: serde_json::Value = serde_json::from_slice(&res).unwrap();
+        assert!(val["path"].as_str().unwrap().ends_with("CurrentVersion"));
+        // Values that exist on every Windows installation.
+        assert!(val["values"]["CurrentBuild"].as_str().is_some());
+        assert!(val["values"]["ProductName"]
+            .as_str()
+            .unwrap()
+            .contains("Windows"));
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[tokio::test]
+    async fn test_broker_registry_collection_fails_off_windows() {
+        let broker = PrivilegeBroker::new(vec![BrokerCapability::ReadRegistry]);
+        let op = PrivilegedOperation::CollectRegistryKeys {
+            hive: core_domain::broker::RegistryHive::HkeyLocalMachine,
+            subpath: "Software\\Microsoft\\Windows NT\\CurrentVersion".to_string(),
+        };
+        let err = broker.execute_operation(op).await.unwrap_err();
+        assert!(
+            matches!(err, BrokerError::ExecutionFailed(ref m) if m.contains("only supported on Windows"))
+        );
     }
 
     #[tokio::test]

