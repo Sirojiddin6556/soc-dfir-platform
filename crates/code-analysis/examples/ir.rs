@@ -8,7 +8,8 @@ use code_analysis::ir::*;
 fn main() {
     let path = std::env::args().nth(1).expect("file");
     let src = std::fs::read_to_string(&path).expect("read");
-    let lang = code_analysis::project::language_of(std::path::Path::new(&path)).expect("language");
+    let lang = code_analysis::project::language_of_source(std::path::Path::new(&path), &src)
+        .expect("language");
     let Some(m) = code_analysis::lower(lang, &src) else {
         eprintln!("язык пока не поддерживается");
         return;

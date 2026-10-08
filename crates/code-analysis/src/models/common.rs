@@ -551,7 +551,7 @@ pub fn literal_check_safety(facts: &[Fact]) -> u32 {
             match s.as_str() {
                 "'" => bits |= ctx::NO_SQUOTE,
                 "\"" => bits |= ctx::NO_DQUOTE,
-                ".." | "../" | "..\\" | "/" => bits |= ctx::PATH,
+                "." | ".." | "../" | "..\\" | "/" => bits |= ctx::PATH,
                 "<" => bits |= ctx::HTML,
                 _ => {}
             }

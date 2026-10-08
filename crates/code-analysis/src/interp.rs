@@ -17,6 +17,8 @@ const MAX_DEPTH: usize = 10;
 const MAX_STEPS: usize = 400_000;
 /// Call frames explored from an entry with no user data (see `quiet`).
 const QUIET_DEPTH: usize = 3;
+/// Functions a C call through a struct member may run (see `c_call_member`).
+const MAX_MEMBER_TARGETS: usize = 32;
 
 /// An evaluated call argument.
 #[derive(Debug, Clone)]
@@ -26,6 +28,10 @@ pub struct ArgVal {
     pub spread: bool,
     /// The variable passed, when the argument is a plain name.
     pub var: Option<Rc<str>>,
+    /// C and C++: the variable or field a pointer argument points into
+    /// (`buf` for `buf + n`, `(char *) buf` or `&buf[0]`), which functions
+    /// that fill a buffer write.
+    pub place: Option<Expr>,
 }
 
 impl ArgVal {
@@ -35,6 +41,7 @@ impl ArgVal {
             value,
             spread: false,
             var: None,
+            place: None,
         }
     }
 }
@@ -87,6 +94,9 @@ pub enum Fact {
     /// Starts with another (non-literal) string: a containment check.
     StartsWithValue,
     Safe(u32),
+    /// Safe, and so is every variable holding only data from the same
+    /// inputs: the check was on a canonical form of them (C `realpath`).
+    SafeSources(u32),
 }
 
 /// What a fact from a call condition is about.
@@ -238,6 +248,13 @@ struct Frame {
     /// Variables of a module's top level where it returned or exited:
     /// a PHP script that ends with `exit` still defined them.
     exit_env: Option<Env>,
+    /// C pointer and reference parameters, with their values where the
+    /// function returned.
+    outs: Vec<(Rc<str>, Option<Value>)>,
+    /// C globals where the function returned.
+    exit_globals: Option<HashMap<Rc<str>, Value>>,
+    /// `break` and `continue` statements run so far.
+    jumps: usize,
 }
 
 enum Globals {
@@ -256,6 +273,10 @@ pub struct Interp<'p> {
     /// Reported sinks and the index of their finding.
     seen: HashMap<(String, usize, u32, u32, usize, u32), usize>,
     steps: usize,
+    /// Steps of all entries analyzed so far.
+    pub work: usize,
+    /// No more entries are started once `work` reaches it.
+    pub work_limit: Option<usize>,
     /// The entry being analyzed is not a handler and receives no request
     /// data. Its callees are entries of their own, so clean calls are only
     /// followed a few frames deep: whole-program walks from every test or
@@ -270,7 +291,7 @@ pub struct Interp<'p> {
     cutoffs: usize,
     /// Results of calls with clean arguments, by callee and arguments: the
     /// same helper called the same way behaves the same.
-    memo: HashMap<String, (Value, Option<Value>)>,
+    memo: HashMap<String, Memo>,
     /// State a language model keeps for the entry being analyzed, such as
     /// the content type its response was given.
     pub notes: HashMap<&'static str, Value>,
@@ -284,12 +305,49 @@ pub struct Interp<'p> {
     php_consts: Option<Rc<HashMap<String, Value>>>,
     /// Values of the array elements a condition being refined checks.
     path_vals: Vec<(Rc<str>, Value)>,
+    /// C fields a condition checks (`ctx.qry.path`), by their text.
+    attr_vals: Vec<(Rc<str>, Expr)>,
     /// PHP script variables that the project sets to one class's object
     /// (`$db = new Database();` in index.php), by name.
     php_objects: Option<Rc<HashMap<String, Expr>>>,
     php_objects_building: Vec<String>,
     /// Top-level definitions of each PHP module, its functions' scope.
     php_scopes: HashMap<usize, Option<Rc<Scope>>>,
+    /// See `c_index`.
+    c_defs: Option<CIndex>,
+    /// C and C++ global variables as the entry being analyzed has set them,
+    /// by name: one program-wide store, as `extern` declarations share it.
+    c_globals: HashMap<Rc<str>, Value>,
+    /// Pointer and reference parameters a C function changed, by argument
+    /// position, for the caller to write back (see `run_function`).
+    c_outs: Vec<(usize, Value)>,
+    /// See `crate::cmembers`.
+    c_members: Option<Rc<HashMap<String, Vec<String>>>>,
+    /// User data stored in `c_globals` in this entry, which C calls'
+    /// results depend on (see `memo_key`), and whether there is any.
+    c_globals_taint: Taint,
+    c_globals_tainted: bool,
+    /// The user data entries left in C globals (see `seed_c_globals`), and
+    /// what the entries of the second round start with.
+    c_summary: HashMap<Rc<str>, Value>,
+    c_seed: HashMap<Rc<str>, Value>,
+}
+
+/// Top-level functions, classes and global variables of the C and C++
+/// modules by name.
+type CIndex = Rc<HashMap<String, Vec<CDef>>>;
+
+/// A call's result: its value, the receiver it left and the C out
+/// parameters it changed.
+type Memo = (Value, Option<Value>, Rc<[(usize, Value)]>);
+
+#[derive(Clone)]
+enum CDef {
+    /// A function or variable of the module's top level.
+    InModule(usize),
+    /// A class, with the methods defined outside its body (`void A::f()`)
+    /// merged into its declaration.
+    Class(Rc<ClassVal>),
 }
 
 /// Top-level PHP functions and classes of the project by lowercase name,
@@ -314,6 +372,8 @@ impl<'p> Interp<'p> {
             findings: Vec::new(),
             seen: HashMap::new(),
             steps: 0,
+            work: 0,
+            work_limit: None,
             quiet: false,
             notes: HashMap::new(),
             subclasses: None,
@@ -321,9 +381,18 @@ impl<'p> Interp<'p> {
             php_defs: None,
             php_consts: None,
             path_vals: Vec::new(),
+            attr_vals: Vec::new(),
             php_objects: None,
             php_objects_building: Vec::new(),
             php_scopes: HashMap::new(),
+            c_defs: None,
+            c_globals: HashMap::new(),
+            c_outs: Vec::new(),
+            c_members: None,
+            c_globals_taint: Taint::clean(),
+            c_globals_tainted: false,
+            c_summary: HashMap::new(),
+            c_seed: HashMap::new(),
 
             depth: 0,
             loading: 0,
@@ -344,6 +413,9 @@ impl<'p> Interp<'p> {
         let top = self.php_scope(module);
         collect_functions(&ir.body, top, None, &mut entries);
         for (func, scope, class) in entries {
+            if self.work_limit.is_some_and(|l| self.work >= l) {
+                return;
+            }
             self.steps = 0;
             let class = class.map(|c| {
                 Rc::new(ClassVal {
@@ -355,6 +427,7 @@ impl<'p> Interp<'p> {
             });
             self.notes.clear();
             self.analyze_entry(module, func, scope, class);
+            self.work += self.steps;
         }
     }
 
@@ -367,6 +440,12 @@ impl<'p> Interp<'p> {
     ) {
         let model = crate::models::for_language(self.project.modules[module].lang);
         let route = model.route(self, module, &func);
+        self.c_globals = self.c_seed.clone();
+        self.c_globals_taint = self
+            .c_seed
+            .values()
+            .fold(Taint::clean(), |t, v| t.union(&v.taint()));
+        self.c_globals_tainted = self.c_globals_taint.is_tainted();
         let mut env = Env::new();
         let mut self_name = None;
         for (i, p) in func.params.iter().enumerate() {
@@ -405,7 +484,44 @@ impl<'p> Interp<'p> {
         frame.self_name = self_name;
         self.frames.push(frame);
         self.exec_block(&func.body);
-        self.frames.pop();
+        if let Some(frame) = self.frames.pop() {
+            self.globals_at_exit(&frame);
+        }
+        // Where this entry left user data in C globals.
+        for (name, v) in std::mem::take(&mut self.c_globals) {
+            if let Some(t) = tainted_part(&v) {
+                let joined = match self.c_summary.remove(&name) {
+                    Some(prev) => join(&prev, &t),
+                    None => t,
+                };
+                self.c_summary.insert(name, joined);
+            }
+        }
+    }
+
+    /// The C globals a finished function leaves: those of every `return`
+    /// joined with those where it ran off its end.
+    fn globals_at_exit(&mut self, frame: &Frame) {
+        if let Some(g) = &frame.exit_globals {
+            self.c_globals = if frame.env.is_some() {
+                join_globals(g.clone(), std::mem::take(&mut self.c_globals))
+            } else {
+                g.clone()
+            };
+        }
+    }
+
+    /// C programs keep request data in globals (`ctx.qry.path` set while
+    /// parsing the query, read by the page handler a dispatch table runs).
+    /// After every entry ran once, entries that read a global some entry
+    /// filled with user data run again with that data in place. Returns
+    /// whether there was any.
+    pub fn seed_c_globals(&mut self) -> bool {
+        if self.c_summary.is_empty() {
+            return false;
+        }
+        self.c_seed = std::mem::take(&mut self.c_summary);
+        true
     }
 
     // ----- reporting -----
@@ -417,6 +533,14 @@ impl<'p> Interp<'p> {
     /// Library knowledge for the language of the code being run.
     fn model(&self) -> &'static dyn Model {
         crate::models::for_language(self.project.modules[self.module()].lang)
+    }
+
+    /// Whether the code being run is C or C++.
+    fn in_c(&self) -> bool {
+        matches!(
+            self.project.modules[self.module()].lang,
+            crate::Language::C | crate::Language::Cpp
+        )
     }
 
     pub fn span(&self) -> Span {
@@ -614,8 +738,78 @@ impl<'p> Interp<'p> {
             // `global`; functions and classes are found by name.
             return None;
         }
+        if self.in_c() {
+            if let Some(v) = self.c_globals.get(name) {
+                return Some(v.clone());
+            }
+            if let Some(v) = self.this_field(name) {
+                return Some(v);
+            }
+            let found = self.module_globals(module)?.get(name).cloned();
+            // A class whose methods other files define.
+            if let Some(Value::Class(_)) = found {
+                if let Some(c @ Value::Class(_)) = self.c_lookup(name) {
+                    return Some(c);
+                }
+            }
+            return found;
+        }
         let globals = self.module_globals(module)?;
         globals.get(name).cloned()
+    }
+
+    /// A name as code at this point sees it: a variable, or a function,
+    /// class or global of the project.
+    pub fn lookup_name(&mut self, name: &str) -> Option<Value> {
+        self.get_var(name).or_else(|| self.lookup_global(name))
+    }
+
+    /// In a C++ method, a bare name that is a field of `this`: methods
+    /// defined outside their class do not know the fields when lowered.
+    fn this_field(&mut self, name: &str) -> Option<Value> {
+        let frame = self.frames.last()?;
+        let this = frame.self_name.as_ref()?;
+        let Some(Value::Obj(o)) = frame.env.as_ref()?.get(this.as_ref()) else {
+            return None;
+        };
+        if let Some(v) = o.field(name) {
+            return Some(v.clone());
+        }
+        let cv = o.def.clone()?;
+        let declares = |c: &ClassVal| {
+            c.def
+                .fields
+                .iter()
+                .any(|f| matches!(f, Stmt::Declare { name: n, .. } if n == name))
+        };
+        if declares(&cv) {
+            return self.field_value(&cv, name).or_else(|| Some(Value::clean()));
+        }
+        // A method defined apart from its class (`A::run() {}` in a.cpp):
+        // the fields are declared in the header.
+        if let Some(Value::Class(whole)) = self.c_lookup(&cv.def.name) {
+            if declares(&whole) {
+                return self
+                    .field_value(&whole, name)
+                    .or_else(|| Some(Value::clean()));
+            }
+        }
+        None
+    }
+
+    /// Whether `name` in a C++ method is a field of `this` (see
+    /// `this_field`); the name of `this` when it is.
+    fn is_local(&self, name: &str) -> bool {
+        let Some(f) = self.frames.last() else {
+            return false;
+        };
+        f.env.as_ref().is_some_and(|e| e.contains_key(name))
+            || f.closure.as_ref().is_some_and(|e| e.contains_key(name))
+    }
+
+    fn this_field_of(&mut self, name: &str) -> Option<Rc<str>> {
+        let this = self.frames.last()?.self_name.clone()?;
+        self.this_field(name).map(|_| this)
     }
 
     fn def_value(&self, module: usize, def: &Def, scope: &Rc<Scope>) -> Value {
@@ -782,7 +976,14 @@ impl<'p> Interp<'p> {
                     model.on_return(self, &route, &v, *span);
                 }
                 self.capture_self();
+                let globals = (!self.c_globals.is_empty()).then(|| self.c_globals.clone());
                 let f = self.frame();
+                if let Some(g) = globals {
+                    f.exit_globals = Some(match f.exit_globals.take() {
+                        Some(prev) => join_globals(prev, g),
+                        None => g,
+                    });
+                }
                 f.ret = Some(match f.ret.take() {
                     None => v,
                     Some(prev) => join(&prev, &v),
@@ -794,6 +995,7 @@ impl<'p> Interp<'p> {
             }
             Stmt::Break => {
                 let f = self.frame();
+                f.jumps += 1;
                 let env = f.env.take();
                 if let Some(acc) = f.loops.last_mut() {
                     acc.breaks = join_env(acc.breaks.take(), env);
@@ -801,6 +1003,7 @@ impl<'p> Interp<'p> {
             }
             Stmt::Continue => {
                 let f = self.frame();
+                f.jumps += 1;
                 let env = f.env.take();
                 if let Some(acc) = f.loops.iter_mut().rev().find(|l| !l.is_switch) {
                     acc.continues = join_env(acc.continues.take(), env);
@@ -868,6 +1071,16 @@ impl<'p> Interp<'p> {
                 });
             }
         }
+        if let Some(env) = &f.env {
+            for (name, last) in f.outs.iter_mut() {
+                if let Some(v) = env.get(name.as_ref()) {
+                    *last = Some(match last.take() {
+                        None => v.clone(),
+                        Some(prev) => join(&prev, v),
+                    });
+                }
+            }
+        }
     }
 
     fn exec_if(&mut self, test: &Expr, then: &[Stmt], other: &[Stmt]) {
@@ -883,14 +1096,27 @@ impl<'p> Interp<'p> {
             }
             None => {
                 let saved = self.frame().env.clone();
+                let saved_globals = self.c_globals.clone();
+                let jumps = self.frame().jumps;
                 self.refine(test, true);
                 self.exec_block(then);
                 let after_then = self.frame().env.take();
+                // A branch that returned left its globals with the frame.
+                let then_returned = after_then.is_none() && self.frame().jumps == jumps;
+                let then_globals = std::mem::replace(&mut self.c_globals, saved_globals);
                 self.frame().env = saved;
+                let jumps = self.frame().jumps;
                 self.refine(test, false);
                 self.exec_block(other);
                 let after_other = self.frame().env.take();
+                let other_returned = after_other.is_none() && self.frame().jumps == jumps;
                 self.frame().env = join_env(after_then, after_other);
+                let other_globals = std::mem::take(&mut self.c_globals);
+                self.c_globals = match (then_returned, other_returned) {
+                    (true, false) => other_globals,
+                    (false, true) => then_globals,
+                    _ => join_globals(then_globals, other_globals),
+                };
             }
         }
     }
@@ -906,6 +1132,9 @@ impl<'p> Interp<'p> {
             let it = self.eval(e);
             it.element()
         });
+        // C globals the body sets may also keep their value: it can run
+        // no times.
+        let globals_before = self.c_globals.clone();
         let entry = self.frame().env.clone();
         let mut state = entry.clone();
         let mut exits = None;
@@ -967,6 +1196,8 @@ impl<'p> Interp<'p> {
             }
         }
         self.frame().env = out;
+        let after = std::mem::take(&mut self.c_globals);
+        self.c_globals = join_globals(globals_before, after);
     }
 
     fn eval_in(&mut self, env: Option<Env>, e: &Expr) -> Value {
@@ -1020,7 +1251,12 @@ impl<'p> Interp<'p> {
                 continue;
             }
             self.frame().env = entry;
+            let globals_before = (matched != Some(true)).then(|| self.c_globals.clone());
             self.exec_block(&case.body);
+            if let Some(before) = globals_before {
+                let after = std::mem::take(&mut self.c_globals);
+                self.c_globals = join_globals(before, after);
+            }
             let end = self.frame().env.take();
             if fallthrough {
                 carried = end;
@@ -1051,6 +1287,22 @@ impl<'p> Interp<'p> {
                     self.sink(&WEAK_RANDOM, &value, span, n);
                 }
                 self.forget_paths(n);
+                if self.in_c() && self.live() && !self.is_local(n) {
+                    // A field of `this`, or a global variable.
+                    if let Some(this) = self.this_field_of(n) {
+                        let t = Target::Attr(Box::new(Expr::Name(this.to_string())), n.clone());
+                        return self.assign(&t, value, span);
+                    }
+                    if self.frame_ref().func.is_some() {
+                        let t = value.taint();
+                        if t.is_tainted() {
+                            self.c_globals_tainted = true;
+                            self.c_globals_taint = self.c_globals_taint.union(&t);
+                        }
+                        self.c_globals.insert(n.as_str().into(), value);
+                        return;
+                    }
+                }
                 self.set_var(n, value)
             }
             Target::Attr(obj, field) => {
@@ -1058,10 +1310,21 @@ impl<'p> Interp<'p> {
                     self.sink(&WEAK_RANDOM, &value, span, field);
                 }
                 let base = self.eval(obj);
-                if let Value::Obj(o) = &base {
-                    let mut o = (**o).clone();
-                    o.set_field(field, value);
-                    self.assign_expr(obj, Value::Obj(Rc::new(o)), span);
+                match &base {
+                    Value::Obj(o) => {
+                        let mut o = (**o).clone();
+                        o.set_field(field, value);
+                        self.assign_expr(obj, Value::Obj(Rc::new(o)), span);
+                    }
+                    // `p->field = v` on a struct the analysis has not seen
+                    // made (`malloc`, a parameter).
+                    Value::Unknown(t) if self.in_c() => {
+                        let mut o = Obj::new("");
+                        o.taint = t.clone();
+                        o.set_field(field, value);
+                        self.assign_expr(obj, Value::Obj(Rc::new(o)), span);
+                    }
+                    _ => {}
                 }
             }
             Target::Index(base_e, key_e) => {
@@ -1146,15 +1409,20 @@ impl<'p> Interp<'p> {
         }
         let model = self.model();
         let paths = std::mem::take(&mut self.path_vals);
+        let fields = std::mem::take(&mut self.attr_vals);
         for (var, facts) in by_var {
-            let cur = match self.get_var(&var) {
-                Some(v) => v,
-                None => match paths.iter().find(|(k, _)| *k == var) {
-                    Some((_, v)) => {
-                        self.frame().paths = true;
-                        v.clone()
-                    }
-                    None => continue,
+            let field = fields.iter().find(|(k, _)| *k == var).map(|(_, e)| e);
+            let cur = match field {
+                Some(e) => self.eval(e),
+                None => match self.get_var(&var) {
+                    Some(v) => v,
+                    None => match paths.iter().find(|(k, _)| *k == var) {
+                        Some((_, v)) => {
+                            self.frame().paths = true;
+                            v.clone()
+                        }
+                        None => continue,
+                    },
                 },
             };
             let mut bits = model.facts_safety(&facts, &cur);
@@ -1162,16 +1430,54 @@ impl<'p> Interp<'p> {
             for f in &facts {
                 match f {
                     Fact::Safe(b) => bits |= b,
+                    Fact::SafeSources(b) => {
+                        bits |= b;
+                        self.sanitize_same_sources(&cur.taint(), *b);
+                    }
                     Fact::OneOf(vals) if !vals.is_empty() => {
                         narrowed = join_all(vals.iter().cloned());
                     }
                     _ => {}
                 }
             }
-            if let Some(n) = narrowed {
-                self.set_var(&var, n);
-            } else if bits != 0 {
-                self.set_var(&var, cur.sanitized(bits));
+            let refined = match narrowed {
+                Some(n) => n,
+                None if bits != 0 => cur.sanitized(bits),
+                None => continue,
+            };
+            match field {
+                // Only checks that make user data safe write a field back.
+                Some(e) if bits != 0 && cur.taint().is_tainted() => {
+                    self.assign_expr(e, refined, Span::default())
+                }
+                Some(_) => {}
+                None => self.set_var(&var, refined),
+            }
+        }
+    }
+
+    /// Marks safe the variables of this frame whose user data all comes
+    /// from the inputs of `checked`.
+    fn sanitize_same_sources(&mut self, checked: &Taint, bits: u32) {
+        let same =
+            |s: &Source, t: &Source| s.module == t.module && s.span == t.span && s.what == t.what;
+        let Some(env) = self.frame().env.as_mut() else {
+            return;
+        };
+        let names: Vec<Rc<str>> = env
+            .iter()
+            .filter(|(_, v)| {
+                let t = v.taint();
+                t.is_tainted()
+                    && t.sources
+                        .iter()
+                        .all(|s| checked.sources.iter().any(|c| same(s, c)))
+            })
+            .map(|(k, _)| k.clone())
+            .collect();
+        for n in names {
+            if let Some(v) = env.get_mut(&n) {
+                *v = v.sanitized(bits);
             }
         }
     }
@@ -1244,8 +1550,11 @@ impl<'p> Interp<'p> {
                 let Expr::Name(name) = &**func else {
                     return;
                 };
-                // Only library functions: project code is not a known check.
-                if self.get_var(name).is_some() || self.lookup_global(name).is_some() {
+                // Only library functions: project code is not a known check,
+                // except C helpers named for what they check (`starts_with`).
+                if !self.in_c()
+                    && (self.get_var(name).is_some() || self.lookup_global(name).is_some())
+                {
                     return;
                 }
                 let argv: Vec<Value> = args.iter().map(|a| self.eval(&a.value)).collect();
@@ -1291,6 +1600,20 @@ impl<'p> Interp<'p> {
                     if !self.path_vals.iter().any(|(k, _)| *k == key) {
                         let v = self.eval(e);
                         self.path_vals.push((key.clone(), v));
+                    }
+                    out.push((key, fact));
+                }
+            }
+            Expr::Attr(..) if self.in_c() => {
+                // `strstr(req->path, "..")`; `r->method == GET` only
+                // narrows the field.
+                if matches!(fact, Fact::OneOf(_)) {
+                    return;
+                }
+                if let Some(key) = place_key(e) {
+                    let key: Rc<str> = key.into();
+                    if !self.attr_vals.iter().any(|(k, _)| *k == key) {
+                        self.attr_vals.push((key.clone(), e.clone()));
                     }
                     out.push((key, fact));
                 }
@@ -1573,6 +1896,7 @@ impl<'p> Interp<'p> {
 
     fn eval_args(&mut self, args: &[Arg], span: Span) -> Vec<ArgVal> {
         let mut out = Vec::with_capacity(args.len());
+        let c = self.in_c();
         for a in args {
             let value = self.eval(&a.value);
             if let Some(name) = a.name.as_deref().filter(|n| secret_name(n)) {
@@ -1586,6 +1910,7 @@ impl<'p> Interp<'p> {
                     Expr::Name(n) => Some(n.as_str().into()),
                     _ => None,
                 },
+                place: if c { c_place(&a.value) } else { None },
             });
         }
         out
@@ -1593,16 +1918,25 @@ impl<'p> Interp<'p> {
 
     fn eval_call(&mut self, func: &Expr, args: &[Arg], span: Span) -> Value {
         let argv = self.eval_args(args, span);
-        if let Expr::Attr(recv_e, name) = func {
+        self.c_outs.clear();
+        let v = if let Expr::Attr(recv_e, name) = func {
             let recv = self.eval(recv_e);
             let (v, new_recv) = self.call_method(&recv, name, &argv, span);
             if let Some(nr) = new_recv {
                 self.assign_expr(recv_e, nr, span);
             }
-            return v;
+            v
+        } else {
+            let f = self.eval(func);
+            self.call_value(&f, &argv, span)
+        };
+        // Buffers and out-parameters a C function filled.
+        for (i, value) in std::mem::take(&mut self.c_outs) {
+            if let Some(place) = argv.get(i).and_then(|a| a.place.as_ref()) {
+                self.assign_expr(place, value, span);
+            }
         }
-        let f = self.eval(func);
-        self.call_value(&f, &argv, span)
+        v
     }
 
     pub fn call_method(
@@ -1683,6 +2017,9 @@ impl<'p> Interp<'p> {
                 if let Some(v) = self.call_implementations(o, &cv, name, args, span) {
                     return (v, None);
                 }
+                if let Some(v) = self.c_call_member(recv, name, args, span) {
+                    return (v, None);
+                }
                 let model = self.model();
                 model.call_method(self, recv, name, args, span)
             }
@@ -1705,10 +2042,57 @@ impl<'p> Interp<'p> {
                 (Value::Unknown(args_taint(args)), None)
             }
             _ => {
+                if let Some(v) = self.c_call_member(recv, name, args, span) {
+                    return (v, None);
+                }
                 let model = self.model();
                 model.call_method(self, recv, name, args, span)
             }
         }
+    }
+
+    /// C: a call through a function pointer member, `cmd->fn()`. The
+    /// object's own member when it holds a function, else every project
+    /// function the program stores in members of that name, when there
+    /// are few (see `crate::cmembers`).
+    fn c_call_member(
+        &mut self,
+        recv: &Value,
+        name: &str,
+        args: &[ArgVal],
+        span: Span,
+    ) -> Option<Value> {
+        if !self.in_c() {
+            return None;
+        }
+        if let Value::Obj(o) = recv {
+            if let Some(f @ (Value::Func(_) | Value::OneOf(_))) = o.field(name).cloned() {
+                return Some(self.call_value(&f, args, span));
+            }
+        }
+        let index = match &self.c_members {
+            Some(i) => i.clone(),
+            None => {
+                let i = Rc::new(crate::cmembers::member_functions(self.project));
+                self.c_members = Some(i.clone());
+                i
+            }
+        };
+        let targets = index.get(name)?;
+        if targets.len() > MAX_MEMBER_TARGETS {
+            return None;
+        }
+        let mut out: Option<Value> = None;
+        for f in targets {
+            if let Some(fv) = self.c_lookup(f) {
+                let v = self.call_value(&fv, args, span);
+                out = Some(match out {
+                    None => v,
+                    Some(p) => join(&p, &v),
+                });
+            }
+        }
+        out
     }
 
     /// Runs a project function; a hand-written escaper's result is also
@@ -2105,7 +2489,7 @@ impl<'p> Interp<'p> {
                 args_taint(args).union(&fv.bound.as_ref().map(|b| b.taint()).unwrap_or_default());
             return (Value::Unknown(t), fv.bound.clone());
         }
-        if self.quiet && self.frames.len() >= QUIET_DEPTH {
+        if self.quiet && self.frames.len() >= QUIET_DEPTH && !self.c_globals_tainted {
             let t =
                 args_taint(args).union(&fv.bound.as_ref().map(|b| b.taint()).unwrap_or_default());
             if !t.is_tainted() {
@@ -2113,17 +2497,22 @@ impl<'p> Interp<'p> {
             }
         }
         let key = self.memo_key(fv, args);
-        if let Some(hit) = key.as_ref().and_then(|k| self.memo.get(k)) {
-            return hit.clone();
+        if let Some((v, s, outs)) = key.as_ref().and_then(|k| self.memo.get(k)).cloned() {
+            merge_outs(&mut self.c_outs, &outs);
+            return (v, s);
         }
         let cutoffs = self.cutoffs;
+        let before = std::mem::take(&mut self.c_outs);
         let result = self.run_function(fv, args, span);
+        let outs: Rc<[(usize, Value)]> = std::mem::replace(&mut self.c_outs, before).into();
+        merge_outs(&mut self.c_outs, &outs);
         if let Some(k) = key {
             if self.cutoffs == cutoffs {
                 if self.memo.len() >= MAX_MEMO {
                     self.memo.clear();
                 }
-                self.memo.insert(k, result.clone());
+                self.memo
+                    .insert(k, (result.0.clone(), result.1.clone(), outs));
             }
         }
         result
@@ -2146,6 +2535,13 @@ impl<'p> Interp<'p> {
             u8::from(self.quiet),
             route.len()
         );
+        // C functions read globals, which may hold user data by now.
+        if matches!(
+            self.project.modules[fv.module].lang,
+            crate::Language::C | crate::Language::Cpp
+        ) {
+            let _ = write!(key, "@{}", self.c_globals_taint.sources.len());
+        }
         match &fv.bound {
             Some(b) => {
                 key.push('<');
@@ -2223,11 +2619,30 @@ impl<'p> Interp<'p> {
                 }
             }
         }
+        // C: what the function leaves in pointer and reference parameters
+        // reaches the caller's variables.
+        let outs: Vec<(usize, Rc<str>)> = if matches!(
+            self.project.modules[fv.module].lang,
+            crate::Language::C | crate::Language::Cpp
+        ) {
+            params[idx..]
+                .iter()
+                .enumerate()
+                .filter(|(_, p)| {
+                    p.ty.as_deref()
+                        .is_some_and(|t| t.contains(['*', '&', '[']) && !t.contains("const"))
+                })
+                .map(|(i, p)| (i, Rc::from(p.name.as_str())))
+                .collect()
+        } else {
+            Vec::new()
+        };
         let mut frame = Frame::new(fv.module, Some(fv.def.clone()), Some(env));
         frame.closure = fv.closure.clone();
         frame.scope = Scope::of_body(&fv.def.body, fv.scope.clone());
         frame.self_name = self_name;
         frame.span = span;
+        frame.outs = outs.iter().map(|(_, n)| (n.clone(), None)).collect();
         self.frames.push(frame);
         // Defaults of missing parameters, evaluated in the callee's module.
         for p in &params[idx..] {
@@ -2256,6 +2671,17 @@ impl<'p> Interp<'p> {
             self.capture_self();
         }
         let frame = self.frames.pop().expect("frame");
+        self.globals_at_exit(&frame);
+        let positional: Vec<&ArgVal> = args.iter().filter(|a| a.name.is_none()).collect();
+        let mut changed = Vec::new();
+        for ((i, _), (_, v)) in outs.iter().zip(frame.outs) {
+            if let (Some(v), Some(a)) = (v, positional.get(*i)) {
+                if v != a.value {
+                    changed.push((*i, v));
+                }
+            }
+        }
+        merge_outs(&mut self.c_outs, &changed);
         let fell_through = frame.env.is_some();
         let ret = match (frame.ret, fell_through) {
             (Some(r), true) => join(&r, &Value::None),
@@ -2391,6 +2817,9 @@ impl<'p> Interp<'p> {
         if m.lang == crate::Language::Php {
             return self.php_lookup(name);
         }
+        if matches!(m.lang, crate::Language::C | crate::Language::Cpp) {
+            return self.c_lookup(name);
+        }
         if m.lang != crate::Language::Java {
             return None;
         }
@@ -2492,6 +2921,126 @@ impl<'p> Interp<'p> {
         for (m, def) in picks {
             let scope = self.php_scope(m)?;
             vals.push(self.def_value(m, &def, &scope));
+        }
+        join_all(vals.into_iter())
+    }
+
+    fn c_index(&mut self) -> CIndex {
+        if let Some(i) = &self.c_defs {
+            return i.clone();
+        }
+        let mut index: HashMap<String, Vec<CDef>> = HashMap::new();
+        let mut classes: HashMap<&str, Vec<(usize, &Rc<Class>)>> = HashMap::new();
+        for (i, m) in self.project.modules.iter().enumerate() {
+            if !matches!(m.lang, crate::Language::C | crate::Language::Cpp) {
+                continue;
+            }
+            for s in &m.ir.body {
+                let name = match s {
+                    Stmt::FuncDef(f) => &f.name,
+                    Stmt::Declare { name, .. } => name,
+                    Stmt::ClassDef(c) => {
+                        classes.entry(c.name.as_str()).or_default().push((i, c));
+                        continue;
+                    }
+                    _ => continue,
+                };
+                let defs = index.entry(name.clone()).or_default();
+                if !defs
+                    .iter()
+                    .any(|d| matches!(d, CDef::InModule(m) if *m == i))
+                {
+                    defs.push(CDef::InModule(i));
+                }
+            }
+        }
+        for (name, defs) in classes {
+            // The declaration (bases, fields) with every method body.
+            let (module, _) = *defs
+                .iter()
+                .max_by_key(|(_, c)| c.methods.len())
+                .expect("a class");
+            let mut merged = Class {
+                name: name.to_string(),
+                bases: Vec::new(),
+                fields: Vec::new(),
+                methods: Vec::new(),
+                span: defs[0].1.span,
+            };
+            for (_, c) in &defs {
+                for b in &c.bases {
+                    if !merged.bases.contains(b) {
+                        merged.bases.push(b.clone());
+                    }
+                }
+                merged.fields.extend(c.fields.iter().cloned());
+                merged.methods.extend(c.methods.iter().cloned());
+                if c.span.line > 0 && merged.span.line == 0 {
+                    merged.span = c.span;
+                }
+            }
+            let mname = &self.project.modules[module].name;
+            let cv = ClassVal {
+                qualname: format!("{mname}.{name}").into(),
+                def: Rc::new(merged),
+                module,
+                scope: None,
+            };
+            index
+                .entry(name.to_string())
+                .or_default()
+                .push(CDef::Class(Rc::new(cv)));
+        }
+        let index = Rc::new(index);
+        self.c_defs = Some(index.clone());
+        index
+    }
+
+    /// A C or C++ function, class or global variable defined in another
+    /// file. Definitions in the module itself, then in its directory win;
+    /// up to four alternatives are kept when several files define the name.
+    fn c_lookup(&mut self, name: &str) -> Option<Value> {
+        let index = self.c_index();
+        let found = index.get(name)?;
+        if let Some(c) = found.iter().find_map(|d| match d {
+            CDef::Class(c) => Some(c.clone()),
+            _ => None,
+        }) {
+            return Some(Value::Class(c));
+        }
+        let here = self.module();
+        let dir = |m: usize| {
+            let p = &self.project.modules[m].path;
+            p.rsplit_once('/')
+                .map(|(d, _)| d.to_string())
+                .unwrap_or_default()
+        };
+        let here_dir = dir(here);
+        let rank = |m: usize| {
+            if m == here {
+                0
+            } else if dir(m) == here_dir {
+                1
+            } else {
+                2
+            }
+        };
+        let modules: Vec<usize> = found
+            .iter()
+            .filter_map(|d| match d {
+                CDef::InModule(m) => Some(*m),
+                _ => None,
+            })
+            .collect();
+        let best = modules.iter().map(|m| rank(*m)).min()?;
+        let mut vals = Vec::new();
+        for m in modules.into_iter().filter(|m| rank(*m) == best).take(4) {
+            if m == here {
+                continue;
+            }
+            if let Some(v) = self.module_globals(m).and_then(|g| g.get(name).cloned()) {
+                vals.push(v);
+            }
         }
         join_all(vals.into_iter())
     }
@@ -2815,7 +3364,76 @@ impl Frame {
             paths: false,
             route: None,
             span: Span::default(),
+            outs: Vec::new(),
+            exit_globals: None,
+            jumps: 0,
         }
+    }
+}
+
+/// The parts of a value holding user data: an object keeps only the
+/// fields that do, so other fields read as unknown rather than as one
+/// entry's final value.
+fn tainted_part(v: &Value) -> Option<Value> {
+    match v {
+        Value::Obj(o) => {
+            let fields: Vec<(Rc<str>, Value)> = o
+                .fields
+                .iter()
+                .filter_map(|(k, f)| tainted_part(f).map(|t| (k.clone(), t)))
+                .collect();
+            if fields.is_empty() && !o.taint.is_tainted() {
+                return None;
+            }
+            let mut out = Obj::new(&o.class);
+            out.def = o.def.clone();
+            out.taint = o.taint.clone();
+            out.fields = fields;
+            Some(Value::Obj(Rc::new(out)))
+        }
+        other => other.taint().is_tainted().then(|| other.clone()),
+    }
+}
+
+/// C globals after either of two paths.
+fn join_globals(
+    mut a: HashMap<Rc<str>, Value>,
+    b: HashMap<Rc<str>, Value>,
+) -> HashMap<Rc<str>, Value> {
+    for (k, v) in b {
+        match a.get_mut(&k) {
+            Some(prev) => {
+                if *prev != v {
+                    *prev = join(prev, &v);
+                }
+            }
+            None => {
+                a.insert(k, v);
+            }
+        }
+    }
+    a
+}
+
+/// Adds out-parameter values of one more callee (see `Interp::c_outs`).
+fn merge_outs(into: &mut Vec<(usize, Value)>, more: &[(usize, Value)]) {
+    for (i, v) in more {
+        match into.iter_mut().find(|(j, _)| j == i) {
+            Some((_, prev)) => *prev = join(prev, v),
+            None => into.push((*i, v.clone())),
+        }
+    }
+}
+
+/// The variable or field a C pointer expression points into.
+fn c_place(e: &Expr) -> Option<Expr> {
+    match e {
+        Expr::Name(_) => Some(e.clone()),
+        Expr::Attr(b, _) => c_place(b).map(|_| e.clone()),
+        Expr::Cast(_, x) => c_place(x),
+        Expr::Bin(BinOp::Add | BinOp::Sub, l, _) => c_place(l),
+        Expr::Index(b, _) => c_place(b),
+        _ => None,
     }
 }
 
@@ -3415,6 +4033,15 @@ fn path_key(e: &Expr) -> Option<String> {
     }
 }
 
+/// `ctx.qry.path` for a chain of fields on a name.
+fn place_key(e: &Expr) -> Option<String> {
+    match e {
+        Expr::Name(n) => Some(n.clone()),
+        Expr::Attr(b, f) => place_key(b).map(|k| format!("{k}.{f}")),
+        _ => None,
+    }
+}
+
 /// The variable an expression is rooted at (`x`, `x.y`, `x[0]`).
 pub fn root_var(e: &Expr) -> Option<Rc<str>> {
     match e {
@@ -3428,7 +4055,7 @@ fn const_truth(e: &Expr) -> Option<bool> {
     match e {
         Expr::Lit(Const::Bool(b)) => Some(*b),
         Expr::Lit(Const::Int(1)) => Some(true),
-        Expr::Lit(Const::Int(0)) => Some(false),
+        Expr::Lit(Const::Int(0)) | Expr::Lit(Const::None) => Some(false),
         _ => None,
     }
 }

@@ -39,6 +39,8 @@ pub struct ModuleInfo {
     pub is_test: bool,
     pub ir: Module,
     pub parse_errors: bool,
+    /// Line of the first syntax error.
+    pub first_error: Option<u32>,
     source: String,
 }
 
@@ -85,6 +87,57 @@ pub fn language_of(path: &Path) -> Option<Language> {
         "cc" | "cpp" | "cxx" | "hpp" | "hh" | "hxx" => Language::Cpp,
         _ => return None,
     })
+}
+
+/// The language of a file given its text too: a `.h` header holding
+/// classes or namespaces is C++.
+pub fn language_of_source(path: &Path, source: &str) -> Option<Language> {
+    let lang = language_of(path)?;
+    let header = path
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("h"));
+    if lang == Language::C && header && looks_like_cpp(source) {
+        return Some(Language::Cpp);
+    }
+    Some(lang)
+}
+
+/// C++ declarations outside `#ifdef __cplusplus` blocks, which C headers
+/// keep for their C++ users.
+fn looks_like_cpp(source: &str) -> bool {
+    // `#if` nesting inside a `__cplusplus` block, while in one.
+    let mut guarded: Option<usize> = None;
+    for line in source.lines() {
+        let l = line.trim_start();
+        if let Some(d) = l.strip_prefix('#').map(str::trim_start) {
+            let opens = d.starts_with("if");
+            match guarded.as_mut() {
+                Some(depth) if opens => *depth += 1,
+                Some(0) if d.starts_with("endif") => guarded = None,
+                Some(depth) if d.starts_with("endif") => *depth -= 1,
+                None if opens && d.contains("__cplusplus") => guarded = Some(0),
+                _ => {}
+            }
+            continue;
+        }
+        if guarded.is_some() {
+            continue;
+        }
+        let cpp = [
+            "class ",
+            "namespace ",
+            "template<",
+            "template <",
+            "using namespace ",
+        ]
+        .iter()
+        .any(|k| l.starts_with(k))
+            || matches!(l.trim_end(), "public:" | "private:" | "protected:");
+        if cpp {
+            return true;
+        }
+    }
+    false
 }
 
 impl Project {
@@ -137,15 +190,25 @@ impl Project {
     ) -> Project {
         let mut project = Project::default();
         let mut aliases: Vec<(String, usize)> = Vec::new();
+        let mut headers = CHeaders::new(&sources);
         for (path, source) in sources {
-            let Some(lang) = language_of(Path::new(&path)) else {
+            let Some(lang) = language_of_source(Path::new(&path), &source) else {
                 continue;
             };
-            let Some(tree) = crate::parse_tree(lang, &source) else {
+            // C and C++ are parsed after preprocessing, which keeps lines
+            // where they were; snippets still come from the original.
+            let parsed = match lang {
+                Language::C | Language::Cpp => {
+                    headers.preprocess(&path, &source, lang == Language::Cpp)
+                }
+                _ => String::new(),
+            };
+            let text = if parsed.is_empty() { &source } else { &parsed };
+            let Some(tree) = crate::parse_tree(lang, text) else {
                 project.skipped.push((path, "не удалось разобрать".into()));
                 continue;
             };
-            let Some(ir) = crate::lower_tree(lang, &tree, &source) else {
+            let Some(ir) = crate::lower_tree(lang, &tree, text) else {
                 project
                     .skipped
                     .push((path, "язык пока не поддерживается".into()));
@@ -217,6 +280,7 @@ impl Project {
                 lang,
                 is_package,
                 parse_errors: tree.root_node().has_error(),
+                first_error: first_error(tree.root_node()),
                 ir,
                 source,
             });
@@ -266,6 +330,89 @@ impl Project {
     }
 }
 
+/// Macros of the project's C and C++ headers, found by file name for
+/// `#include "name.h"` (the same directory first).
+struct CHeaders {
+    by_name: HashMap<String, Vec<(String, String)>>,
+    cache: HashMap<String, crate::lower::cpre::Macros>,
+    loading: HashSet<String>,
+}
+
+impl CHeaders {
+    fn new(sources: &[(String, String)]) -> CHeaders {
+        let mut by_name: HashMap<String, Vec<(String, String)>> = HashMap::new();
+        for (path, src) in sources {
+            let lower = path.to_ascii_lowercase();
+            if [".h", ".hh", ".hpp", ".hxx", ".inc", ".def"]
+                .iter()
+                .any(|e| lower.ends_with(e))
+            {
+                let name = path.rsplit('/').next().unwrap_or(path).to_string();
+                by_name
+                    .entry(name)
+                    .or_default()
+                    .push((path.clone(), src.clone()));
+            }
+        }
+        CHeaders {
+            by_name,
+            cache: HashMap::new(),
+            loading: HashSet::new(),
+        }
+    }
+
+    fn find(&self, from: &str, include: &str) -> Option<(String, String)> {
+        let name = include.rsplit('/').next().unwrap_or(include);
+        let found = self.by_name.get(name)?;
+        let dir = from.rsplit_once('/').map(|(d, _)| d).unwrap_or("");
+        found
+            .iter()
+            .find(|(p, _)| p.rsplit_once('/').map(|(d, _)| d).unwrap_or("") == dir)
+            .or_else(|| found.iter().find(|(p, _)| p.ends_with(include)))
+            .or_else(|| found.first())
+            .cloned()
+    }
+
+    /// The macros a header defines when read on its own.
+    fn macros_of(&mut self, path: &str, src: &str, cpp: bool) -> crate::lower::cpre::Macros {
+        if let Some(m) = self.cache.get(path) {
+            return m.clone();
+        }
+        if !self.loading.insert(path.to_string()) {
+            return Default::default();
+        }
+        let mut macros = crate::lower::cpre::predefined(cpp);
+        let from = path.to_string();
+        crate::lower::cpre::preprocess(src, &mut macros, &mut |inc, m| {
+            if let Some((p, s)) = self.find(&from, inc) {
+                let found = self.macros_of(&p, &s, cpp);
+                for (k, v) in found {
+                    m.entry(k).or_insert(v);
+                }
+            }
+        });
+        self.loading.remove(path);
+        self.cache.insert(path.to_string(), macros.clone());
+        macros
+    }
+
+    fn preprocess(&mut self, path: &str, src: &str, cpp: bool) -> String {
+        let mut macros = crate::lower::cpre::predefined(cpp);
+        let from = path.to_string();
+        crate::lower::cpre::preprocess(src, &mut macros, &mut |inc, m| {
+            if let Some((p, s)) = self.find(&from, inc) {
+                if p == from {
+                    return;
+                }
+                let found = self.macros_of(&p, &s, cpp);
+                for (k, v) in found {
+                    m.entry(k).or_insert(v);
+                }
+            }
+        })
+    }
+}
+
 fn module_name(path: &str, lang: Language) -> (String, bool) {
     if lang != Language::Python {
         return (path.to_string(), false);
@@ -282,6 +429,26 @@ fn module_name(path: &str, lang: Language) -> (String, bool) {
 /// Test code by the conventions of the languages: a `test`, `tests` or
 /// `__tests__` directory, `test_*.py`, `*_test.py`, `tests.py`,
 /// `conftest.py`, `*Test.java`, `*Tests.java`, `*IT.java`.
+fn first_error(root: tree_sitter::Node) -> Option<u32> {
+    if !root.has_error() {
+        return None;
+    }
+    let mut node = root;
+    'down: loop {
+        let mut cursor = node.walk();
+        for c in node.children(&mut cursor) {
+            if c.is_error() || c.is_missing() {
+                return Some(c.start_position().row as u32 + 1);
+            }
+            if c.has_error() {
+                node = c;
+                continue 'down;
+            }
+        }
+        return Some(node.start_position().row as u32 + 1);
+    }
+}
+
 pub fn is_test_path(path: &str) -> bool {
     let mut parts: Vec<&str> = path.split('/').collect();
     let file = parts.pop().unwrap_or("");

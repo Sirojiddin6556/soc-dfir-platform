@@ -2,6 +2,7 @@
 
 //! Static analysis of source code for security defects.
 
+pub mod cmembers;
 pub mod interp;
 pub mod ir;
 pub mod lower;
@@ -46,12 +47,18 @@ pub fn lower_tree(lang: Language, tree: &tree_sitter::Tree, src: &str) -> Option
         Language::Python => Some(lower::python::lower(tree.root_node(), src)),
         Language::Java => Some(lower::java::lower(tree.root_node(), src)),
         Language::Php => Some(lower::php::lower(tree.root_node(), src)),
-        _ => None,
+        Language::C | Language::Cpp => Some(lower::c::lower(tree.root_node(), src)),
     }
 }
 
 /// Parses and lowers one file into the shared IR.
 pub fn lower(lang: Language, src: &str) -> Option<ir::Module> {
+    if matches!(lang, Language::C | Language::Cpp) {
+        let mut macros = lower::cpre::predefined(lang == Language::Cpp);
+        let text = lower::cpre::preprocess(src, &mut macros, &mut |_, _| {});
+        let tree = parse_tree(lang, &text)?;
+        return lower_tree(lang, &tree, &text);
+    }
     let tree = parse_tree(lang, src)?;
     lower_tree(lang, &tree, src)
 }
@@ -122,6 +129,9 @@ pub fn analyze_dir_with(root: &std::path::Path, options: Options) -> std::io::Re
         .map_err(|_| std::io::Error::other("анализ кода завершился аварийно"))?
 }
 
+/// Interpreter steps the second run over C entries may always take.
+const MIN_SECOND_ROUND: usize = 10_000_000;
+
 /// Analyzes every file of a project.
 pub fn analyze(project: &project::Project) -> Report {
     analyze_with(project, Options::default())
@@ -137,10 +147,23 @@ pub fn analyze_with(project: &project::Project, options: Options) -> Report {
             Some(slot) => slot.1 += 1,
             None => languages.push((m.lang.name().to_string(), 1)),
         }
-        if matches!(m.lang, Language::Python | Language::Java | Language::Php)
-            && (options.include_tests || !m.is_test)
-        {
+        if options.include_tests || !m.is_test {
             interp.analyze_module(i);
+        }
+    }
+    // C entries again, with the user data entries stored in globals. That
+    // run may cost as much as the first one and no more: where one global
+    // reaches everything (nginx keeps its connection pool in `ngx_cycle`)
+    // it would explore every entry again with all of it tainted.
+    if interp.seed_c_globals() {
+        let first = interp.work;
+        interp.work_limit = Some(first + first.max(MIN_SECOND_ROUND));
+        for (i, m) in project.modules.iter().enumerate() {
+            if matches!(m.lang, Language::C | Language::Cpp)
+                && (options.include_tests || !m.is_test)
+            {
+                interp.analyze_module(i);
+            }
         }
     }
     let mut findings = std::mem::take(&mut interp.findings);

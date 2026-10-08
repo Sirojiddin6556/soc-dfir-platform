@@ -48,6 +48,9 @@ pub mod ctx {
     /// A number (an `intval()` result, a cast, arithmetic), so a check
     /// such as `is_numeric()` holds for it.
     pub const NUMBER: u32 = 1 << 16;
+    /// The canonical form of a path (`realpath()`): a prefix check of it
+    /// keeps the path it came from inside a directory.
+    pub const CANONICAL: u32 = 1 << 25;
     /// A number or a value restricted to a known safe alphabet.
     pub const ALL: u32 = 0x3FFF | ORIGIN | NO_SQUOTE | NO_DQUOTE;
 }

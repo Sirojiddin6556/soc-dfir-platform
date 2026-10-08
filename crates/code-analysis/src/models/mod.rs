@@ -1,5 +1,6 @@
 //! Language models: what libraries and frameworks do with data.
 
+pub mod c;
 pub mod common;
 pub mod java;
 pub mod php;
@@ -11,6 +12,7 @@ use crate::Language;
 static PYTHON: python::Python = python::Python;
 static JAVA: java::Java = java::Java;
 static PHP: php::Php = php::Php;
+static C: c::C = c::C;
 
 /// The library model for code in `lang`.
 pub fn for_language(lang: Language) -> &'static dyn Model {
@@ -18,7 +20,6 @@ pub fn for_language(lang: Language) -> &'static dyn Model {
         Language::Python => &PYTHON,
         Language::Java => &JAVA,
         Language::Php => &PHP,
-        // Not lowered yet: no code in these languages is run.
-        Language::C | Language::Cpp => &PYTHON,
+        Language::C | Language::Cpp => &C,
     }
 }
