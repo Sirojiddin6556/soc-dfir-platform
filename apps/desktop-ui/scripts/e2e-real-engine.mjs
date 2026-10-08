@@ -14,9 +14,12 @@
  *   PLAYWRIGHT_MODULE  import path of playwright if it is not resolvable normally
  *   CHROMIUM_PATH    Chromium executable to use instead of Playwright's own
  *   E2E_SCREENSHOTS  directory to save screenshots of every space
+ *   E2E_REQUIRE_ALL_FEEDS=1  fail unless OSV, CISA KEV and FIRST EPSS all
+ *                    download (CI has open internet; some sandboxes block
+ *                    the KEV/EPSS hosts)
  */
 
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -107,6 +110,121 @@ function startEngine(dataDir) {
   });
 }
 
+/** dpkg's own comparator, or null where dpkg is not installed. */
+function dpkgCompare(a, op, b) {
+  const r = spawnSync('dpkg', ['--compare-versions', a, op, b]);
+  if (r.error) return null;
+  return r.status === 0;
+}
+
+/** Installed dpkg source packages and their source versions. */
+function dpkgSources() {
+  const r = spawnSync('dpkg-query', ['-W', '-f=${db:Status-Abbrev}\t${source:Package}\t${source:Version}\n'], { encoding: 'utf8' });
+  if (r.error || r.status !== 0) return null;
+  const map = new Map();
+  for (const line of r.stdout.split('\n')) {
+    const [st, src, ver] = line.split('\t');
+    if (!src || !/^[ih]i/.test(st || '')) continue;
+    if (!map.has(src)) map.set(src, new Set());
+    map.get(src).add(ver);
+  }
+  return map;
+}
+
+async function checkVulnerabilityScan(page, base, shot) {
+  const token = await page.evaluate(() => localStorage.getItem('soc_session_token'));
+  const rpc = async (method, params = {}) => {
+    const r = await fetch(`${base}/rpc`, {
+      method: 'POST',
+      body: JSON.stringify({ api_version: 1, request_id: 't', method, params: { ...params, token } }),
+    });
+    return r.json();
+  };
+
+  await page.click('.global-nav button[data-space="vulns"]');
+  await page.waitForSelector('#vulnHostLine');
+  const status = (await rpc('vulndb.status')).result;
+  const host = status.host;
+  console.log(`  host: ${host.os}, ecosystem ${host.ecosystem}, packages ${host.packages}`);
+
+  const before = (await rpc('scan.cve')).result;
+  if (host.supported) {
+    check(before.status === 'VULNDB_EMPTY', `scan before any update says the database is empty (${before.status})`);
+  } else {
+    check(before.status === 'UNSUPPORTED_PLATFORM', `unsupported platform is reported honestly (${before.status_detail})`);
+  }
+
+  await page.click('#vulnUpdateBtn');
+  await page.waitForSelector('#vulnUpdateProgress:not([hidden])', { timeout: 15000 }).catch(() => {});
+  await page.waitForFunction(() => {
+    const p = document.getElementById('vulnUpdateProgress');
+    return document.getElementById('vulnUpdateSteps') && (!p || p.hidden);
+  }, null, { timeout: 600000 });
+  const after = (await rpc('vulndb.status')).result;
+  const steps = after.update.steps;
+  for (const st of steps) console.log(`  ${st.ok ? 'ok  ' : 'FAIL'} ${st.feed}: ${st.message}${st.source ? ` (${st.source})` : ''}`);
+  const step = (feed) => steps.find((st) => st.feed === feed);
+  const requireAll = process.env.E2E_REQUIRE_ALL_FEEDS === '1';
+  if (host.supported) {
+    check(step(`osv:${host.ecosystem}`)?.ok, `OSV advisories for ${host.ecosystem} downloaded and imported`);
+  }
+  if (requireAll) {
+    check(step('cisa-kev')?.ok, 'CISA KEV catalog downloaded and imported');
+    check(step('epss')?.ok, 'FIRST EPSS scores downloaded and imported');
+  }
+  const uiSteps = await page.locator('#vulnUpdateSteps .vuln-step').count();
+  check(uiSteps === steps.length, `UI lists every update step (${uiSteps})`);
+  await shot('05-vulndb');
+
+  if (!host.supported) {
+    await page.click('#vulnScanBtn');
+    await page.waitForSelector('#vulnStatus');
+    check((await page.getAttribute('#vulnStatus', 'data-status')) === 'UNSUPPORTED_PLATFORM',
+      'UI shows that package CVE matching is not available on this OS');
+    return;
+  }
+
+  // The UI runs the scan by itself once the update finishes.
+  await page.waitForSelector('#vulnStatus', { timeout: 60000 });
+  const scan = (await rpc('scan.cve')).result;
+  const uiStatus = await page.getAttribute('#vulnStatus', 'data-status');
+  check(uiStatus === scan.status, `UI scan status matches the engine (${uiStatus})`);
+  check(['VULNERABILITIES_FOUND', 'NO_KNOWN_MATCHED_VULNERABILITIES'].includes(scan.status),
+    `scan ran against a loaded database: ${scan.status_detail}`);
+  check(scan.packages_total === host.packages && scan.packages_total > 0,
+    `every installed package was checked (${scan.packages_total})`);
+  console.log(`  findings: ${scan.summary.total} (critical ${scan.summary.critical}, high ${scan.summary.high}, kev ${scan.summary.kev}, no fix ${scan.summary.no_fix}), patched ${scan.summary.patched}`);
+  for (const f of scan.findings.filter((x) => x.status === 'fix_available').slice(0, 10)) {
+    console.log(`    ${f.id} ${f.component} ${f.installed_version} -> ${f.fixed_version} [${f.severity}]${f.kev ? ' KEV' : ''}`);
+  }
+
+  // Independent check with the distribution's own tools.
+  const sources = dpkgSources();
+  if (sources) {
+    const notInstalled = scan.findings.filter((f) => !sources.get(f.component)?.has(f.installed_version));
+    check(notInstalled.length === 0,
+      `every finding names an installed source package and version${notInstalled.length ? `: ${notInstalled.slice(0, 3).map((f) => `${f.component} ${f.installed_version}`).join(', ')}` : ''}`);
+    const wrongFix = scan.findings.filter((f) => f.status === 'fix_available'
+      && dpkgCompare(f.installed_version, 'lt', f.fixed_version) !== true);
+    check(wrongFix.length === 0,
+      `dpkg confirms the installed version is older than the fix for every fixable finding${wrongFix.length ? `: ${wrongFix[0].id}` : ''}`);
+  }
+
+  const chipTotal = Number(await page.textContent('#vulnSummary .vuln-chip span'));
+  check(chipTotal === scan.summary.total, `UI total (${chipTotal}) matches the engine (${scan.summary.total})`);
+  if (scan.findings.length) {
+    await page.click('.vuln-filter[data-filter="all"]');
+    const rows = await page.locator('#vulnTable tr.vuln-row').count();
+    check(rows === Math.min(scan.findings.length, 200), `UI table lists the findings (${rows})`);
+    const first = scan.findings[0];
+    const firstRow = page.locator('#vulnTable tr.vuln-row').first();
+    check((await firstRow.getAttribute('data-id')) === first.id, `UI order matches the engine (${first.id} first)`);
+    await firstRow.click();
+    check(await page.isVisible('#vulnTable tr.vuln-detail >> nth=0'), 'a finding expands to its description');
+  }
+  await shot('06-vulns');
+}
+
 async function main() {
   if (!fs.existsSync(engineBin)) throw new Error(`engine binary not found: ${engineBin} (cargo build -p engine-server)`);
   const { chromium } = await loadPlaywright();
@@ -178,7 +296,7 @@ async function main() {
     await shot('02-evidence');
 
     console.log('\n[4] Every space opens without errors');
-    for (const space of ['operations', 'investigation', 'evidence', 'range', 'ctf', 'system']) {
+    for (const space of ['operations', 'investigation', 'evidence', 'vulns', 'range', 'ctf', 'system']) {
       await page.click(`.global-nav button[data-space="${space}"]`);
       await page.waitForTimeout(1200);
       await shot(`03-${space}`);
@@ -238,7 +356,10 @@ async function main() {
       planted.cleanup();
     }
 
-    console.log('\n[6] Session survives reload, logout and login work');
+    console.log('\n[6] Vulnerability database update and package CVE scan');
+    await checkVulnerabilityScan(page, base, shot);
+
+    console.log('\n[7] Session survives reload, logout and login work');
     await page.reload();
     await page.waitForFunction(() => /^[0-9a-f-]{36}$/.test(document.getElementById('caseId').textContent.trim()), null, { timeout: 15000 });
     check(await page.isHidden('#authOverlay'), 'reload keeps the session');
@@ -258,7 +379,7 @@ async function main() {
     check(true, 'correct password logs in');
     await page.waitForTimeout(1500);
 
-    console.log('\n[7] No page errors, console errors or failed requests');
+    console.log('\n[8] No page errors, console errors or failed requests');
     check(problems.length === 0, problems.length ? `problems:\n    ${problems.join('\n    ')}` : 'clean run');
   } finally {
     await browser.close();

@@ -1,0 +1,53 @@
+/* Vulnerability space: package CVE scan results and database status. */
+.vuln-space { padding: 24px; overflow-y: auto; height: 100%; box-sizing: border-box; }
+.vuln-header { display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 12px; margin-bottom: 16px; }
+.vuln-header h2 { font-size: 18px; font-weight: 700; color: var(--text-primary); margin: 0 0 4px; }
+.vuln-subtitle { font-size: 12px; color: var(--text-muted); max-width: 760px; }
+.vuln-actions { display: flex; gap: 10px; align-items: center; }
+.vuln-panel { background: var(--bg-surface); border: 1px solid var(--border-muted); border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+.vuln-panel-title { font-weight: 700; font-size: 12px; color: var(--text-secondary); letter-spacing: 0.5px; margin-bottom: 10px; }
+.vuln-host { font-size: 12px; color: var(--text-primary); margin-bottom: 10px; }
+.vuln-note { font-size: 12px; color: var(--text-muted); margin: 8px 0; }
+.vuln-error { font-size: 12px; color: var(--accent-critical); margin: 8px 0; }
+.vuln-mono { font-family: var(--font-mono); font-size: 11px; }
+.vuln-num { text-align: right; font-family: var(--font-mono); font-size: 11px; white-space: nowrap; }
+.vuln-source { font-size: 11px; color: var(--text-muted); word-break: break-all; }
+.vuln-table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 8px; }
+.vuln-table th { text-align: left; font-weight: 600; color: var(--text-secondary); border-bottom: 1px solid var(--border-muted); padding: 6px 8px; white-space: nowrap; }
+.vuln-table td { border-bottom: 1px solid rgba(38, 51, 77, 0.6); padding: 6px 8px; vertical-align: top; color: var(--text-primary); }
+.vuln-table tr.vuln-row { cursor: pointer; }
+.vuln-table tr.vuln-row:hover td { background: var(--bg-surface-elevated); }
+.vuln-table a { color: var(--accent-info); text-decoration: none; }
+.vuln-table a:hover { text-decoration: underline; }
+.vuln-pkgs { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+.vuln-nofix { font-size: 11px; color: var(--text-muted); font-style: italic; }
+.vuln-detail td { background: var(--bg-canvas); font-size: 12px; color: var(--text-secondary); }
+.vuln-detail-meta { margin-top: 6px; font-size: 11px; color: var(--text-muted); }
+.vuln-badge { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 10px; font-weight: 700; letter-spacing: 0.3px; border: 1px solid var(--border-muted); color: var(--text-secondary); white-space: nowrap; }
+.vuln-sev-critical { color: #fff; background: var(--accent-critical); border-color: var(--accent-critical); }
+.vuln-sev-high { color: #1a1205; background: var(--accent-warning); border-color: var(--accent-warning); }
+.vuln-sev-medium { color: var(--accent-warning); border-color: var(--accent-warning); }
+.vuln-sev-low { color: var(--accent-info); border-color: var(--accent-info); }
+.vuln-kev { color: #fff; background: var(--accent-purple); border-color: var(--accent-purple); }
+.vuln-chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
+.vuln-chip { border: 1px solid var(--border-muted); border-radius: 6px; padding: 6px 10px; font-size: 11px; color: var(--text-secondary); background: var(--bg-canvas); }
+.vuln-chip span { display: block; font-size: 16px; font-weight: 700; color: var(--text-primary); font-family: var(--font-mono); }
+.vuln-chip.vuln-sev-critical span, .vuln-chip.vuln-sev-high span { color: inherit; }
+.vuln-chip.vuln-sev-critical, .vuln-chip.vuln-sev-high { color: inherit; }
+.vuln-kev-chip { border-color: var(--accent-purple); }
+.vuln-chip-ok { border-color: var(--accent-success); }
+.vuln-status { font-size: 13px; padding: 8px 12px; border-radius: 6px; border: 1px solid var(--border-muted); }
+.vuln-status-found { border-color: var(--accent-critical); color: var(--text-primary); }
+.vuln-status-clean { border-color: var(--accent-success); color: var(--text-primary); }
+.vuln-status-warn { border-color: var(--accent-warning); color: var(--accent-warning); }
+.vuln-toolbar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 12px; }
+.vuln-toolbar input { margin-left: auto; width: 240px; height: 28px; background: var(--bg-canvas); border: 1px solid var(--border-muted); border-radius: 4px; padding: 0 10px; color: var(--text-primary); font-size: 12px; }
+.vuln-progress { font-size: 12px; color: var(--accent-info); margin-top: 10px; display: flex; align-items: center; gap: 8px; }
+.vuln-progress[hidden] { display: none; }
+.vuln-spinner { width: 10px; height: 10px; border: 2px solid var(--accent-info); border-right-color: transparent; border-radius: 50%; animation: vuln-spin 0.8s linear infinite; }
+@keyframes vuln-spin { to { transform: rotate(360deg); } }
+.vuln-steps { margin-top: 8px; }
+.vuln-step { font-size: 12px; margin: 3px 0; color: var(--text-secondary); word-break: break-word; }
+.vuln-step.ok { color: var(--accent-success); }
+.vuln-step.fail { color: var(--accent-critical); }
+#vulnMoreBtn { margin-top: 10px; }
