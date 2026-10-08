@@ -35,6 +35,19 @@ pub mod ctx {
     pub const NO_SQUOTE: u32 = 1 << 20;
     /// Holds no double quote: safe inside a double-quoted literal.
     pub const NO_DQUOTE: u32 = 1 << 21;
+    /// Quotes and backslashes are escaped with a backslash (`addslashes`):
+    /// safe inside a quoted SQL or code literal, not in a shell, an HTML
+    /// attribute or XPath, where a backslash escapes nothing.
+    pub const ESCAPED_QUOTES: u32 = 1 << 22;
+    /// Made safe by HTML entities, which the browser decodes before it
+    /// runs an event handler attribute or follows a URL attribute.
+    pub const HTML_ENCODED: u32 = 1 << 23;
+    /// A URL whose scheme was checked against a list (`esc_url`): no
+    /// `javascript:` at its start, though its site is still the user's.
+    pub const SCHEME: u32 = 1 << 24;
+    /// A number (an `intval()` result, a cast, arithmetic), so a check
+    /// such as `is_numeric()` holds for it.
+    pub const NUMBER: u32 = 1 << 16;
     /// A number or a value restricted to a known safe alphabet.
     pub const ALL: u32 = 0x3FFF | ORIGIN | NO_SQUOTE | NO_DQUOTE;
 }
@@ -129,7 +142,7 @@ pub enum Seg {
     Dyn(Taint),
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum Value {
     Unknown(Taint),
     None,
@@ -180,6 +193,14 @@ impl Obj {
     }
 
     pub fn set_field(&mut self, name: &str, value: Value) {
+        // `$this->schema = [... [$this, 'check'] ...]`: the copy of the
+        // object inside the field keeps its class but not its fields, or
+        // every assignment would nest the object one level deeper.
+        let value = if holds_obj_of(&value, &self.class, 0) {
+            without_obj_fields(&value, &self.class)
+        } else {
+            value
+        };
         if let Some(slot) = self.fields.iter_mut().find(|(k, _)| &**k == name) {
             slot.1 = value;
         } else if self.fields.len() < MAX_ITEMS {
@@ -190,6 +211,71 @@ impl Obj {
     pub fn with_field(mut self, name: &str, value: Value) -> Obj {
         self.set_field(name, value);
         self
+    }
+}
+
+fn holds_obj_of(v: &Value, class: &str, depth: usize) -> bool {
+    if depth > 64 {
+        return true;
+    }
+    match v {
+        Value::List(x) | Value::OneOf(x) => x.iter().any(|v| holds_obj_of(v, class, depth + 1)),
+        Value::Dict(x) => x.iter().any(|(_, v)| holds_obj_of(v, class, depth + 1)),
+        Value::Obj(o) => {
+            (&*o.class == class && !o.fields.is_empty())
+                || o.fields
+                    .iter()
+                    .any(|(_, v)| holds_obj_of(v, class, depth + 1))
+        }
+        Value::Func(f) => f
+            .bound
+            .as_ref()
+            .is_some_and(|b| holds_obj_of(b, class, depth + 1)),
+        _ => false,
+    }
+}
+
+fn without_obj_fields(v: &Value, class: &str) -> Value {
+    match v {
+        Value::List(x) => Value::List(Rc::new(
+            x.iter().map(|v| without_obj_fields(v, class)).collect(),
+        )),
+        Value::OneOf(x) => Value::OneOf(Rc::new(
+            x.iter().map(|v| without_obj_fields(v, class)).collect(),
+        )),
+        Value::Dict(x) => Value::Dict(Rc::new(
+            x.iter()
+                .map(|(k, v)| (k.clone(), without_obj_fields(v, class)))
+                .collect(),
+        )),
+        Value::Obj(o) if &*o.class == class => Value::Obj(Rc::new(Obj {
+            class: o.class.clone(),
+            def: o.def.clone(),
+            fields: Vec::new(),
+            taint: o.taint.clone(),
+        })),
+        Value::Obj(o) => Value::Obj(Rc::new(Obj {
+            class: o.class.clone(),
+            def: o.def.clone(),
+            fields: o
+                .fields
+                .iter()
+                .map(|(k, v)| (k.clone(), without_obj_fields(v, class)))
+                .collect(),
+            taint: o.taint.clone(),
+        })),
+        Value::Func(f) => match &f.bound {
+            Some(b) => Value::Func(Rc::new(FuncVal {
+                def: f.def.clone(),
+                module: f.module,
+                qualname: f.qualname.clone(),
+                bound: Some(without_obj_fields(b, class)),
+                closure: f.closure.clone(),
+                scope: f.scope.clone(),
+            })),
+            None => v.clone(),
+        },
+        _ => v.clone(),
     }
 }
 
@@ -261,6 +347,29 @@ pub struct ClassVal {
 impl PartialEq for ClassVal {
     fn eq(&self, other: &Self) -> bool {
         Rc::ptr_eq(&self.def, &other.def)
+    }
+}
+
+/// Shared parts are compared by address first: environments are joined at
+/// every branch, and their values are mostly the same `Rc`s.
+impl PartialEq for Value {
+    fn eq(&self, other: &Self) -> bool {
+        use Value::*;
+        match (self, other) {
+            (Unknown(a), Unknown(b)) => a == b,
+            (None, None) => true,
+            (Bool(a), Bool(b)) => a == b,
+            (Int(a), Int(b)) => a == b,
+            (Float(a), Float(b)) => a == b,
+            (Str(a), Str(b)) => Rc::ptr_eq(a, b) || a == b,
+            (List(a), List(b)) | (OneOf(a), OneOf(b)) => Rc::ptr_eq(a, b) || a == b,
+            (Dict(a), Dict(b)) => Rc::ptr_eq(a, b) || a == b,
+            (Ref(a, x), Ref(b, y)) => a == b && x == y,
+            (Obj(a), Obj(b)) => Rc::ptr_eq(a, b) || a == b,
+            (Func(a), Func(b)) => Rc::ptr_eq(a, b) || a == b,
+            (Class(a), Class(b)) => Rc::ptr_eq(a, b) || a == b,
+            _ => false,
+        }
     }
 }
 
@@ -562,6 +671,52 @@ pub fn normalize(segs: Vec<Seg>) -> Vec<Seg> {
 }
 
 pub fn concat(parts: &[Value]) -> Value {
+    // A choice between fixed strings stays a choice, so that
+    // `"pages/" . ($admin ? "a.php" : "b.php")` still names its files.
+    let choice = |v: &Value| match v {
+        Value::OneOf(alts) if alts.iter().all(|a| a.as_str().is_some()) => Some(alts.clone()),
+        _ => None,
+    };
+    let combos = parts.iter().try_fold(1usize, |n, p| {
+        let n = n * choice(p).map(|a| a.len()).unwrap_or(1);
+        (n <= MAX_ALTERNATIVES).then_some(n)
+    });
+    if matches!(combos, Some(n) if n > 1) {
+        let mut acc: Vec<Vec<Seg>> = vec![Vec::new()];
+        for p in parts {
+            match choice(p) {
+                Some(alts) => {
+                    acc = acc
+                        .iter()
+                        .flat_map(|pre| {
+                            alts.iter().map(move |a| {
+                                let mut s = pre.clone();
+                                s.extend(a.to_segs());
+                                s
+                            })
+                        })
+                        .collect();
+                }
+                None => {
+                    let tail = p.to_segs();
+                    for s in acc.iter_mut() {
+                        s.extend(tail.iter().cloned());
+                    }
+                }
+            }
+        }
+        let mut alts: Vec<Value> = Vec::new();
+        for segs in acc {
+            let v = Value::segs(segs);
+            if !alts.contains(&v) {
+                alts.push(v);
+            }
+        }
+        return match alts.len() {
+            1 => alts.pop().unwrap_or_else(Value::clean),
+            _ => Value::OneOf(Rc::new(alts)),
+        };
+    }
     let mut segs = Vec::new();
     for p in parts {
         segs.extend(p.to_segs());

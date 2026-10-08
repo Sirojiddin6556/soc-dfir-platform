@@ -9,6 +9,7 @@ pub fn lower(root: Node, src: &str) -> Module {
     let l = Lower {
         src,
         depth: std::cell::Cell::new(0),
+        hoisted: std::cell::RefCell::new(Vec::new()),
     };
     Module {
         body: l.block(root),
@@ -19,6 +20,9 @@ pub fn lower(root: Node, src: &str) -> Module {
 struct Lower<'s> {
     src: &'s str,
     depth: std::cell::Cell<u32>,
+    /// Walrus assignments (`if (m := re.match(p, s)):`), run before the
+    /// statement that holds them.
+    hoisted: std::cell::RefCell<Vec<Stmt>>,
 }
 
 /// Deeper syntax is replaced by an opaque expression: generated code with
@@ -47,7 +51,13 @@ impl<'s> Lower<'s> {
             return;
         }
         self.depth.set(self.depth.get() + 1);
+        let saved = self.hoisted.take();
+        let start = out.len();
         self.stmt_inner(node, out);
+        let hoisted = self.hoisted.replace(saved);
+        if !hoisted.is_empty() {
+            out.splice(start..start, hoisted);
+        }
         self.depth.set(self.depth.get() - 1);
     }
 
@@ -497,6 +507,7 @@ impl<'s> Lower<'s> {
                     name: pname,
                     ty,
                     default,
+                    variadic: p.kind() == "list_splat_pattern",
                 });
             }
         }
@@ -773,6 +784,7 @@ impl<'s> Lower<'s> {
                                     .to_string(),
                                 ty: None,
                                 default: None,
+                                variadic: false,
                             })
                             .collect()
                     })
@@ -786,7 +798,16 @@ impl<'s> Lower<'s> {
                     span: span(node),
                 }))
             }
-            "named_expression" => self.expr_opt(node.child_by_field_name("value")),
+            "named_expression" => {
+                let value = self.expr_opt(node.child_by_field_name("value"));
+                let name = node.child_by_field_name("name");
+                self.hoisted.borrow_mut().push(Stmt::Assign {
+                    target: self.target(name),
+                    value,
+                    span: span(node),
+                });
+                self.expr_opt(name)
+            }
             "keyword_argument" => self.expr_opt(node.child_by_field_name("value")),
             _ => Expr::Other(
                 named_children(node)

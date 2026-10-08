@@ -361,7 +361,7 @@ impl CharSet {
         }
     }
 
-    fn union(&mut self, o: &CharSet) {
+    pub fn union(&mut self, o: &CharSet) {
         for i in 0..128 {
             self.ascii[i] |= o.ascii[i];
         }
@@ -369,12 +369,25 @@ impl CharSet {
         self.other |= o.other;
     }
 
-    fn negate(&self) -> CharSet {
+    pub fn negate(&self) -> CharSet {
         let mut n = CharSet::default();
         for i in 0..128 {
             n.ascii[i] = !self.ascii[i];
         }
         n.other = true;
+        n
+    }
+
+    /// The set with both cases of every ASCII letter (a `/i` pattern).
+    pub fn case_insensitive(&self) -> CharSet {
+        let mut n = self.clone();
+        for c in 'a'..='z' {
+            let u = c.to_ascii_uppercase();
+            if self.has(c) || self.has(u) {
+                n.add(c);
+                n.add(u);
+            }
+        }
         n
     }
 
@@ -403,7 +416,9 @@ impl CharSet {
         if none(";|&$`\n\r()<>'\"\\ \t*?[]{}~!#^") {
             bits |= ctx::SHELL;
         }
-        if none("/\\.") {
+        // Without `.` a name cannot climb out of its folder; a backslash
+        // is a plain character on the servers PHP and Python run on.
+        if none("/.") {
             bits |= ctx::PATH;
         }
         if none("'\";`()=<>*/\\# \t\n\r") {

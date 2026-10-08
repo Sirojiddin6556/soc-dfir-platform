@@ -45,6 +45,7 @@ pub fn lower_tree(lang: Language, tree: &tree_sitter::Tree, src: &str) -> Option
     match lang {
         Language::Python => Some(lower::python::lower(tree.root_node(), src)),
         Language::Java => Some(lower::java::lower(tree.root_node(), src)),
+        Language::Php => Some(lower::php::lower(tree.root_node(), src)),
         _ => None,
     }
 }
@@ -92,6 +93,10 @@ pub struct Options {
     /// Also look for defects in test code, which does not run in
     /// production.
     pub include_tests: bool,
+    /// Also treat file contents, command output and session data as
+    /// untrusted, not only the request: finds second-order flaws at the
+    /// cost of more findings to review.
+    pub external_sources: bool,
 }
 
 /// Loads and analyzes every supported file under `root`, on a thread with
@@ -125,13 +130,14 @@ pub fn analyze(project: &project::Project) -> Report {
 pub fn analyze_with(project: &project::Project, options: Options) -> Report {
     let started = std::time::Instant::now();
     let mut interp = interp::Interp::new(project);
+    interp.external_sources = options.external_sources;
     let mut languages: Vec<(String, usize)> = Vec::new();
     for (i, m) in project.modules.iter().enumerate() {
         match languages.iter_mut().find(|(l, _)| l == m.lang.name()) {
             Some(slot) => slot.1 += 1,
             None => languages.push((m.lang.name().to_string(), 1)),
         }
-        if matches!(m.lang, Language::Python | Language::Java)
+        if matches!(m.lang, Language::Python | Language::Java | Language::Php)
             && (options.include_tests || !m.is_test)
         {
             interp.analyze_module(i);

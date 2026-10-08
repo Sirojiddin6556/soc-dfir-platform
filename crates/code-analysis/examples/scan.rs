@@ -8,6 +8,7 @@ fn main() {
     let started = std::time::Instant::now();
     let options = code_analysis::Options {
         include_tests: args.iter().any(|a| a == "--tests"),
+        external_sources: args.iter().any(|a| a == "--external"),
     };
     let report = code_analysis::analyze_dir_with(root, options).expect("analyze");
     if args.iter().any(|a| a == "--json") {
@@ -20,9 +21,13 @@ fn main() {
             .as_ref()
             .map(|s| format!(" <- {}:{} {}", s.file, s.line, s.note))
             .unwrap_or_default();
+        let more = match f.other_sources.len() {
+            0 => String::new(),
+            n => format!(" (+{n} other sources)"),
+        };
         println!(
-            "{:?} {}:{} [{} CWE-{}] {}{}",
-            f.severity, f.file, f.line, f.rule, f.cwe, f.snippet, src
+            "{:?} {}:{} [{} CWE-{}] {}{}{}",
+            f.severity, f.file, f.line, f.rule, f.cwe, f.snippet, src, more
         );
     }
     eprintln!(

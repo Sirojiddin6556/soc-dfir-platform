@@ -278,6 +278,7 @@ public class EchoServletTest extends HttpServlet {{
         &[(path, &src)],
         Options {
             include_tests: true,
+            ..Options::default()
         },
     );
     assert_eq!(lines(&found, "xss", path), vec![8], "{found:?}");

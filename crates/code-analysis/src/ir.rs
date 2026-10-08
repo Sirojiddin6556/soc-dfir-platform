@@ -182,6 +182,9 @@ pub struct Param {
     pub name: String,
     pub ty: Option<String>,
     pub default: Option<Expr>,
+    /// PHP `...$args`, Python `*args`: takes the remaining positional
+    /// arguments as a list.
+    pub variadic: bool,
 }
 
 #[derive(Debug, Clone)]

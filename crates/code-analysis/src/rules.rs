@@ -46,6 +46,9 @@ pub struct Finding {
     pub source: Option<Location>,
     /// Source, the calls leading to the sink, and the sink itself.
     pub trace: Vec<Location>,
+    /// Other inputs that reach the same sink, such as the pages that pass
+    /// request data to one database helper (at most 50).
+    pub other_sources: Vec<Location>,
 }
 
 macro_rules! rule {
@@ -109,6 +112,14 @@ rule!(
     High,
     "Межсайтовый скриптинг (XSS)",
     ctx::HTML
+);
+rule!(
+    FILE_INCLUSION,
+    "file-inclusion",
+    98,
+    Critical,
+    "Включение файла, выбранного пользователем (LFI/RFI)",
+    ctx::PATH
 );
 rule!(
     LDAPI,

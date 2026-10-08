@@ -471,6 +471,7 @@ impl<'s> Lower<'s> {
                 name,
                 ty: Some(full_ty),
                 default: None,
+                variadic: false,
             });
         }
     }
@@ -1457,6 +1458,7 @@ impl<'s> Lower<'s> {
                         name: n,
                         ty: None,
                         default: None,
+                        variadic: false,
                     });
                 }
                 "inferred_parameters" => {
@@ -1467,6 +1469,7 @@ impl<'s> Lower<'s> {
                             name: n,
                             ty: None,
                             default: None,
+                            variadic: false,
                         });
                     }
                 }
@@ -1483,6 +1486,7 @@ impl<'s> Lower<'s> {
                                 name: n,
                                 ty: Some(ty),
                                 default: None,
+                                variadic: false,
                             });
                         }
                     }
@@ -1566,6 +1570,7 @@ fn this_param(class: &str) -> Param {
         name: "this".into(),
         ty: Some(class.to_string()),
         default: None,
+        variadic: false,
     }
 }
 

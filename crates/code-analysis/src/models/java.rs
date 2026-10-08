@@ -295,7 +295,7 @@ impl Model for Java {
         Value::Ref(format!("{path}.{name}").into(), taint.clone())
     }
 
-    fn builtin(&self, name: &str) -> Value {
+    fn builtin(&self, _it: &mut Interp, name: &str) -> Value {
         Value::Ref(canonical(name).into(), Taint::clean())
     }
 

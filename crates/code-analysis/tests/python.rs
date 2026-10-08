@@ -384,3 +384,38 @@ def run(suite, result):
         "{got:?}"
     );
 }
+
+#[test]
+fn walrus_assignment_and_counting_loops_keep_the_flow() {
+    let src = format!(
+        "{FLASK}
+@app.route('/a')
+def a(*parts):
+    cur = sqlite3.connect('db').cursor()
+    if (name := request.args.get('name')):
+        cur.execute(\"DELETE FROM users WHERE name = '\" + name + \"'\")
+    i = 0
+    while i < 10:
+        i += 1
+    cur.execute(\"SELECT * FROM t WHERE c = '\" + request.args['c'] + \"'\")
+    return 'ok'
+
+def first(*args):
+    return args[0]
+
+@app.route('/b')
+def b():
+    cur = sqlite3.connect('db').cursor()
+    cur.execute(first('SELECT 1', request.args['x']))
+    cur.execute(first(request.args['y'], 'SELECT 1'))
+    return 'ok'
+"
+    );
+    let found = scan(&[("app.py", &src)]);
+    let sqli: Vec<u32> = found
+        .iter()
+        .filter(|f| f.0 == "sql-injection")
+        .map(|f| f.1)
+        .collect();
+    assert_eq!(sqli, vec![9, 13, 23], "{found:?}");
+}

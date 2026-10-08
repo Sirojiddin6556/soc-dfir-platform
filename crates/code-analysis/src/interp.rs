@@ -143,7 +143,7 @@ pub trait Model {
         None
     }
     /// Value of a name no scope defines.
-    fn builtin(&self, name: &str) -> Value {
+    fn builtin(&self, _it: &mut Interp, name: &str) -> Value {
         Value::Ref(format!("builtins.{name}").into(), Taint::clean())
     }
     fn route(&self, _it: &mut Interp, _module: usize, _func: &Function) -> Option<Route> {
@@ -179,6 +179,11 @@ pub trait Model {
     ) -> Vec<(FactOn, Fact)> {
         Vec::new()
     }
+    /// Facts from a call of a library function used as a condition:
+    /// `preg_match('/^\d+$/', $x)` is about its second argument.
+    fn refine_call(&self, _name: &str, _args: &[Value], _truth: bool) -> Vec<(FactOn, Fact)> {
+        Vec::new()
+    }
     /// Variables sanitized by a fact about an attribute of an object,
     /// e.g. a check of `urlparse(u).netloc` validates `u`.
     fn refine_attr(&self, _obj: &Obj, _field: &str, _fact: &Fact) -> Vec<(Rc<str>, u32)> {
@@ -193,11 +198,20 @@ pub trait Model {
     fn quiet_entries(&self) -> bool {
         false
     }
+    /// A function the model knows better than the project's own definition
+    /// of it (WordPress's escaping functions when WordPress is scanned).
+    fn library_over_project(&self, _name: &str) -> bool {
+        false
+    }
     /// A typed declaration (`int n = ...`).
     fn coerce(&self, _it: &mut Interp, _ty: &str, value: Value) -> Value {
         value
     }
     fn raw(&self, _it: &mut Interp, _value: &Value, _span: Span) {}
+    /// A value as it reads inside a string being built (`"a $x"`).
+    fn stringify(&self, _it: &mut Interp, value: Value) -> Value {
+        value
+    }
 }
 
 struct LoopAcc {
@@ -216,8 +230,14 @@ struct Frame {
     self_name: Option<Rc<str>>,
     final_self: Option<Value>,
     loops: Vec<LoopAcc>,
+    /// The environment holds checks on array elements (`$a[0]`, see
+    /// [`path_key`]), which assignments to the array must drop.
+    paths: bool,
     route: Option<Route>,
     span: Span,
+    /// Variables of a module's top level where it returned or exited:
+    /// a PHP script that ends with `exit` still defined them.
+    exit_env: Option<Env>,
 }
 
 enum Globals {
@@ -233,7 +253,8 @@ pub struct Interp<'p> {
     /// Call sites from the entry function down to the current frame.
     calls: Vec<(usize, Span)>,
     pub findings: Vec<Finding>,
-    seen: HashSet<(String, usize, u32, u32, usize, u32)>,
+    /// Reported sinks and the index of their finding.
+    seen: HashMap<(String, usize, u32, u32, usize, u32), usize>,
     steps: usize,
     /// The entry being analyzed is not a handler and receives no request
     /// data. Its callees are entries of their own, so clean calls are only
@@ -255,7 +276,25 @@ pub struct Interp<'p> {
     pub notes: HashMap<&'static str, Value>,
     /// See `subclass_index`.
     subclasses: Option<SubclassIndex>,
+    /// Also treat file contents, command output and session data as
+    /// untrusted (see `Options::external_sources`).
+    pub external_sources: bool,
+    /// See `php_index`.
+    php_defs: Option<PhpIndex>,
+    php_consts: Option<Rc<HashMap<String, Value>>>,
+    /// Values of the array elements a condition being refined checks.
+    path_vals: Vec<(Rc<str>, Value)>,
+    /// PHP script variables that the project sets to one class's object
+    /// (`$db = new Database();` in index.php), by name.
+    php_objects: Option<Rc<HashMap<String, Expr>>>,
+    php_objects_building: Vec<String>,
+    /// Top-level definitions of each PHP module, its functions' scope.
+    php_scopes: HashMap<usize, Option<Rc<Scope>>>,
 }
+
+/// Top-level PHP functions and classes of the project by lowercase name,
+/// with the module defining each.
+type PhpIndex = Rc<HashMap<String, Vec<(usize, Def)>>>;
 
 /// Project classes deriving directly from each class, by qualified name.
 type SubclassIndex = Rc<HashMap<Rc<str>, Vec<Rc<ClassVal>>>>;
@@ -273,11 +312,18 @@ impl<'p> Interp<'p> {
             frames: Vec::new(),
             calls: Vec::new(),
             findings: Vec::new(),
-            seen: HashSet::new(),
+            seen: HashMap::new(),
             steps: 0,
             quiet: false,
             notes: HashMap::new(),
             subclasses: None,
+            external_sources: false,
+            php_defs: None,
+            php_consts: None,
+            path_vals: Vec::new(),
+            php_objects: None,
+            php_objects_building: Vec::new(),
+            php_scopes: HashMap::new(),
 
             depth: 0,
             loading: 0,
@@ -290,10 +336,13 @@ impl<'p> Interp<'p> {
 
     /// Runs a module's top level and then every function in it.
     pub fn analyze_module(&mut self, module: usize) {
+        // A script's own code (PHP pages, Python modules) is explored fully.
+        self.quiet = false;
         self.module_globals(module);
         let ir = &self.project.modules[module].ir;
         let mut entries = Vec::new();
-        collect_functions(&ir.body, None, None, &mut entries);
+        let top = self.php_scope(module);
+        collect_functions(&ir.body, top, None, &mut entries);
         for (func, scope, class) in entries {
             self.steps = 0;
             let class = class.map(|c| {
@@ -449,9 +498,9 @@ impl<'p> Interp<'p> {
         src: Option<Source>,
     ) {
         // One finding per sink: the same sink reached from several handlers
-        // or callers is reported once, with the first source found. A
-        // predictable random value is reported once where it is made,
-        // however many secrets it fills.
+        // or callers is reported once, with the first source found and the
+        // others listed. A predictable random value is reported once where
+        // it is made, however many secrets it fills.
         let key = match &src {
             Some(s) if s.weak_random => (
                 rule.id.to_string(),
@@ -470,15 +519,28 @@ impl<'p> Interp<'p> {
                 0,
             ),
         };
-        if !self.seen.insert(key) {
-            return;
-        }
         let loc = |m: usize, s: Span, note: String| Location {
             file: self.project.modules[m].path.clone(),
             line: s.line,
             column: s.column,
             note,
         };
+        if let Some(&i) = self.seen.get(&key) {
+            if let Some(s) = src.filter(|s| !s.weak_random) {
+                let l = loc(s.module, s.span, s.what.to_string());
+                let f = &mut self.findings[i];
+                let same =
+                    |o: &Location| o.file == l.file && o.line == l.line && o.column == l.column;
+                if !f.source.as_ref().is_some_and(same)
+                    && !f.other_sources.iter().any(same)
+                    && f.other_sources.len() < 50
+                {
+                    f.other_sources.push(l);
+                }
+            }
+            return;
+        }
+        self.seen.insert(key, self.findings.len());
         let mut trace = Vec::new();
         if let Some(s) = &src {
             trace.push(loc(s.module, s.span, format!("источник: {}", s.what)));
@@ -513,6 +575,7 @@ impl<'p> Interp<'p> {
             snippet: file.line_text(at.line),
             source: src.map(|s| loc(s.module, s.span, s.what.to_string())),
             trace,
+            other_sources: Vec::new(),
         });
     }
 
@@ -520,6 +583,10 @@ impl<'p> Interp<'p> {
 
     fn frame(&mut self) -> &mut Frame {
         self.frames.last_mut().expect("frame")
+    }
+
+    fn frame_ref(&self) -> &Frame {
+        self.frames.last().expect("frame")
     }
 
     fn live(&self) -> bool {
@@ -541,6 +608,11 @@ impl<'p> Interp<'p> {
                 return Some(self.def_value(module, def, &s));
             }
             scope = s.parent.clone();
+        }
+        if self.project.modules[module].lang == crate::Language::Php {
+            // PHP functions see the script's variables only through
+            // `global`; functions and classes are found by name.
+            return None;
         }
         let globals = self.module_globals(module)?;
         globals.get(name).cloned()
@@ -589,13 +661,15 @@ impl<'p> Interp<'p> {
         self.globals[module] = Globals::Running;
         let saved_calls = std::mem::take(&mut self.calls);
         let saved_steps = self.steps;
-        self.frames.push(Frame::new(module, None, Some(Env::new())));
+        let mut frame = Frame::new(module, None, Some(Env::new()));
+        frame.scope = self.php_scope(module);
+        self.frames.push(frame);
         let body = &self.project.modules[module].ir.body;
         self.exec_block(body);
         let frame = self.frames.pop().expect("frame");
         self.calls = saved_calls;
         self.steps = saved_steps;
-        let env = Rc::new(frame.env.unwrap_or_default());
+        let env = Rc::new(join_env(frame.env, frame.exit_env).unwrap_or_default());
         self.globals[module] = Globals::Done(env.clone());
         self.loading -= 1;
         Some(env)
@@ -713,6 +787,9 @@ impl<'p> Interp<'p> {
                     None => v,
                     Some(prev) => join(&prev, &v),
                 });
+                if f.func.is_none() {
+                    f.exit_env = join_env(f.exit_env.take(), f.env.take());
+                }
                 f.env = None;
             }
             Stmt::Break => {
@@ -832,6 +909,7 @@ impl<'p> Interp<'p> {
         let entry = self.frame().env.clone();
         let mut state = entry.clone();
         let mut exits = None;
+        let mut settled = true;
         self.frame().loops.push(LoopAcc {
             breaks: None,
             continues: None,
@@ -867,6 +945,7 @@ impl<'p> Interp<'p> {
             }
             let next = join_env(state.clone(), end);
             if pass == 1 || env_eq(&next, &state) {
+                settled = env_eq(&next, &state);
                 state = next;
                 break;
             }
@@ -881,6 +960,10 @@ impl<'p> Interp<'p> {
             // `while cond:` exits when the condition fails.
             if self.eval_in(state.clone(), t).truthy() != Some(true) {
                 out = join_env(out, state);
+            } else if !settled && !matches!(t, Expr::Lit(_)) {
+                // `for ($i = 0; $i < 50; $i++)`: two passes saw only the
+                // first values of `$i`, the loop ends with later ones.
+                out = join_env(out, state.map(|s| widen_changed(s, entry.as_ref())));
             }
         }
         self.frame().env = out;
@@ -967,6 +1050,7 @@ impl<'p> Interp<'p> {
                 if secret_name(n) {
                     self.sink(&WEAK_RANDOM, &value, span, n);
                 }
+                self.forget_paths(n);
                 self.set_var(n, value)
             }
             Target::Attr(obj, field) => {
@@ -981,6 +1065,9 @@ impl<'p> Interp<'p> {
                 }
             }
             Target::Index(base_e, key_e) => {
+                if let Expr::Name(n) = &**base_e {
+                    self.forget_paths(n);
+                }
                 let base = self.eval(base_e);
                 let key = self.eval(key_e);
                 let key_name = key.as_str().unwrap_or_default();
@@ -1018,6 +1105,18 @@ impl<'p> Interp<'p> {
         }
     }
 
+    /// Drops the checks on elements of `name` once it is assigned.
+    fn forget_paths(&mut self, name: &str) {
+        let frame = self.frame();
+        if !frame.paths {
+            return;
+        }
+        if let Some(env) = frame.env.as_mut() {
+            let prefix = format!("{name}[");
+            env.retain(|k, _| !k.starts_with(prefix.as_str()));
+        }
+    }
+
     /// Writes a changed receiver back to the place it was read from.
     pub fn assign_expr(&mut self, e: &Expr, value: Value, span: Span) {
         let target = match e {
@@ -1046,9 +1145,17 @@ impl<'p> Interp<'p> {
             }
         }
         let model = self.model();
+        let paths = std::mem::take(&mut self.path_vals);
         for (var, facts) in by_var {
-            let Some(cur) = self.get_var(&var) else {
-                continue;
+            let cur = match self.get_var(&var) {
+                Some(v) => v,
+                None => match paths.iter().find(|(k, _)| *k == var) {
+                    Some((_, v)) => {
+                        self.frame().paths = true;
+                        v.clone()
+                    }
+                    None => continue,
+                },
             };
             let mut bits = model.facts_safety(&facts, &cur);
             let mut narrowed = None;
@@ -1112,8 +1219,16 @@ impl<'p> Interp<'p> {
                     }
                 }
             }
-            Expr::Bin(op @ (BinOp::Eq | BinOp::NotEq), l, r) => {
-                if (*op == BinOp::Eq) == truth {
+            // `preg_match(...) == 1`, `in_array(...) === false`
+            Expr::Bin(op @ (BinOp::Eq | BinOp::NotEq | BinOp::Is | BinOp::IsNot), l, r)
+                if matches!(&**l, Expr::Call { .. }) && const_truth(r).is_some() =>
+            {
+                let t = const_truth(r).unwrap_or(true);
+                let eq = matches!(op, BinOp::Eq | BinOp::Is);
+                self.collect_facts(l, eq == (t == truth), out);
+            }
+            Expr::Bin(op @ (BinOp::Eq | BinOp::NotEq | BinOp::Is | BinOp::IsNot), l, r) => {
+                if matches!(op, BinOp::Eq | BinOp::Is) == truth {
                     let rv = self.eval(r);
                     if is_const(&rv) {
                         self.fact_on(l, Fact::OneOf(vec![rv]), out);
@@ -1121,6 +1236,24 @@ impl<'p> Interp<'p> {
                         let lv = self.eval(l);
                         if is_const(&lv) {
                             self.fact_on(r, Fact::OneOf(vec![lv]), out);
+                        }
+                    }
+                }
+            }
+            Expr::Call { func, args, .. } if matches!(&**func, Expr::Name(_)) => {
+                let Expr::Name(name) = &**func else {
+                    return;
+                };
+                // Only library functions: project code is not a known check.
+                if self.get_var(name).is_some() || self.lookup_global(name).is_some() {
+                    return;
+                }
+                let argv: Vec<Value> = args.iter().map(|a| self.eval(&a.value)).collect();
+                let model = self.model();
+                for (on, f) in model.refine_call(name, &argv, truth) {
+                    if let FactOn::Arg(i) = on {
+                        if let Some(a) = args.get(i) {
+                            self.fact_on(&a.value, f, out);
                         }
                     }
                 }
@@ -1151,6 +1284,17 @@ impl<'p> Interp<'p> {
     fn fact_on(&mut self, e: &Expr, fact: Fact, out: &mut Vec<(Rc<str>, Fact)>) {
         match e {
             Expr::Name(n) => out.push((n.as_str().into(), fact)),
+            Expr::Index(..) => {
+                // `is_numeric($octet[0])`, `preg_match('/^\d+$/', $_GET['id'])`
+                if let Some(key) = path_key(e) {
+                    let key: Rc<str> = key.into();
+                    if !self.path_vals.iter().any(|(k, _)| *k == key) {
+                        let v = self.eval(e);
+                        self.path_vals.push((key.clone(), v));
+                    }
+                    out.push((key, fact));
+                }
+            }
             Expr::Attr(base, field) => {
                 if let Expr::Name(n) = &**base {
                     if let Some(Value::Obj(o)) = self.get_var(n) {
@@ -1249,13 +1393,28 @@ impl<'p> Interp<'p> {
             Expr::Lit(c) => const_value(c),
             Expr::Name(n) => match self.get_var(n).or_else(|| self.lookup_global(n)) {
                 Some(v) => v,
-                None => self.model().builtin(n),
+                None => {
+                    let model = self.model();
+                    model.builtin(self, n)
+                }
             },
             Expr::Attr(base, name) => {
                 let b = self.eval(base);
                 self.get_attr(&b, name)
             }
             Expr::Index(base, key) => {
+                if self.frame_ref().paths {
+                    if let Some(p) = path_key(e) {
+                        if let Some(v) = self
+                            .frame_ref()
+                            .env
+                            .as_ref()
+                            .and_then(|env| env.get(p.as_str()))
+                        {
+                            return v.clone();
+                        }
+                    }
+                }
                 let b = self.eval(base);
                 let k = self.eval(key);
                 self.index(&b, &k)
@@ -1330,7 +1489,12 @@ impl<'p> Interp<'p> {
                 }
             }
             Expr::Concat(parts) => {
-                let vals: Vec<Value> = parts.iter().map(|p| self.eval(p)).collect();
+                let mut vals: Vec<Value> = Vec::with_capacity(parts.len());
+                for p in parts {
+                    let v = self.eval(p);
+                    let model = self.model();
+                    vals.push(model.stringify(self, v));
+                }
                 concat(&vals)
             }
             Expr::Cond { test, then, other } => {
@@ -1465,6 +1629,36 @@ impl<'p> Interp<'p> {
                 let new_recv =
                     changed.then(|| join_all(recvs.into_iter()).unwrap_or_else(Value::clean));
                 (result.unwrap_or_else(Value::clean), new_recv)
+            }
+            Value::Obj(o) if o.def.is_some() && name.contains("::") => {
+                // `parent::m()` in PHP: the method of that class, run on
+                // this object.
+                let (class, method) = name.split_once("::").unwrap_or(("", name));
+                let found = match self.lookup_dotted(class) {
+                    Some(Value::Class(c)) => self.find_overload(&c, method, Some(args.len())),
+                    _ => None,
+                };
+                match found {
+                    Some((m, owner)) => {
+                        let fv = FuncVal {
+                            qualname: format!("{}.{}", owner.qualname, m.name).into(),
+                            def: m.clone(),
+                            module: owner.module,
+                            bound: if is_static(&m) {
+                                None
+                            } else {
+                                Some(recv.clone())
+                            },
+                            closure: None,
+                            scope: owner.scope.clone(),
+                        };
+                        self.call_user(&fv, args, span)
+                    }
+                    None => {
+                        let model = self.model();
+                        model.call_method(self, recv, method, args, span)
+                    }
+                }
             }
             Value::Obj(o) if o.def.is_some() => {
                 let cv = o.def.clone().unwrap();
@@ -1638,6 +1832,23 @@ impl<'p> Interp<'p> {
         index
     }
 
+    /// A callback passed as a value: a closure, or a function named by a
+    /// string (PHP `array_map('absint', ...)`).
+    pub fn callable(&mut self, v: &Value) -> Option<Value> {
+        match v {
+            Value::Func(_) => Some(v.clone()),
+            Value::Str(_) => {
+                let name = v.as_str()?;
+                let name = name.trim_start_matches('\\');
+                if name.is_empty() || !name.chars().all(|c| c.is_alphanumeric() || c == '_') {
+                    return None;
+                }
+                Some(self.eval(&Expr::Name(name.to_string())))
+            }
+            _ => None,
+        }
+    }
+
     pub fn call_value(&mut self, f: &Value, args: &[ArgVal], span: Span) -> Value {
         // A name can resolve to alternatives that include itself again.
         if self.depth >= MAX_EVAL_DEPTH {
@@ -1702,6 +1913,17 @@ impl<'p> Interp<'p> {
                 final_self.unwrap_or(obj)
             }
             None => obj,
+        }
+    }
+
+    /// Whether a project object's class or its project bases define `name`.
+    pub fn has_method(&mut self, v: &Value, name: &str) -> bool {
+        match v {
+            Value::Obj(o) => match o.def.clone() {
+                Some(cv) => self.find_method(&cv, name).is_some(),
+                None => false,
+            },
+            _ => false,
         }
     }
 
@@ -1973,6 +2195,19 @@ impl<'p> Interp<'p> {
                 env.insert(p.name.as_str().into(), a.value.clone());
                 continue;
             }
+            if p.variadic {
+                let rest: Vec<&ArgVal> = positional.by_ref().collect();
+                let v = if rest.iter().any(|a| a.spread) {
+                    Value::Unknown(
+                        rest.iter()
+                            .fold(Taint::clean(), |t, a| t.union(&a.value.taint())),
+                    )
+                } else {
+                    Value::list(rest.iter().map(|a| a.value.clone()).collect())
+                };
+                env.insert(p.name.as_str().into(), v);
+                continue;
+            }
             match positional.next() {
                 Some(a) if a.spread => {
                     spread_taint = Some(spread_taint.unwrap_or_default().union(&a.value.taint()));
@@ -2153,6 +2388,9 @@ impl<'p> Interp<'p> {
     fn lookup_global(&mut self, name: &str) -> Option<Value> {
         let module = self.module();
         let m = &self.project.modules[module];
+        if m.lang == crate::Language::Php {
+            return self.php_lookup(name);
+        }
         if m.lang != crate::Language::Java {
             return None;
         }
@@ -2171,6 +2409,279 @@ impl<'p> Interp<'p> {
             }
         }
         candidates.into_iter().find_map(|c| self.java_class(&c))
+    }
+
+    /// The scope of a PHP module's top-level functions and classes, which
+    /// PHP defines before the script runs.
+    fn php_scope(&mut self, module: usize) -> Option<Rc<Scope>> {
+        if self.project.modules[module].lang != crate::Language::Php {
+            return None;
+        }
+        if let Some(s) = self.php_scopes.get(&module) {
+            return s.clone();
+        }
+        let s = Scope::of_body(&self.project.modules[module].ir.body, None);
+        self.php_scopes.insert(module, s.clone());
+        s
+    }
+
+    fn php_index(&mut self) -> PhpIndex {
+        if let Some(i) = &self.php_defs {
+            return i.clone();
+        }
+        let mut index: HashMap<String, Vec<(usize, Def)>> = HashMap::new();
+        for (i, m) in self.project.modules.iter().enumerate() {
+            if m.lang != crate::Language::Php {
+                continue;
+            }
+            for s in &m.ir.body {
+                let (name, def) = match s {
+                    Stmt::FuncDef(f) => (&f.name, Def::Func(f.clone())),
+                    Stmt::ClassDef(c) => (&c.name, Def::Class(c.clone())),
+                    _ => continue,
+                };
+                index
+                    .entry(name.to_ascii_lowercase())
+                    .or_default()
+                    .push((i, def));
+            }
+        }
+        let index = Rc::new(index);
+        self.php_defs = Some(index.clone());
+        index
+    }
+
+    /// A PHP function or class defined anywhere in the project. Names are
+    /// case-insensitive; definitions in the module itself, then in its
+    /// directory, then in non-test code win, and up to four alternatives
+    /// are kept when several files define the name.
+    fn php_lookup(&mut self, name: &str) -> Option<Value> {
+        if name.starts_with('$') || self.model().library_over_project(name) {
+            return None;
+        }
+        let index = self.php_index();
+        let found = index.get(&name.to_ascii_lowercase())?;
+        let here = self.module();
+        let dir = |m: usize| {
+            let p = &self.project.modules[m].path;
+            p.rsplit_once('/')
+                .map(|(d, _)| d.to_string())
+                .unwrap_or_default()
+        };
+        let here_dir = dir(here);
+        let here_test = self.project.modules[here].is_test;
+        let rank = |m: usize| {
+            if m == here {
+                0
+            } else if dir(m) == here_dir {
+                1
+            } else if self.project.modules[m].is_test && !here_test {
+                3
+            } else {
+                2
+            }
+        };
+        let best = found.iter().map(|(m, _)| rank(*m)).min()?;
+        let picks: Vec<(usize, Def)> = found
+            .iter()
+            .filter(|(m, _)| rank(*m) == best)
+            .take(4)
+            .cloned()
+            .collect();
+        let mut vals = Vec::new();
+        for (m, def) in picks {
+            let scope = self.php_scope(m)?;
+            vals.push(self.def_value(m, &def, &scope));
+        }
+        join_all(vals.into_iter())
+    }
+
+    /// `global $name` in a PHP function: the script's variable, as the
+    /// script has set it so far, or as it ends.
+    pub fn php_global(&mut self, name: &str) -> Value {
+        let module = self.module();
+        let live = self
+            .frames
+            .iter()
+            .rev()
+            .find(|f| f.module == module && f.func.is_none())
+            .and_then(|f| f.env.as_ref().and_then(|e| e.get(name)).cloned());
+        if let Some(v) = live {
+            return v;
+        }
+        match &self.globals[module] {
+            Globals::Done(env) => match env.get(name) {
+                Some(v) => v.clone(),
+                None => {
+                    let model = self.model();
+                    model.builtin(self, name)
+                }
+            },
+            _ => Value::clean(),
+        }
+    }
+
+    /// `define('NAME', value)`. PHP constants are global, so the value goes
+    /// to the script's frame whichever function defines it.
+    pub fn php_define(&mut self, name: &str, value: Value) {
+        let module = self.module();
+        let frame = self
+            .frames
+            .iter_mut()
+            .rev()
+            .find(|f| f.module == module && f.func.is_none());
+        if let Some(env) = frame.and_then(|f| f.env.as_mut()) {
+            env.insert(format!("#{name}").into(), value);
+        }
+    }
+
+    /// A constant set by `define` or `const`: as defined on the way to this
+    /// point, else as the project defines it with a literal value.
+    pub fn php_const(&mut self, name: &str) -> Option<Value> {
+        let key = format!("#{name}");
+        for f in self.frames.iter().rev() {
+            if let Some(v) = f.env.as_ref().and_then(|e| e.get(key.as_str())) {
+                return Some(v.clone());
+            }
+        }
+        if self.php_consts.is_none() {
+            let mut found: HashMap<String, Vec<Value>> = HashMap::new();
+            for m in &self.project.modules {
+                if m.lang == crate::Language::Php {
+                    literal_consts(&m.ir.body, &mut found);
+                }
+            }
+            let index = found
+                .into_iter()
+                .filter_map(|(k, vals)| join_all(vals.into_iter()).map(|v| (k, v)))
+                .collect();
+            self.php_consts = Some(Rc::new(index));
+        }
+        self.php_consts.as_ref().and_then(|i| i.get(name).cloned())
+    }
+
+    /// A script variable this file uses without setting it, which the
+    /// project sets everywhere to an object of one class: pages included by
+    /// a front controller use the objects it made (`$db->query(...)`). The
+    /// object is made here, once per run, and kept in the script's frame.
+    pub fn php_object_var(&mut self, name: &str) -> Option<Value> {
+        if self.php_objects.is_none() {
+            let mut found: HashMap<String, Option<Expr>> = HashMap::new();
+            for m in &self.project.modules {
+                if m.lang == crate::Language::Php {
+                    object_assignments(&m.ir.body, &mut found);
+                }
+            }
+            let index = found
+                .into_iter()
+                .filter_map(|(k, e)| e.map(|e| (k, e)))
+                .collect();
+            self.php_objects = Some(Rc::new(index));
+        }
+        let expr = self.php_objects.as_ref()?.get(name)?.clone();
+        if self.php_objects_building.iter().any(|b| b == name) {
+            return None;
+        }
+        self.php_objects_building.push(name.to_string());
+        let v = self.eval(&expr);
+        self.php_objects_building.pop();
+        if !matches!(v, Value::Obj(_)) {
+            return None;
+        }
+        let module = self.module();
+        let frame = self
+            .frames
+            .iter_mut()
+            .find(|f| f.module == module && f.func.is_none());
+        if let Some(env) = frame.and_then(|f| f.env.as_mut()) {
+            env.insert(name.into(), v.clone());
+        }
+        Some(v)
+    }
+
+    /// `include $path` where the path is one of a few fixed names: each
+    /// file's variables, joined.
+    pub fn php_include_any(&mut self, paths: &[String]) -> bool {
+        let mut joined: Option<Env> = None;
+        let mut any = false;
+        for p in paths {
+            let Some(env) = self.php_included_env(p) else {
+                continue;
+            };
+            any = true;
+            let env = env.as_ref().clone();
+            joined = Some(match joined {
+                None => env,
+                Some(acc) => join_env(Some(acc), Some(env)).unwrap_or_default(),
+            });
+        }
+        for (k, v) in joined.unwrap_or_default().iter() {
+            self.set_var(k, v.clone());
+        }
+        any
+    }
+
+    /// `include 'file.php'`: the variables the included script sets, by the
+    /// path written, relative to the including file or to the project.
+    /// Returns false when no project file matches.
+    pub fn php_include(&mut self, written: &str) -> bool {
+        match self.php_included_env(written) {
+            Some(env) => {
+                for (k, v) in env.iter() {
+                    self.set_var(k, v.clone());
+                }
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The variables and constants a project file included by `written`
+    /// leaves behind; empty when it is the including file itself or still
+    /// running.
+    fn php_included_env(&mut self, written: &str) -> Option<Rc<Env>> {
+        let here = &self.project.modules[self.module()].path;
+        let dir = here.rsplit_once('/').map(|(d, _)| d).unwrap_or("");
+        let target = written
+            .trim_start_matches("./")
+            .trim_start_matches('/')
+            .to_string();
+        let mut candidates = vec![
+            normalize_rel(&format!("{dir}/{target}")),
+            normalize_rel(&target),
+        ];
+        candidates.retain(|c| !c.is_empty());
+        let found = candidates
+            .iter()
+            .find_map(|c| self.project.module_index(c))
+            .or_else(|| {
+                // `__DIR__ . '/../lib/db.php'` is written with a prefix we
+                // cannot see: match on the end of the path.
+                let tail = format!("/{}", target.trim_start_matches("../"));
+                let hits: Vec<usize> = self
+                    .project
+                    .modules
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, m)| m.lang == crate::Language::Php && m.path.ends_with(&tail))
+                    .map(|(i, _)| i)
+                    .take(2)
+                    .collect();
+                (hits.len() == 1).then(|| hits[0])
+            });
+        let m = found?;
+        if m == self.module() {
+            return Some(Rc::new(Env::new()));
+        }
+        let Some(env) = self.module_globals(m) else {
+            return Some(Rc::new(Env::new()));
+        };
+        let kept: Env = env
+            .iter()
+            .filter(|(k, _)| k.starts_with('$') || k.starts_with('#'))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        Some(Rc::new(kept))
     }
 
     fn import_value(&mut self, path: &str) -> Value {
@@ -2298,8 +2809,10 @@ impl Frame {
             scope: None,
             ret: None,
             self_name: None,
+            exit_env: None,
             final_self: None,
             loops: Vec::new(),
+            paths: false,
             route: None,
             span: Span::default(),
         }
@@ -2418,16 +2931,20 @@ pub fn reaching(value: &Value, context: u32) -> Option<Taint> {
                 if !t.reaches(context) {
                     continue;
                 }
+                // LDAP filters have no quoted literals, and a backslash
+                // escapes a quote only in SQL and code literals.
+                let escaped =
+                    t.safe & ctx::ESCAPED_QUOTES != 0 && context & (ctx::SQL | ctx::CODE) != 0;
                 let quoted_safe = match quote {
                     Some('\'') => {
-                        t.safe & ctx::NO_SQUOTE != 0
-                            && context
-                                & (ctx::SQL | ctx::XPATH | ctx::CODE | ctx::SHELL | ctx::LDAP)
-                                != 0
+                        (t.safe & ctx::NO_SQUOTE != 0
+                            && context & (ctx::SQL | ctx::XPATH | ctx::CODE | ctx::SHELL) != 0)
+                            || escaped
                     }
                     Some('"') => {
-                        t.safe & ctx::NO_DQUOTE != 0
-                            && context & (ctx::SQL | ctx::XPATH | ctx::CODE) != 0
+                        (t.safe & ctx::NO_DQUOTE != 0
+                            && context & (ctx::SQL | ctx::XPATH | ctx::CODE) != 0)
+                            || escaped
                     }
                     _ => false,
                 };
@@ -2441,6 +2958,77 @@ pub fn reaching(value: &Value, context: u32) -> Option<Taint> {
         other => {
             let t = other.taint();
             t.reaches(context).then_some(t)
+        }
+    }
+}
+
+/// `$name = new Class(...)` in a module's script code (not in functions),
+/// by variable; `None` when the project assigns objects of different
+/// classes to the name.
+fn object_assignments(body: &[Stmt], out: &mut HashMap<String, Option<Expr>>) {
+    for s in body {
+        match s {
+            Stmt::Assign {
+                target: Target::Name(n),
+                value: e @ Expr::New { class, .. },
+                ..
+            } if n.starts_with('$') => {
+                let entry = out.entry(n.clone()).or_insert_with(|| Some(e.clone()));
+                if let Some(Expr::New { class: c, .. }) = entry {
+                    if !c.eq_ignore_ascii_case(class) {
+                        *entry = None;
+                    }
+                }
+            }
+            Stmt::If { then, other, .. } => {
+                object_assignments(then, out);
+                object_assignments(other, out);
+            }
+            Stmt::Try {
+                body,
+                handlers,
+                finally,
+            } => {
+                object_assignments(body, out);
+                for h in handlers {
+                    object_assignments(h, out);
+                }
+                object_assignments(finally, out);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// PHP constants given a literal value anywhere in a module:
+/// `const NAME = 'x';` (lowered to `#NAME`) and `define('NAME', 'x')`, also
+/// under `if (!defined('NAME'))`.
+fn literal_consts(body: &[Stmt], out: &mut HashMap<String, Vec<Value>>) {
+    for s in body {
+        match s {
+            Stmt::Assign {
+                target: Target::Name(n),
+                value: Expr::Lit(c),
+                ..
+            } if n.starts_with('#') => {
+                out.entry(n[1..].to_string())
+                    .or_default()
+                    .push(const_value(c));
+            }
+            Stmt::Expr(Expr::Call { func, args, .. }, _) => {
+                if let (Expr::Name(f), [name, value, ..]) = (func.as_ref(), args.as_slice()) {
+                    if let (true, Expr::Lit(Const::Str(n)), Expr::Lit(c)) =
+                        (f.eq_ignore_ascii_case("define"), &name.value, &value.value)
+                    {
+                        out.entry(n.clone()).or_default().push(const_value(c));
+                    }
+                }
+            }
+            Stmt::If { then, other, .. } => {
+                literal_consts(then, out);
+                literal_consts(other, out);
+            }
+            _ => {}
         }
     }
 }
@@ -2464,6 +3052,23 @@ pub fn is_const(v: &Value) -> bool {
 }
 
 /// Equality of two values when it can be decided.
+/// The type of a value when it is certain: strings with unknown parts are
+/// still strings. Lists and dicts share one kind (PHP arrays).
+pub fn kind_of(v: &Value) -> Option<u8> {
+    Some(match v {
+        Value::None => 0,
+        Value::Bool(_) => 1,
+        Value::Int(_) => 2,
+        Value::Float(_) => 3,
+        Value::Str(_) => 4,
+        Value::List(_) | Value::Dict(_) => 5,
+        Value::Obj(_) => 6,
+        Value::Func(_) | Value::Class(_) | Value::Unknown(_) | Value::Ref(..) | Value::OneOf(_) => {
+            return None
+        }
+    })
+}
+
 pub fn values_eq(a: &Value, b: &Value) -> Option<bool> {
     match (a, b) {
         (Value::OneOf(alts), other) | (other, Value::OneOf(alts)) => {
@@ -2524,7 +3129,12 @@ pub fn generic_binop(op: BinOp, l: &Value, r: &Value) -> Value {
                     Value::Unknown(_) | Value::Ref(..) | Value::OneOf(_) => None,
                     _ => Some(false),
                 },
-                _ => values_eq(l, r),
+                // Values of different kinds are never identical
+                // (`false === "x"`, `1 === 1.0` in PHP).
+                _ => match (kind_of(l), kind_of(r)) {
+                    (Some(a), Some(b)) if a != b => Some(false),
+                    _ => values_eq(l, r),
+                },
             };
             match same {
                 Some(b) => Value::Bool(b == (op == Is)),
@@ -2749,6 +3359,9 @@ pub fn join_env(a: Option<Env>, b: Option<Env>) -> Option<Env> {
         (None, b) => b,
         (a, None) => a,
         (Some(mut a), Some(b)) => {
+            // A check on an element (`$a[0]`) holds after the branches only
+            // when both made it.
+            a.retain(|k, _| !k.contains('[') || b.contains_key(k));
             for (k, vb) in b {
                 match a.get_mut(&k) {
                     Some(va) => {
@@ -2756,6 +3369,7 @@ pub fn join_env(a: Option<Env>, b: Option<Env>) -> Option<Env> {
                             *va = join(va, &vb);
                         }
                     }
+                    None if k.contains('[') => {}
                     None => {
                         a.insert(k, vb);
                     }
@@ -2766,11 +3380,38 @@ pub fn join_env(a: Option<Env>, b: Option<Env>) -> Option<Env> {
     }
 }
 
+/// Variables a loop was still changing become unknown, keeping their taint.
+fn widen_changed(mut state: Env, entry: Option<&Env>) -> Env {
+    for (k, v) in state.iter_mut() {
+        if entry.and_then(|e| e.get(k)) != Some(v) {
+            *v = Value::Unknown(v.taint());
+        }
+    }
+    state
+}
+
 fn env_eq(a: &Option<Env>, b: &Option<Env>) -> bool {
     match (a, b) {
         (None, None) => true,
         (Some(a), Some(b)) => a.len() == b.len() && a.iter().all(|(k, v)| b.get(k) == Some(v)),
         _ => false,
+    }
+}
+
+/// The name under which a check on an array element is kept in the
+/// environment: `$octet[0]`, `$_GET["id"]`. Only constant keys of a plain
+/// variable.
+fn path_key(e: &Expr) -> Option<String> {
+    let Expr::Index(base, key) = e else {
+        return None;
+    };
+    let Expr::Name(n) = &**base else {
+        return None;
+    };
+    match &**key {
+        Expr::Lit(Const::Int(i)) => Some(format!("{n}[{i}]")),
+        Expr::Lit(Const::Str(k)) => Some(format!("{n}[{k:?}]")),
+        _ => None,
     }
 }
 
@@ -2780,6 +3421,31 @@ pub fn root_var(e: &Expr) -> Option<Rc<str>> {
         Expr::Name(n) => Some(n.as_str().into()),
         _ => None,
     }
+}
+
+/// Truth of a constant a call result is compared with: `== 1`, `=== false`.
+fn const_truth(e: &Expr) -> Option<bool> {
+    match e {
+        Expr::Lit(Const::Bool(b)) => Some(*b),
+        Expr::Lit(Const::Int(1)) => Some(true),
+        Expr::Lit(Const::Int(0)) => Some(false),
+        _ => None,
+    }
+}
+
+/// `a/./b/../c` -> `a/c`.
+fn normalize_rel(path: &str) -> String {
+    let mut parts: Vec<&str> = Vec::new();
+    for p in path.split('/') {
+        match p {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
+            }
+            other => parts.push(other),
+        }
+    }
+    parts.join("/")
 }
 
 fn is_static(f: &Function) -> bool {
