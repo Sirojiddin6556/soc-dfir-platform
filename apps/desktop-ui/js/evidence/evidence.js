@@ -1,8 +1,4 @@
-function escapeHtml(str) {
-  const div = document.createElement('div');
-  div.textContent = String(str ?? '');
-  return div.innerHTML;
-}
+import { escapeAttr, escapeHtml } from '../util/html.js';
 
 function fileToBase64(file) {
   return new Promise((resolve, reject) => {
@@ -113,15 +109,15 @@ export class EvidenceSpace {
       arts.forEach(a => {
         html += `
             <tr style="border-bottom:1px solid var(--border-muted);background:var(--bg-surface);">
-              <td style="padding:8px;">${escapeHtml(a.name)}<br><span style="font-family:var(--font-mono);font-size:9px;color:var(--text-muted);">${escapeHtml(a.hash_blake3).slice(0, 16)}...</span></td>
-              <td style="padding:8px;">${fmt(a.size)}</td>
+              <td style="padding:8px;">${escapeHtml(a.name)}<br><span style="font-family:var(--font-mono);font-size:9px;color:var(--text-muted);">${escapeHtml(String(a.hash_blake3 ?? '').slice(0, 16))}...</span></td>
+              <td style="padding:8px;">${escapeHtml(fmt(a.size))}</td>
               <td style="padding:8px;">${escapeHtml(a.method)}</td>
-              <td style="padding:8px;">${fmtDate(a.acquired_at)}</td>
+              <td style="padding:8px;">${escapeHtml(fmtDate(a.acquired_at))}</td>
               <td style="padding:8px;display:flex;gap:4px;flex-wrap:wrap;">
-                <button class="obs-btn" data-id="${escapeHtml(a.id)}" data-name="${escapeHtml(a.name)}" style="background:var(--bg-surface);border:1px solid var(--border-muted);color:var(--text-primary);cursor:pointer;padding:4px 8px;border-radius:4px;">Наблюдения</button>
-                <button class="hex-btn" data-id="${escapeHtml(a.id)}" data-name="${escapeHtml(a.name)}" data-hash="${escapeHtml(a.hash_blake3)}" data-size="${escapeHtml(a.size)}" style="background:var(--bg-surface);border:1px solid var(--accent-info);color:var(--accent-info);cursor:pointer;padding:4px 8px;border-radius:4px;" title="Открыть артефакт в Hex Viewer и Recipe Studio">🔬 В Hex/CTF</button>
-                <button class="chain-btn" data-hash="${escapeHtml(a.hash_blake3)}" style="background:var(--bg-surface);border:1px solid var(--border-muted);color:var(--text-primary);cursor:pointer;padding:4px 8px;border-radius:4px;" title="Посмотреть цепочку владения (Chain of Custody)">📜 Цепочка</button>
-                <button class="del-btn" data-id="${escapeHtml(a.id)}" style="background:none;border:1px solid var(--accent-critical);color:var(--accent-critical);cursor:pointer;padding:4px 8px;border-radius:4px;">Удалить</button>
+                <button class="obs-btn" data-id="${escapeAttr(a.id)}" data-name="${escapeAttr(a.name)}" style="background:var(--bg-surface);border:1px solid var(--border-muted);color:var(--text-primary);cursor:pointer;padding:4px 8px;border-radius:4px;">Наблюдения</button>
+                <button class="hex-btn" data-id="${escapeAttr(a.id)}" data-name="${escapeAttr(a.name)}" data-hash="${escapeAttr(a.hash_blake3)}" data-size="${escapeAttr(a.size)}" style="background:var(--bg-surface);border:1px solid var(--accent-info);color:var(--accent-info);cursor:pointer;padding:4px 8px;border-radius:4px;" title="Открыть артефакт в Hex Viewer и Recipe Studio">🔬 В Hex/CTF</button>
+                <button class="chain-btn" data-hash="${escapeAttr(a.hash_blake3)}" style="background:var(--bg-surface);border:1px solid var(--border-muted);color:var(--text-primary);cursor:pointer;padding:4px 8px;border-radius:4px;" title="Посмотреть цепочку владения (Chain of Custody)">📜 Цепочка</button>
+                <button class="del-btn" data-id="${escapeAttr(a.id)}" style="background:none;border:1px solid var(--accent-critical);color:var(--accent-critical);cursor:pointer;padding:4px 8px;border-radius:4px;">Удалить</button>
               </td>
             </tr>
         `;
@@ -187,7 +183,7 @@ export class EvidenceSpace {
                 <div style="background:var(--bg-surface);border:1px solid var(--border-muted);border-radius:6px;padding:8px;font-size:11px;">
                     <div style="display:flex;justify-content:space-between;margin-bottom:4px;">
                         <strong>${escapeHtml(o.event_type)}</strong>
-                        <span style="color:var(--text-muted);">${fmtDate(o.timestamp)}</span>
+                        <span style="color:var(--text-muted);">${escapeHtml(fmtDate(o.timestamp))}</span>
                     </div>
                     <div style="font-family:var(--font-mono);white-space:pre-wrap;color:var(--text-muted);">${escapeHtml(JSON.stringify(o.data, null, 2))}</div>
                 </div>
@@ -230,7 +226,7 @@ export class EvidenceSpace {
               <td style="padding:8px;">${escapeHtml(f.fact_type)}</td>
               <td style="padding:8px;">${escapeHtml(f.confidence)}</td>
               <td style="padding:8px;">${escapeHtml(f.severity)}</td>
-              <td style="padding:8px;">${fmtDate(f.created_at)}</td>
+              <td style="padding:8px;">${escapeHtml(fmtDate(f.created_at))}</td>
             </tr>
         `;
       });
@@ -244,7 +240,7 @@ export class EvidenceSpace {
     area.innerHTML = `
       <div style="padding:16px;">
         <div style="display:flex;gap:8px;margin-bottom:16px;">
-          <input id="custodyHashInput" value="${escapeHtml(prefillHash)}" placeholder="BLAKE3 hash (64 hex chars)" style="flex:1;background:var(--bg-surface);border:1px solid var(--border-muted);color:var(--text-primary);padding:6px 10px;border-radius:4px;font-family:var(--font-mono);font-size:11px;">
+          <input id="custodyHashInput" value="${escapeAttr(prefillHash)}" placeholder="BLAKE3 hash (64 hex chars)" style="flex:1;background:var(--bg-surface);border:1px solid var(--border-muted);color:var(--text-primary);padding:6px 10px;border-radius:4px;font-family:var(--font-mono);font-size:11px;">
           <button id="custodyLoadBtn" style="background:var(--accent-primary);color:#000;border:none;padding:6px 14px;border-radius:4px;cursor:pointer;">Загрузить</button>
         </div>
         <div id="custodyChain"></div>
@@ -276,7 +272,7 @@ export class EvidenceSpace {
           <div style="background:var(--bg-surface);border:1px solid var(--border-muted);border-radius:6px;padding:8px 12px;flex:1;font-size:11px;margin-bottom:4px;">
             <div style="display:flex;justify-content:space-between;">
               <strong>${escapeHtml(ev.event_type)}</strong>
-              <span style="color:var(--text-muted);">${fmtDate(ev.timestamp)}</span>
+              <span style="color:var(--text-muted);">${escapeHtml(fmtDate(ev.timestamp))}</span>
             </div>
             <div style="color:var(--text-muted);margin-top:2px;">Actor: ${escapeHtml(ev.actor)}</div>
             <div style="font-family:var(--font-mono);font-size:10px;color:var(--text-muted);margin-top:4px;">prev: ${escapeHtml(String(ev.prev_hash).slice(0,16))}...</div>
@@ -306,7 +302,7 @@ export class EvidenceSpace {
     try {
       const b64 = await fileToBase64(file);
       const result = await this.ipc.call('evidence.ingest', { case_id: caseId, filename: file.name, content_base64: b64 });
-      if (statusEl) statusEl.innerHTML = `<span style="color:var(--accent-success);">✓ ${escapeHtml(file.name)}: ${result.events_extracted} событий, ${result.facts_derived} находок.</span>`;
+      if (statusEl) statusEl.innerHTML = `<span style="color:var(--accent-success);">✓ ${escapeHtml(file.name)}: ${escapeHtml(result.events_extracted)} событий, ${escapeHtml(result.facts_derived)} находок.</span>`;
       if (this.activeTab === 'artifacts') this._loadArtifacts();
     } catch(e) {
       if (statusEl) statusEl.innerHTML = `<span style="color:var(--accent-critical);">✗ ${escapeHtml(e.message)}</span>`;

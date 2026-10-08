@@ -1,116 +1,89 @@
 #![forbid(unsafe_code)]
 
-use serde::{Deserialize, Serialize};
-use std::process::Command;
+use crate::ps::get_str;
+use host_snapshot::json_items;
+pub use host_snapshot::SoftwareObservation;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SoftwareObservation {
-    pub product: String,
-    pub version: String,
-    pub publisher: String,
-    pub install_location: String,
-    pub install_date: String,
-    pub architecture: String,
-    pub source: String,
-    pub confidence: f32,
+/// Installed programs from the Uninstall registry hives. Missing values are
+/// left empty -- never defaulted to made-up versions or publishers.
+pub const SOFTWARE_SCRIPT: &str = r#"
+$keys = @(
+  @{ Path='HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*'; Arch='x64' },
+  @{ Path='HKLM:\Software\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'; Arch='x86' },
+  @{ Path='HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*'; Arch='' }
+)
+$res = foreach ($k in $keys) {
+  Get-ItemProperty $k.Path -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName } | ForEach-Object {
+    [PSCustomObject]@{
+      DisplayName = [string]$_.DisplayName
+      DisplayVersion = [string]$_.DisplayVersion
+      Publisher = [string]$_.Publisher
+      InstallLocation = [string]$_.InstallLocation
+      InstallDate = [string]$_.InstallDate
+      Architecture = $k.Arch
+    }
+  }
+}
+ConvertTo-Json -InputObject @($res) -Compress
+"#;
+
+pub fn parse_software_json(json: &str) -> Vec<SoftwareObservation> {
+    let mut seen = std::collections::BTreeSet::new();
+    json_items(json)
+        .iter()
+        .filter_map(|item| {
+            let product = get_str(item, "DisplayName")?.trim().to_string();
+            let version = get_str(item, "DisplayVersion").unwrap_or_default();
+            let architecture = get_str(item, "Architecture").unwrap_or_default();
+            // The same product is often registered in more than one hive.
+            if !seen.insert((product.clone(), version.clone(), architecture.clone())) {
+                return None;
+            }
+            Some(SoftwareObservation {
+                product,
+                version,
+                publisher: get_str(item, "Publisher").unwrap_or_default(),
+                install_location: get_str(item, "InstallLocation").unwrap_or_default(),
+                install_date: get_str(item, "InstallDate").unwrap_or_default(),
+                architecture,
+                source: "RegistryUninstall".to_string(),
+                confidence: 0.95,
+                purl: None,
+                ecosystem: None,
+                source_package: None,
+                source_version: None,
+            })
+        })
+        .collect()
 }
 
-/// Enumerates real installed software from Windows Registry Uninstall hives
-pub fn enumerate_installed_software() -> Vec<SoftwareObservation> {
-    #[cfg(target_os = "windows")]
-    {
-        let ps_cmd = r#"
-        $res = @();
-        $keys = @(
-            'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*',
-            'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*',
-            'HKLM:\Software\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'
-        );
-        foreach ($k in $keys) {
-            Get-ItemProperty $k -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName } | ForEach-Object {
-                $res += [PSCustomObject]@{
-                    DisplayName = $_.DisplayName;
-                    DisplayVersion = if ($_.DisplayVersion) { $_.DisplayVersion.ToString() } else { '1.0' };
-                    Publisher = if ($_.Publisher) { $_.Publisher } else { 'Unknown' };
-                    InstallLocation = if ($_.InstallLocation) { $_.InstallLocation } else { '' };
-                    InstallDate = if ($_.InstallDate) { $_.InstallDate.ToString() } else { '' };
-                };
-            }
-        }
-        $res | Select-Object -First 60 | ConvertTo-Json -Compress
-        "#;
+/// Installed software from the Windows Uninstall registry hives.
+#[cfg(target_os = "windows")]
+pub fn enumerate_installed_software() -> Result<Vec<SoftwareObservation>, String> {
+    let json = crate::ps::run(SOFTWARE_SCRIPT)?;
+    Ok(parse_software_json(&json))
+}
 
-        let output = Command::new("powershell.exe")
-            .args(["-NoProfile", "-NonInteractive", "-Command", ps_cmd])
-            .output();
+#[cfg(not(target_os = "windows"))]
+pub fn enumerate_installed_software() -> Result<Vec<SoftwareObservation>, String> {
+    Err(crate::ps::unsupported("Uninstall registry"))
+}
 
-        if let Ok(out) = output {
-            if out.status.success() {
-                let json_str = String::from_utf8_lossy(&out.stdout);
-                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&json_str) {
-                    let items = if let Some(arr) = val.as_array() {
-                        arr.clone()
-                    } else if val.is_object() {
-                        vec![val]
-                    } else {
-                        Vec::new()
-                    };
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-                    let mut list = Vec::new();
-                    for item in items {
-                        let name = item
-                            .get("DisplayName")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        if name.trim().is_empty() {
-                            continue;
-                        }
-                        let ver = item
-                            .get("DisplayVersion")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("1.0")
-                            .to_string();
-                        let publ = item
-                            .get("Publisher")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("Unknown")
-                            .to_string();
-                        let loc = item
-                            .get("InstallLocation")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        let date = item
-                            .get("InstallDate")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
+    const SAMPLE: &str = r#"[{"DisplayName":"7-Zip 23.01 (x64)","DisplayVersion":"23.01","Publisher":"Igor Pavlov","InstallLocation":"C:\\Program Files\\7-Zip\\","InstallDate":"","Architecture":"x64"},{"DisplayName":"Google Chrome","DisplayVersion":"129.0.6668.90","Publisher":"Google LLC","InstallLocation":"C:\\Program Files\\Google\\Chrome\\Application","InstallDate":"20241002","Architecture":"x64"},{"DisplayName":"Microsoft Visual C++ 2015-2022 Redistributable (x86) - 14.38.33135","DisplayVersion":"14.38.33135.0","Publisher":"Microsoft Corporation","InstallLocation":"","InstallDate":"20240115","Architecture":"x86"},{"DisplayName":"Google Chrome","DisplayVersion":"129.0.6668.90","Publisher":"Google LLC","InstallLocation":"","InstallDate":"20241002","Architecture":"x64"},{"DisplayName":"Portable Tool","DisplayVersion":"","Publisher":"","InstallLocation":"","InstallDate":"","Architecture":""}]"#;
 
-                        list.push(SoftwareObservation {
-                            product: name,
-                            version: ver,
-                            publisher: publ,
-                            install_location: loc,
-                            install_date: date,
-                            architecture: "x64".to_string(),
-                            source: "RegistryUninstall".to_string(),
-                            confidence: 0.95,
-                        });
-                    }
-
-                    if !list.is_empty() {
-                        return list;
-                    }
-                }
-            }
-        }
+    #[test]
+    fn parses_uninstall_entries_without_inventing_values() {
+        let sw = parse_software_json(SAMPLE);
+        assert_eq!(sw.len(), 4, "duplicate Chrome registration collapsed");
+        assert_eq!(sw[0].product, "7-Zip 23.01 (x64)");
+        assert_eq!(sw[1].install_date, "20241002");
+        assert_eq!(sw[2].architecture, "x86");
+        let portable = &sw[3];
+        assert_eq!(portable.version, "", "no fabricated 1.0 default");
+        assert_eq!(portable.publisher, "", "no fabricated Unknown publisher");
     }
-
-    // Live collection failed or is unavailable on this platform. Return an
-    // honest empty result rather than fabricating a forensic finding.
-    tracing::warn!(
-        "enumerate_installed_software: live collection unavailable, returning empty result"
-    );
-    Vec::new()
 }

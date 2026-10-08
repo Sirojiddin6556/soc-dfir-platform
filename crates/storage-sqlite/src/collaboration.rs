@@ -20,6 +20,38 @@ pub fn hash_password(password: &str) -> String {
         .unwrap_or_else(|_| "argon2_error".to_string())
 }
 
+/// Password shipped as the built-in default by earlier versions. A database
+/// still using it is treated as not set up.
+const LEGACY_DEFAULT_PASSWORD: &str = "admin";
+pub const MIN_PASSWORD_LEN: usize = 8;
+
+fn validate_new_password(password: &str) -> Result<(), SqliteStorageError> {
+    if password.chars().count() < MIN_PASSWORD_LEN {
+        return Err(SqliteStorageError::Validation(format!(
+            "Пароль должен содержать не менее {MIN_PASSWORD_LEN} символов"
+        )));
+    }
+    if password == LEGACY_DEFAULT_PASSWORD {
+        return Err(SqliteStorageError::Validation(
+            "Этот пароль запрещён".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// 256-bit random session token from the OS CSPRNG.
+fn generate_session_token() -> String {
+    use rand_core::RngCore;
+    let mut bytes = [0u8; 32];
+    OsRng.fill_bytes(&mut bytes);
+    format!("tk_{}", hex::encode(bytes))
+}
+
+fn hash_session_token(token: &str) -> String {
+    use sha2::{Digest, Sha256};
+    hex::encode(Sha256::digest(token.as_bytes()))
+}
+
 pub fn verify_password(password: &str, stored_hash: &str) -> bool {
     match PasswordHash::new(stored_hash) {
         Ok(parsed) => Argon2::default()
@@ -89,13 +121,14 @@ impl SqliteStorage {
                 params![ws_id.to_string(), "Blue Team Lab", "UZSOC", now],
             )?;
 
-            // Real Primary SOC Owner with Argon2id hash (default password: admin)
+            // Primary SOC Owner. No password is set here: the first launch
+            // goes through `auth.setup`, where the operator chooses one.
+            // Until then nobody can log in (an empty hash never verifies).
             let u_siroj = EntityId::new_v7();
-            let pass_hash = hash_password("admin");
             conn.execute(
                 "INSERT INTO users (id, username, display_name, email, password_hash, role, department, timezone, language, created_at) VALUES
-                (?1, 'sirojiddin', 'Сироҷиддин', 'sirojiddin@soc.local', ?2, 'Owner', 'SOC', 'Asia/Tashkent', 'ru', ?3)",
-                params![u_siroj.to_string(), pass_hash, now],
+                (?1, 'sirojiddin', 'Сироҷиддин', 'sirojiddin@soc.local', '', 'Owner', 'SOC', 'Asia/Tashkent', 'ru', ?2)",
+                params![u_siroj.to_string(), now],
             )?;
 
             // Real initial presence
@@ -165,8 +198,88 @@ impl SqliteStorage {
 
     pub fn delete_session(&self, token: &str) -> Result<(), SqliteStorageError> {
         let conn = self.conn.lock().unwrap();
-        conn.execute("DELETE FROM user_sessions WHERE token = ?1", params![token])?;
+        conn.execute(
+            "DELETE FROM user_sessions WHERE token = ?1",
+            params![hash_session_token(token)],
+        )?;
         Ok(())
+    }
+
+    /// True while the workspace owner has no usable password: a fresh
+    /// database, or one still carrying the old built-in `admin` password.
+    /// In that state login is refused and only `auth.setup` is accepted.
+    pub fn auth_setup_required(&self) -> Result<bool, SqliteStorageError> {
+        let conn = self.conn.lock().unwrap();
+        let hash: Option<String> = match conn.query_row(
+            "SELECT password_hash FROM users WHERE role = 'Owner' ORDER BY created_at LIMIT 1",
+            [],
+            |r| r.get(0),
+        ) {
+            Ok(h) => Some(h),
+            Err(rusqlite::Error::QueryReturnedNoRows) => None,
+            Err(e) => return Err(e.into()),
+        };
+        Ok(match hash {
+            None => true,
+            Some(h) => {
+                PasswordHash::new(&h).is_err() || verify_password(LEGACY_DEFAULT_PASSWORD, &h)
+            }
+        })
+    }
+
+    /// Sets the owner's first password. Fails if setup was already completed,
+    /// so it cannot be used to take over an account that has a password.
+    pub fn complete_initial_setup(&self, password: &str) -> Result<User, SqliteStorageError> {
+        validate_new_password(password)?;
+        if !self.auth_setup_required()? {
+            return Err(SqliteStorageError::Validation(
+                "Первичная настройка уже выполнена".to_string(),
+            ));
+        }
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, username, display_name, email, role, department, timezone, language, avatar_url, created_at FROM users WHERE role = 'Owner' ORDER BY created_at LIMIT 1",
+        )?;
+        let owner = stmt.query_row([], map_user_row)?;
+        conn.execute(
+            "UPDATE users SET password_hash = ?1 WHERE id = ?2",
+            params![hash_password(password), owner.id.to_string()],
+        )?;
+        // Any session issued under the old default password is void.
+        conn.execute(
+            "DELETE FROM user_sessions WHERE user_id = ?1",
+            params![owner.id.to_string()],
+        )?;
+        Ok(owner)
+    }
+
+    /// Changes a user's password after checking the current one, and
+    /// revokes all of that user's other sessions.
+    pub fn change_user_password(
+        &self,
+        user_id: EntityId,
+        current_password: &str,
+        new_password: &str,
+    ) -> Result<bool, SqliteStorageError> {
+        validate_new_password(new_password)?;
+        let conn = self.conn.lock().unwrap();
+        let hash: String = conn.query_row(
+            "SELECT password_hash FROM users WHERE id = ?1",
+            params![user_id.to_string()],
+            |r| r.get(0),
+        )?;
+        if !verify_password(current_password, &hash) {
+            return Ok(false);
+        }
+        conn.execute(
+            "UPDATE users SET password_hash = ?1 WHERE id = ?2",
+            params![hash_password(new_password), user_id.to_string()],
+        )?;
+        conn.execute(
+            "DELETE FROM user_sessions WHERE user_id = ?1",
+            params![user_id.to_string()],
+        )?;
+        Ok(true)
     }
 
     pub fn get_user_by_username(&self, username: &str) -> Result<Option<User>, SqliteStorageError> {
@@ -185,9 +298,14 @@ impl SqliteStorage {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT u.id, u.username, u.display_name, u.email, u.role, u.department, u.timezone, u.language, u.avatar_url, u.created_at
-             FROM users u JOIN user_sessions s ON u.id = s.user_id WHERE s.token = ?1"
+             FROM users u JOIN user_sessions s ON u.id = s.user_id
+             WHERE s.token = ?1 AND s.expires_at > ?2"
         )?;
-        match stmt.query_row(params![token], map_user_row) {
+        if token.is_empty() {
+            return Ok(None);
+        }
+        let now = Utc::now().to_rfc3339();
+        match stmt.query_row(params![hash_session_token(token), now], map_user_row) {
             Ok(u) => Ok(Some(u)),
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
             Err(e) => Err(SqliteStorageError::Rusqlite(e)),
@@ -278,13 +396,19 @@ impl SqliteStorage {
     ) -> Result<UserSession, SqliteStorageError> {
         let conn = self.conn.lock().unwrap();
         let session_id = format!("sess_{}", EntityId::new_v7());
-        let token = format!("tk_{}", EntityId::new_v7());
+        let token = generate_session_token();
         let now = Utc::now();
         let expires = now + chrono::Duration::days(7);
 
         conn.execute(
+            "DELETE FROM user_sessions WHERE expires_at <= ?1",
+            params![now.to_rfc3339()],
+        )?;
+        // Only a hash of the token is stored, so a copy of the database does
+        // not hand out live sessions.
+        conn.execute(
             "INSERT INTO user_sessions (session_id, user_id, token, created_at, expires_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![session_id, user_id.to_string(), token, now.to_rfc3339(), expires.to_rfc3339()],
+            params![session_id, user_id.to_string(), hash_session_token(&token), now.to_rfc3339(), expires.to_rfc3339()],
         )?;
 
         Ok(UserSession {

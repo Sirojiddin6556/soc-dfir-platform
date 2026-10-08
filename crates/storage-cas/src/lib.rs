@@ -215,7 +215,7 @@ impl CasStorageService for ContentAddressedStorage {
 
         self.commit_staging_file(&temp_file_path, &b3_hash, &sha256_hash, total_bytes)
             .await
-            .map_err(|e| DomainError::from(e))?;
+            .map_err(DomainError::from)?;
 
         Ok(b3_hash)
     }

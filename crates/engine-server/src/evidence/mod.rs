@@ -1,4 +1,7 @@
 #![forbid(unsafe_code)]
+// ProblemDetails is the RPC error type across engine-server; see the same
+// allow on the other handlers (auth.rs, membership.rs, investigation.rs).
+#![allow(clippy::result_large_err)]
 
 pub mod data_plane;
 pub mod rpc;

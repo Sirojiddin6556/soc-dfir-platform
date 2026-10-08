@@ -6,20 +6,15 @@ pub type ChallengeId = String;
 pub type ArtifactId = String;
 pub type Blake3Hash = String;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum CompetitionStatus {
     Draft,
+    #[default]
     Active,
     Paused,
     Completed,
     Archived,
-}
-
-impl Default for CompetitionStatus {
-    fn default() -> Self {
-        Self::Active
-    }
 }
 
 impl std::fmt::Display for CompetitionStatus {
@@ -48,19 +43,14 @@ impl std::str::FromStr for CompetitionStatus {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum CompetitionFormat {
+    #[default]
     Jeopardy,
     AttackDefense,
     Mixed,
     AdHoc,
-}
-
-impl Default for CompetitionFormat {
-    fn default() -> Self {
-        Self::Jeopardy
-    }
 }
 
 impl std::fmt::Display for CompetitionFormat {
@@ -169,20 +159,15 @@ impl std::str::FromStr for ChallengeCategory {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ChallengeStatus {
+    #[default]
     New,
     InProgress,
     Blocked,
     Solved,
     Archived,
-}
-
-impl Default for ChallengeStatus {
-    fn default() -> Self {
-        Self::New
-    }
 }
 
 impl std::fmt::Display for ChallengeStatus {
@@ -282,9 +267,10 @@ pub struct CreateChallengeCmd {
     pub expected_flag: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ArtifactRole {
+    #[default]
     Input,
     Extracted,
     Transformed,
@@ -292,12 +278,6 @@ pub enum ArtifactRole {
     Pcaps,
     Evidence,
     Scratch,
-}
-
-impl Default for ArtifactRole {
-    fn default() -> Self {
-        Self::Input
-    }
 }
 
 impl std::fmt::Display for ArtifactRole {

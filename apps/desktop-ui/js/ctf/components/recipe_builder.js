@@ -6,6 +6,7 @@
 
 import { recipeStore } from '../recipe_store.js';
 import { flagStore } from '../flag_store.js';
+import { escapeAttr, escapeHtml } from '../../util/html.js';
 
 const AVAILABLE_OPERATIONS = [
   { id: 'base64_decode', name: 'From Base64', desc: 'Декодирование Base64 строки в байты/текст' },
@@ -18,12 +19,6 @@ const AVAILABLE_OPERATIONS = [
   { id: 'url_encode', name: 'URL Encode', desc: 'Кодирование строки в URL percent-encoding' },
   { id: 'reverse', name: 'Reverse', desc: 'Инвертирование порядка символов/байт' }
 ];
-
-function escapeHtml(str) {
-  const div = document.createElement('div');
-  div.textContent = String(str ?? '');
-  return div.innerHTML;
-}
 
 export class RecipeBuilder {
   /**
@@ -201,7 +196,7 @@ export class RecipeBuilder {
               type="text"
               class="ctf-terminal-input ctf-step-key-input"
               data-index="${index}"
-              value="${escapeHtml(op.params?.key ?? '')}"
+              value="${escapeAttr(op.params?.key ?? '')}"
               placeholder="e.g. secret or 0x5A"
               style="height: 24px; font-size: 11px; flex: 1;"
             />

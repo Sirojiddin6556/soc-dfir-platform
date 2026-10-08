@@ -123,7 +123,7 @@ impl SafeArchiveExtractor {
             file.read_exact(&mut cd_header)
                 .map_err(|e| DomainError::storage(format!("Read CD header failed: {}", e)))?;
 
-            if &cd_header[0..4] != [0x50, 0x4b, 0x01, 0x02] {
+            if cd_header[0..4] != [0x50, 0x4b, 0x01, 0x02] {
                 return Err(DomainError::Validation(
                     "Corrupt central directory record".into(),
                 ));
@@ -230,7 +230,7 @@ impl SafeArchiveExtractor {
             file.read_exact(&mut local_hdr)
                 .map_err(|e| DomainError::storage(format!("Read local header failed: {}", e)))?;
 
-            if &local_hdr[0..4] != [0x50, 0x4b, 0x03, 0x04] {
+            if local_hdr[0..4] != [0x50, 0x4b, 0x03, 0x04] {
                 return Err(DomainError::Validation(
                     "Corrupt local file header in ZIP".into(),
                 ));

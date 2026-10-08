@@ -63,6 +63,10 @@ export class CtfIpcClient extends IpcClient {
       throw netErr;
     }
 
+    if (response.status === 401 && typeof window !== 'undefined' && window.dispatchEvent) {
+      window.dispatchEvent(new CustomEvent('soc:unauthorized'));
+    }
+
     const data = await response.json();
     if (data.error) {
       const err = new Error(data.error.message || data.error.detail || data.error.title || 'RPC Failed');

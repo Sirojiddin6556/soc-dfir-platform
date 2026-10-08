@@ -15,6 +15,16 @@ async fn spawn_test_server(
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     let app = Arc::new(EngineApp::new(cas_dir, db_path).unwrap());
+    // Every non-public RPC needs a session: set the owner password and log in.
+    let owner = app
+        .storage
+        .complete_initial_setup("phase1-test-password")
+        .unwrap();
+    let session = app
+        .storage
+        .create_session(owner.id, &owner.username)
+        .unwrap();
+    session_tokens().lock().unwrap().insert(port, session.token);
     let server_app = Arc::clone(&app);
 
     let handle = tokio::spawn(async move {
@@ -31,7 +41,21 @@ async fn spawn_test_server(
     (port, app, handle)
 }
 
+/// Session token per test server port.
+fn session_tokens() -> &'static std::sync::Mutex<std::collections::HashMap<u16, String>> {
+    static TOKENS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<u16, String>>> =
+        std::sync::OnceLock::new();
+    TOKENS.get_or_init(Default::default)
+}
+
 async fn rpc_call(port: u16, method: &str, params: serde_json::Value) -> serde_json::Value {
+    let mut params = params;
+    if let (Some(obj), Some(token)) = (
+        params.as_object_mut(),
+        session_tokens().lock().unwrap().get(&port).cloned(),
+    ) {
+        obj.insert("token".to_string(), serde_json::Value::String(token));
+    }
     let mut stream = TcpStream::connect(format!("127.0.0.1:{}", port))
         .await
         .unwrap();

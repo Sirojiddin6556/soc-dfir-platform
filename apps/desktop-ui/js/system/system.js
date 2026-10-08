@@ -1,11 +1,4 @@
-function escapeHtml(str) {
-  if (str === null || str === undefined) return '';
-  return String(str)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-}
+import { escapeHtml } from '../util/html.js';
 
 export class SystemSpace {
   constructor(ipc) {
@@ -36,7 +29,7 @@ export class SystemSpace {
             <div style="font-weight: bold; font-size: 13px; margin-bottom: 12px; color: var(--text-primary);">Ядро платформы (Rust Engine)</div>
             <div style="font-size: 11px; display: flex; flex-direction: column; gap: 8px;">
               <div>Статус: <strong id="sysEngineStatus" style="color: var(--accent-success);">127.0.0.1:8080 (Online)</strong></div>
-              <div>IPC Задержка (RTT): <strong id="sysPingLatency" style="font-family: var(--font-mono);">${this.pingLatency !== null ? this.pingLatency + ' ms' : 'Измерение...'}</strong></div>
+              <div>IPC Задержка (RTT): <strong id="sysPingLatency" style="font-family: var(--font-mono);">${this.pingLatency !== null ? escapeHtml(this.pingLatency + ' ms') : 'Измерение...'}</strong></div>
               <div>Версия API: <strong>v1 (RFC 7807)</strong></div>
               <div>IPC Протокол: <strong>JSON-RPC 2.0 via TCP/HTTP</strong></div>
               <div>Хеширование: <strong>BLAKE3 / SHA-256 (Dual-Hash)</strong></div>

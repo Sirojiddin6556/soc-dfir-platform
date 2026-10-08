@@ -1999,8 +1999,8 @@ pub fn extract_tls(data: &[u8]) -> Option<TlsHello> {
         if p + n > body.len() {
             return None;
         }
-        for pair in body[p..p + n].chunks_exact(2) {
-            cipher_suites.push(u16::from_be_bytes([pair[0], pair[1]]));
+        for pair in body[p..p + n].as_chunks::<2>().0 {
+            cipher_suites.push(u16::from_be_bytes(*pair));
         }
         p += n;
         if p >= body.len() {
@@ -2074,8 +2074,8 @@ pub fn extract_tls(data: &[u8]) -> Option<TlsHello> {
             if client && !ext.is_empty() {
                 let n = ext[0] as usize;
                 if n < ext.len() {
-                    for pair in ext[1..1 + n].chunks_exact(2) {
-                        offered_versions.push(u16::from_be_bytes([pair[0], pair[1]]));
+                    for pair in ext[1..1 + n].as_chunks::<2>().0 {
+                        offered_versions.push(u16::from_be_bytes(*pair));
                     }
                 }
             } else if !client && ext.len() == 2 {

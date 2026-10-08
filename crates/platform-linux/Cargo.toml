@@ -7,6 +7,10 @@ license.workspace = true
 
 [dependencies]
 core-domain = { path = "../core-domain" }
+host-snapshot = { path = "../host-snapshot" }
 thiserror.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+chrono.workspace = true
+uuid = { workspace = true, features = ["v7"] }
+tracing.workspace = true

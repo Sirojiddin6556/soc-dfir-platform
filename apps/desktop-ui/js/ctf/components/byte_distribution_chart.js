@@ -7,6 +7,7 @@
 
 import { hexStore } from '../hex_store.js';
 import { calculateShannonEntropy } from './entropy_minimap.js';
+import { escapeHtml } from '../../util/html.js';
 
 /**
  * Calculates Chi-Square statistic against uniform distribution (E = N / 256).
@@ -79,7 +80,7 @@ export class ByteDistributionChart {
         ">
           <div style="display: flex; align-items: center; gap: 6px; color: var(--ctf-text-primary, #F0F6FC);">
             <span style="color: var(--ctf-accent-cyan, #00E5FF);">📊</span>
-            <span>${this.title}</span>
+            <span>${escapeHtml(this.title)}</span>
           </div>
           <div id="ctfByteScopeLabel" style="font-family: var(--ctf-font-mono, monospace); font-size: 10px;">
             Scope: Full File (Sample)
@@ -226,7 +227,7 @@ export class ByteDistributionChart {
       const asciiChar = bin >= 32 && bin <= 126 ? `'${String.fromCharCode(bin)}'` : 'non-printable';
 
       this.tooltip.innerHTML = `
-        <div style="font-weight: 700; color: var(--ctf-accent-cyan, #00E5FF);">${hex} (${bin}) - ${asciiChar}</div>
+        <div style="font-weight: 700; color: var(--ctf-accent-cyan, #00E5FF);">${hex} (${bin}) - ${escapeHtml(asciiChar)}</div>
         <div>Count: <strong>${count.toLocaleString()}</strong></div>
         <div>Frequency: <strong>${pct}%</strong></div>
       `;
@@ -381,7 +382,7 @@ export class ByteDistributionChart {
         topEl.innerHTML = this.topBytes.map(b => {
           const hex = '0x' + b.byte.toString(16).padStart(2, '0').toUpperCase();
           const ch = b.byte >= 32 && b.byte <= 126 ? ` '${String.fromCharCode(b.byte)}'` : '';
-          return `<span style="margin-right: 8px;">${hex}${ch}: <strong>${b.pct.toFixed(1)}%</strong></span>`;
+          return `<span style="margin-right: 8px;">${hex}${escapeHtml(ch)}: <strong>${b.pct.toFixed(1)}%</strong></span>`;
         }).join('');
       }
     }

@@ -21,6 +21,7 @@ members = [
     "crates/ipc-protocol",
     "crates/platform-windows",
     "crates/platform-linux",
+    "crates/host-snapshot",
     "crates/scan-engine",
     "crates/vulnerability-engine",
     "crates/engine-server", "crates/desktop-app",
@@ -64,3 +65,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 evtx = "0.12"
 regex = "1.10"
 flate2 = "1.0"
+
+# Live host inspection hashes every running executable (and evidence ingest
+# hashes uploads); unoptimized SHA-256 makes a dev-build snapshot ~15x slower.
+[profile.dev.package.sha2]
+opt-level = 3

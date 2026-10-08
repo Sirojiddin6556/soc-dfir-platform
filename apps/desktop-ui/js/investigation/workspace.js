@@ -3,6 +3,8 @@ import { InvestigationGraph } from './graph.js';
 import { InvestigationTimeline } from './timeline.js';
 import { EntityInspector } from './inspector.js';
 import { ContextDiscussion } from '../collaboration/discussion.js';
+import { escapeHtml } from '../util/html.js';
+import { isElevatedRisk } from './risk.js';
 
 export class InvestigationWorkspace {
   constructor(ipc) {
@@ -41,8 +43,19 @@ export class InvestigationWorkspace {
     this.timeline.render(this.store.timeline);
     this.updateMetrics();
 
+    // After a new collection the selected entity's graph node carries new
+    // counts; re-render it from the fresh node so the context panel never
+    // disagrees with the status bar.
+    const selected = this.store.selectedEntity;
+    const fresh = selected && this.store.graph.nodes.find(n => n.id === selected.id);
+    if (fresh) {
+      this.store.selectEntity(fresh);
+      this.loadEntity(fresh);
+      return;
+    }
+
     // Select first asset or attack entity by default if none selected
-    if (!this.store.selectedEntity && this.store.assets.length > 0) {
+    if (this.store.assets.length > 0) {
       const defaultEnt = this.store.graph.nodes.find(n => n.in_attack_path) || this.store.graph.nodes[0];
       if (defaultEnt) {
         this.store.selectEntity(defaultEnt);
@@ -143,12 +156,12 @@ export class InvestigationWorkspace {
     if (!target) return;
 
     target.innerHTML = `
-      <div style="font-weight: 700; font-size: 13px; color: var(--text-primary); margin-bottom: 4px;">${event.title}</div>
-      <div style="font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); margin-bottom: 12px;">Время: ${event.timestamp} • Категория: ${event.category}</div>
+      <div style="font-weight: 700; font-size: 13px; color: var(--text-primary); margin-bottom: 4px;">${escapeHtml(event.title)}</div>
+      <div style="font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); margin-bottom: 12px;">Время: ${escapeHtml(event.timestamp)} • Категория: ${escapeHtml(event.category)}</div>
       <div style="background: var(--bg-surface); border: 1px solid var(--border-muted); border-radius: 6px; padding: 10px; font-size: 11px; line-height: 1.5; color: var(--text-primary); margin-bottom: 12px;">
-        ${event.detail || 'Нет дополнительных сведений.'}
+        ${escapeHtml(event.detail || 'Нет дополнительных сведений.')}
       </div>
-      <pre style="font-size: 10px; color: var(--text-secondary); background: var(--bg-canvas); border: 1px solid var(--border-muted); padding: 8px; border-radius: 4px; overflow-x: auto;">${JSON.stringify(event, null, 2)}</pre>
+      <pre style="font-size: 10px; color: var(--text-secondary); background: var(--bg-canvas); border: 1px solid var(--border-muted); padding: 8px; border-radius: 4px; overflow-x: auto;">${escapeHtml(JSON.stringify(event, null, 2))}</pre>
     `;
   }
 
@@ -159,13 +172,15 @@ export class InvestigationWorkspace {
     const riskEl = document.getElementById('riskLevel');
 
     if (findingsEl) findingsEl.textContent = this.store.findings.length;
-    if (evidenceEl) evidenceEl.textContent = this.store.evidence.length;
+    // Evidence is what was ingested into the case (CAS artifacts), not the
+    // host's autorun entries.
+    if (evidenceEl) evidenceEl.textContent = this.store.metrics.evidence ?? 0;
     if (hostsEl) hostsEl.textContent = this.store.assets.length;
 
     if (riskEl) {
       const risk = this.store.case && this.store.case.risk;
       riskEl.textContent = risk || '—';
-      riskEl.style.color = (risk === 'HIGH' || risk === 'CRITICAL') ? 'var(--accent-critical)' : 'var(--accent-info)';
+      riskEl.style.color = isElevatedRisk(risk) ? 'var(--accent-critical)' : 'var(--accent-info)';
     }
   }
 

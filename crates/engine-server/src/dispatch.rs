@@ -360,7 +360,11 @@ impl EngineApp {
                 let res = handler.handle(m, req.params).await;
                 respond_res(req.request_id, res)
             }
-            m if m.starts_with("auth.")
+            m if m.starts_with("auth.") && m != "auth.update_profile" => {
+                let res = crate::auth::handle_auth(self, m, req.params);
+                respond_res(req.request_id, res)
+            }
+            m if m == "auth.update_profile"
                 || m.starts_with("team.")
                 || m.starts_with("chat.")
                 || m.starts_with("presence.")

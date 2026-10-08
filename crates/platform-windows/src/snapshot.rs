@@ -1,129 +1,153 @@
 #![forbid(unsafe_code)]
 
-use crate::persistence::{
-    enumerate_registry_autoruns, enumerate_scheduled_tasks, RegistryAutorunObservation,
-    ScheduledTaskObservation,
-};
-use crate::process::{enumerate_processes_deep, ProcessObservation};
-use crate::service::{enumerate_services_deep, ServiceObservation};
-use crate::socket::{enumerate_sockets_deep, SocketObservation};
-use crate::software::{enumerate_installed_software, SoftwareObservation};
-use crate::WindowsFirewallRule;
+use crate::persistence::{enumerate_registry_autoruns, enumerate_scheduled_tasks};
+use crate::process::enumerate_processes_deep;
+use crate::service::enumerate_services_deep;
+use crate::socket::enumerate_sockets_deep;
+use crate::software::enumerate_installed_software;
+use crate::system::{collect_os_info, collect_users};
 use chrono::Utc;
-use serde::{Deserialize, Serialize};
+pub use host_snapshot::HostSnapshot;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WindowsHostSnapshot {
-    pub snapshot_id: String,
-    pub host: String,
-    pub host_ip: String,
-    pub os: String,
-    pub processes: Vec<ProcessObservation>,
-    pub sockets: Vec<SocketObservation>,
-    pub services: Vec<ServiceObservation>,
-    pub scheduled_tasks: Vec<ScheduledTaskObservation>,
-    pub autoruns: Vec<RegistryAutorunObservation>,
-    pub software: Vec<SoftwareObservation>,
-    pub users: Vec<String>,
-    pub firewall_rules: Vec<WindowsFirewallRule>,
-    pub os_build: Option<u32>,
-    pub os_ubr: Option<u32>,
-    pub installed_kbs: Vec<String>,
-    pub collected_at: String,
-    pub collector_version: String,
-}
+/// Backwards compatible name.
+pub type WindowsHostSnapshot = HostSnapshot;
 
-pub fn collect_windows_snapshot(
-    host_id: &str,
-    firewall_rules: Vec<WindowsFirewallRule>,
-) -> WindowsHostSnapshot {
+/// Collects a live snapshot of the Windows machine this process runs on.
+/// Each section that fails stays empty and its error is recorded in
+/// `collection_errors`; nothing is substituted. On non-Windows builds every
+/// section reports that it requires Windows.
+pub fn collect_windows_snapshot() -> HostSnapshot {
     let now = Utc::now().to_rfc3339();
-    let hostname = std::env::var("COMPUTERNAME").unwrap_or_else(|_| host_id.to_string());
-    let snap_id = format!("SNAP-{}", uuid::Uuid::now_v7());
-
-    let processes = enumerate_processes_deep(&hostname);
-    let mut sockets = enumerate_sockets_deep();
-
-    // Map process names onto sockets using PID map
-    let proc_map: std::collections::HashMap<u32, String> =
-        processes.iter().map(|p| (p.pid, p.name.clone())).collect();
-
-    for sock in &mut sockets {
-        if let Some(name) = proc_map.get(&sock.pid) {
-            sock.process_name = Some(name.clone());
-        }
+    let hostname = crate::local_hostname();
+    let mut snap = HostSnapshot::empty(
+        format!("SNAP-{}", uuid::Uuid::now_v7()),
+        hostname.clone(),
+        "windows",
+        now,
+    );
+    snap.os_family = "windows".to_string();
+    let mut errors = Vec::new();
+    fn take<T>(r: Result<Vec<T>, String>, errors: &mut Vec<String>) -> Vec<T> {
+        r.unwrap_or_else(|e| {
+            errors.push(e);
+            Vec::new()
+        })
     }
 
-    let services = enumerate_services_deep();
-    let autoruns = enumerate_registry_autoruns();
-    let scheduled_tasks = enumerate_scheduled_tasks();
-    let software = enumerate_installed_software();
-
-    let users = vec![
-        format!("{}\\Administrator", hostname),
-        format!("{}\\Siroj", hostname),
-        "NT AUTHORITY\\SYSTEM".to_string(),
-        "NT AUTHORITY\\LocalService".to_string(),
-        "NT AUTHORITY\\NetworkService".to_string(),
-    ];
-
-    let (os_build, os_ubr, installed_kbs) = collect_os_build_and_kbs();
-
-    WindowsHostSnapshot {
-        snapshot_id: snap_id,
-        host: hostname,
-        host_ip: "127.0.0.1".to_string(),
-        os: "Windows 11 Enterprise (x86_64)".to_string(),
-        processes,
-        sockets,
-        services,
-        scheduled_tasks,
-        autoruns,
-        software,
-        users,
-        firewall_rules,
-        os_build,
-        os_ubr,
-        installed_kbs,
-        collected_at: now,
-        collector_version: "0.2.0".to_string(),
-    }
-}
-
-pub fn collect_os_build_and_kbs() -> (Option<u32>, Option<u32>, Vec<String>) {
-    #[cfg(target_os = "windows")]
-    {
-        use std::process::Command;
-
-        let ps_cmd = r#"
-        $b = [System.Environment]::OSVersion.Version.Build;
-        $u = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -ErrorAction SilentlyContinue).UBR;
-        $kbs = @(Get-HotFix -ErrorAction SilentlyContinue | Select-Object -ExpandProperty HotFixID);
-        [PSCustomObject]@{ Build = [int]$b; UBR = [int]$u; KBs = $kbs } | ConvertTo-Json -Compress
-        "#;
-
-        if let Ok(out) = Command::new("powershell.exe")
-            .args(["-NoProfile", "-NonInteractive", "-Command", ps_cmd])
-            .output()
-        {
-            if out.status.success() {
-                let s = String::from_utf8_lossy(&out.stdout);
-                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&s) {
-                    let build = val.get("Build").and_then(|v| v.as_u64()).map(|n| n as u32);
-                    let ubr = val.get("UBR").and_then(|v| v.as_u64()).map(|n| n as u32);
-                    let kbs = val
-                        .get("KBs")
-                        .and_then(|v| v.as_array())
-                        .map(|arr| {
-                            arr.iter()
-                                .filter_map(|x| x.as_str().map(|s| s.to_string()))
-                                .collect()
-                        })
-                        .unwrap_or_default();
-                    return (build, ubr, kbs);
-                }
+    match collect_os_info() {
+        Ok(os) => {
+            snap.os = os.display_name();
+            snap.os_version = os.version.clone();
+            snap.kernel = os.kernel();
+            snap.architecture = os.architecture.clone();
+            snap.os_build = os.build;
+            snap.os_ubr = os.ubr;
+            snap.installed_kbs = os.kbs.clone();
+            snap.ip_addresses = os.ip_addresses.clone();
+            if !os.display_version.is_empty() {
+                snap.os_codename = Some(os.display_version.clone());
             }
         }
+        Err(e) => errors.push(e),
     }
-    (None, None, Vec::new())
+    snap.host_ip = host_snapshot::primary_ip()
+        .map(|ip| ip.to_string())
+        .or_else(|| snap.ip_addresses.first().cloned())
+        .unwrap_or_default();
+    if snap.host_ip.is_empty() {
+        errors.push("Не удалось определить основной IP-адрес (нет маршрута)".to_string());
+    }
+
+    match collect_users() {
+        Ok((names, accounts)) => {
+            snap.users = names;
+            snap.user_accounts = accounts;
+        }
+        Err(e) => errors.push(e),
+    }
+
+    snap.processes = take(enumerate_processes_deep(&hostname), &mut errors);
+    snap.sockets = take(enumerate_sockets_deep(), &mut errors);
+    let names: std::collections::HashMap<u32, String> = snap
+        .processes
+        .iter()
+        .map(|p| (p.pid, p.name.clone()))
+        .collect();
+    for sock in &mut snap.sockets {
+        sock.process_name = names.get(&sock.pid).cloned();
+    }
+    snap.services = take(enumerate_services_deep(), &mut errors);
+    snap.autoruns = take(enumerate_registry_autoruns(), &mut errors);
+    snap.scheduled_tasks = take(enumerate_scheduled_tasks(), &mut errors);
+    snap.software = take(enumerate_installed_software(), &mut errors);
+    match crate::WindowsPlatformHooks::new().query_firewall_rules() {
+        Ok(rules) => snap.firewall_rules = rules,
+        Err(e) => errors.push(e.to_string()),
+    }
+    snap.collection_errors = errors;
+    snap
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn non_windows_build_reports_instead_of_fabricating() {
+        let snap = collect_windows_snapshot();
+        assert_eq!(snap.platform, "windows");
+        assert!(snap.os.is_empty(), "no hardcoded Windows edition");
+        assert!(snap.users.is_empty(), "no hardcoded accounts");
+        assert!(snap.processes.is_empty());
+        assert_ne!(snap.host_ip, "127.0.0.1");
+        assert!(!snap.collection_errors.is_empty());
+    }
+
+    /// Live: runs only on Windows and checks the snapshot against facts the
+    /// test establishes independently.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn test_windows_deep_snapshot() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let snap = collect_windows_snapshot();
+        let me = std::process::id();
+
+        assert_eq!(snap.host, std::env::var("COMPUTERNAME").unwrap());
+        assert!(snap.os.contains("Windows"), "os = {}", snap.os);
+        assert!(snap.os_build.is_some());
+        assert_ne!(snap.host_ip, "127.0.0.1");
+        let proc_me = snap
+            .processes
+            .iter()
+            .find(|p| p.pid == me)
+            .expect("current process listed");
+        let exe = std::env::current_exe().unwrap();
+        assert_eq!(
+            proc_me
+                .executable_path
+                .as_deref()
+                .map(str::to_ascii_lowercase),
+            exe.to_str().map(str::to_ascii_lowercase)
+        );
+        // Local accounts come from Get-LocalUser and are qualified with the
+        // real computer name (the current user may be a domain account, so
+        // it is not required to be among them).
+        assert!(!snap.user_accounts.is_empty());
+        let prefix = format!("{}\\", snap.host).to_ascii_lowercase();
+        assert!(snap
+            .users
+            .iter()
+            .all(|u| u.to_ascii_lowercase().starts_with(&prefix)));
+        assert!(snap.user_accounts.iter().all(|u| u.sid.is_some()));
+        assert!(snap
+            .sockets
+            .iter()
+            .any(|s| s.local_port == port && s.pid == me && s.state == "Listen"));
+        assert!(!snap.services.is_empty());
+        assert!(!snap.scheduled_tasks.is_empty());
+        assert!(!snap.software.is_empty());
+        drop(listener);
+    }
 }

@@ -338,15 +338,15 @@ fn extract_user_sid(system: &serde_json::Value) -> Option<String> {
 
 fn extract_timestamp(system: &serde_json::Value) -> Option<DateTime<Utc>> {
     let node = system.get("TimeCreated")?;
-    let time_str = if let Some(s) = node.as_str() {
-        s
-    } else if let Some(obj) = node.as_object() {
-        obj.get("@SystemTime")
-            .or_else(|| obj.get("#attributes").and_then(|a| a.get("SystemTime")))
-            .or_else(|| obj.get("SystemTime"))
-            .and_then(|v| v.as_str())?
-    } else {
-        return None;
+    let time_str = match node.as_str() {
+        Some(s) => s,
+        None => {
+            let obj = node.as_object()?;
+            obj.get("@SystemTime")
+                .or_else(|| obj.get("#attributes").and_then(|a| a.get("SystemTime")))
+                .or_else(|| obj.get("SystemTime"))
+                .and_then(|v| v.as_str())?
+        }
     };
 
     DateTime::parse_from_rfc3339(time_str)

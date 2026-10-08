@@ -1,0 +1,13 @@
+[package]
+name = "host-snapshot"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Platform-neutral live host snapshot model shared by the Linux and Windows collectors"
+
+[dependencies]
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+sha2.workspace = true
+hex.workspace = true

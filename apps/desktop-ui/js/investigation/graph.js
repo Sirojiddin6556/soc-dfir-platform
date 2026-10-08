@@ -1,4 +1,14 @@
 import { filterGraphByLayer } from './layers.js';
+import { escapeHtml } from '../util/html.js';
+
+
+/** Canvas labels are capped so long finding titles do not run off the
+ * canvas; the full text stays in the tooltip and the inspector. */
+const MAX_CANVAS_LABEL = 34;
+function canvasLabel(text) {
+  const t = String(text ?? '');
+  return t.length > MAX_CANVAS_LABEL ? `${t.slice(0, MAX_CANVAS_LABEL - 1)}…` : t;
+}
 
 export class InvestigationGraph {
   constructor(canvas) {
@@ -244,8 +254,8 @@ export class InvestigationGraph {
     // or "TCP:49674" are wide, so scale the padding with label length instead
     // of a flat constant -- otherwise long names still collide visually even
     // when the circles themselves have cleared each other.
-    const label = String(node.label || node.id || '');
-    const subtitle = String(node.subtitle || '');
+    const label = canvasLabel(node.label || node.id);
+    const subtitle = canvasLabel(node.subtitle);
     const textHalfWidth = (Math.max(label.length, subtitle.length) * 5.4) / 2;
     return base + Math.max(34, textHalfWidth + 12);
   }
@@ -310,6 +320,17 @@ export class InvestigationGraph {
     }
   }
 
+  /** Centre x for a label under a node, shifted so the text stays inside
+   * the visible canvas (nodes near the left edge, like findings, would
+   * otherwise have their labels cut off). Works in world coordinates. */
+  labelX(ctx, text, x, viewWidth) {
+    const half = ctx.measureText(text).width / 2;
+    const minX = -this.panX / this.zoom + half + 4;
+    const maxX = (viewWidth - this.panX) / this.zoom - half - 4;
+    if (minX > maxX) return x;
+    return Math.min(maxX, Math.max(minX, x));
+  }
+
   hitTest(x, y) {
     for (const node of this.filteredGraph.nodes) {
       const pos = this.nodePositions.get(node.id);
@@ -334,13 +355,13 @@ export class InvestigationGraph {
     this.tooltipEl.innerHTML = `
       <div class="graph-tooltip-title">
         <span>${icon}</span>
-        <span>${node.label || node.id}</span>
-        <span class="badge ${node.in_attack_path ? 'badge-critical' : 'badge-net'}" style="margin-left: auto; font-size: 8px;">${node.type.toUpperCase()}</span>
+        <span>${escapeHtml(node.label || node.id)}</span>
+        <span class="badge ${node.in_attack_path ? 'badge-critical' : 'badge-net'}" style="margin-left: auto; font-size: 8px;">${escapeHtml(String(node.type ?? '').toUpperCase())}</span>
       </div>
       <div class="graph-tooltip-detail">
-        <div>ID: <strong style="color: #f8fafc;">${node.id}</strong></div>
-        ${node.subtitle ? `<div>Инфо: ${node.subtitle}</div>` : ''}
-        ${node.path ? `<div>Путь: ${node.path}</div>` : ''}
+        <div>ID: <strong style="color: #f8fafc;">${escapeHtml(node.id)}</strong></div>
+        ${node.subtitle ? `<div>Инфо: ${escapeHtml(node.subtitle)}</div>` : ''}
+        ${node.path ? `<div>Путь: ${escapeHtml(node.path)}</div>` : ''}
         <div style="margin-top: 4px; color: ${statusColor}; font-weight: 600;">
           ${node.in_attack_path ? '⚠ Угроза зафиксирована в цепи атаки' : '✓ Статус верифицирован (Normal)'}
         </div>
@@ -500,12 +521,14 @@ export class InvestigationGraph {
       ctx.fillStyle = '#f8fafc';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'top';
-      ctx.fillText(node.label || node.id, pos.x, pos.y + r + 5);
+      const label = canvasLabel(node.label || node.id);
+      ctx.fillText(label, this.labelX(ctx, label, pos.x, w), pos.y + r + 5);
 
       if (node.subtitle) {
         ctx.font = '10px "JetBrains Mono", monospace';
         ctx.fillStyle = '#94a3b8';
-        ctx.fillText(node.subtitle, pos.x, pos.y + r + 19);
+        const sub = canvasLabel(node.subtitle);
+        ctx.fillText(sub, this.labelX(ctx, sub, pos.x, w), pos.y + r + 19);
       }
 
       ctx.restore();

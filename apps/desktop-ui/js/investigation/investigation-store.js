@@ -5,7 +5,8 @@ export class InvestigationStore {
     this.processes = [];
     this.connections = [];
     this.findings = [];
-    this.evidence = [];
+    this.autoruns = [];
+    this.metrics = { findings: 0, evidence: 0, assets: 0 };
     this.timeline = [];
     this.graph = {
       nodes: [],
@@ -22,7 +23,12 @@ export class InvestigationStore {
     this.processes = snapshot.processes ?? [];
     this.connections = snapshot.connections ?? [];
     this.findings = snapshot.findings ?? [];
-    this.evidence = snapshot.evidence ?? [];
+    this.autoruns = snapshot.autoruns ?? [];
+    this.metrics = snapshot.metrics ?? {
+      findings: this.findings.length,
+      evidence: 0,
+      assets: this.assets.length
+    };
     this.timeline = snapshot.timeline ?? [];
     this.graph = snapshot.graph ?? { nodes: [], edges: [] };
     this.mitre = snapshot.mitre ?? [];

@@ -40,9 +40,21 @@ export class IpcClient {
       throw netErr;
     }
 
-    const data = await response.json();
+    if (response.status === 401 && method !== 'auth.login' && method !== 'auth.session'
+        && typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('soc:unauthorized'));
+    }
+
+    let data;
+    try {
+      data = await response.json();
+    } catch (_) {
+      throw new Error(`Движок вернул HTTP ${response.status}`);
+    }
     if (data.error) {
-      console.error('IPC Error:', data.error);
+      // Auth refusals (wrong password, expired session) are expected user
+      // errors, shown in the UI; everything else is logged as an error.
+      (data.error.status === 401 ? console.warn : console.error)('IPC Error:', data.error);
       const err = new Error(data.error.detail || data.error.title || 'RPC Failed');
       err.status = data.error.status;
       err.code = data.error.code;

@@ -35,6 +35,9 @@ pub enum SqliteStorageError {
 
     #[error("Entity not found: {0}")]
     NotFound(String),
+
+    #[error("{0}")]
+    Validation(String),
 }
 
 #[derive(Clone)]
@@ -323,6 +326,40 @@ impl SqliteStorage {
             ],
         )?;
         Ok(())
+    }
+
+    /// Stores a fact unless the case already holds the same finding (same
+    /// fact type about the same entity). Live correlation re-runs every time
+    /// the workspace loads; without this each run added a duplicate copy.
+    /// Returns the id and creation time of the stored fact, which for a
+    /// repeat finding are those of the first sighting.
+    pub fn insert_fact_dedup(
+        &self,
+        fact: &Fact,
+    ) -> Result<(EntityId, chrono::DateTime<chrono::Utc>), SqliteStorageError> {
+        {
+            let conn = self.conn.lock().unwrap();
+            let existing = conn.query_row(
+                "SELECT id, created_at FROM facts
+                 WHERE case_id = ?1 AND entity_key = ?2 AND fact_type = ?3
+                 ORDER BY created_at LIMIT 1",
+                params![fact.case_id.to_string(), fact.entity_key, fact.fact_type],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+            );
+            match existing {
+                Ok((id, created)) => {
+                    let id = EntityId::parse(&id).unwrap_or(fact.id);
+                    let created = chrono::DateTime::parse_from_rfc3339(&created)
+                        .map(|d| d.with_timezone(&chrono::Utc))
+                        .unwrap_or(fact.created_at);
+                    return Ok((id, created));
+                }
+                Err(rusqlite::Error::QueryReturnedNoRows) => {}
+                Err(e) => return Err(e.into()),
+            }
+        }
+        self.insert_fact(fact)?;
+        Ok((fact.id, fact.created_at))
     }
 
     pub fn insert_timeline_event(

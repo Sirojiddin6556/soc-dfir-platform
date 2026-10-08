@@ -5,12 +5,7 @@
  */
 
 import { workspaceStore } from '../workspace_store.js';
-
-function escapeHtml(str) {
-  const div = document.createElement('div');
-  div.textContent = String(str ?? '');
-  return div.innerHTML;
-}
+import { escapeAttr, escapeHtml } from '../../util/html.js';
 
 function formatBytes(bytes) {
   const b = Number(bytes) || 0;
@@ -149,9 +144,9 @@ export class WorkspaceView {
           <div class="ctf-pane-header" style="height: 44px; padding: 0 16px; border-bottom: 1px solid var(--ctf-border-default);">
             <div class="ctf-pane-header-title" style="font-size: 14px; display:flex; align-items:center; gap:8px;">
               <button class="ctf-btn ctf-btn-ghost" id="ctfBackToMatrixBtn" title="Вернуться к матрице заданий" style="height:26px;font-size:11px;padding:0 6px;">◀ К матрице</button>
-              <span class="ctf-badge ctf-badge-${chalCategory.toLowerCase()}">[${chalCategory.slice(0, 1)}] ${chalCategory}</span>
+              <span class="ctf-badge ctf-badge-${escapeAttr(chalCategory.toLowerCase())}">[${escapeHtml(chalCategory.slice(0, 1))}] ${escapeHtml(chalCategory)}</span>
               <span style="font-weight: 700; color: var(--ctf-text-primary);">${escapeHtml(chalTitle)}</span>
-              <span style="font-family: var(--ctf-font-mono); font-size: 12px; color: var(--ctf-accent-cyan); font-weight: 700;">(${chalPoints} pts)</span>
+              <span style="font-family: var(--ctf-font-mono); font-size: 12px; color: var(--ctf-accent-cyan); font-weight: 700;">(${escapeHtml(chalPoints)} pts)</span>
             </div>
 
             <div style="display: flex; align-items: center; gap: 10px;">
@@ -242,7 +237,7 @@ export class WorkspaceView {
           ${items.map((art) => {
             const isSelected = art.id === this.selectedArtifactId;
             return `
-              <div class="ctf-tree-node ${isSelected ? 'active' : ''}" data-artifact-id="${escapeHtml(art.id)}">
+              <div class="ctf-tree-node ${isSelected ? 'active' : ''}" data-artifact-id="${escapeAttr(art.id)}">
                 <span>📄</span>
                 <span style="flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
                   ${escapeHtml(art.filename || art.id)}

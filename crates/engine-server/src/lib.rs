@@ -11,6 +11,7 @@ use workflow_dag::{ResourceLimiter, WorkflowScheduler};
 use std::path::PathBuf;
 
 pub mod analysis;
+pub mod auth;
 pub mod collaboration;
 pub mod ctf_dispatch;
 pub mod dispatch;
@@ -46,6 +47,7 @@ pub struct EngineApp {
     pub verifier: scenario_verifier::ScenarioVerifier,
     pub scoring: scoring_engine::ScoringEngine,
     pub job_engine: core_domain::ctf::LocalJobEngine,
+    pub login_throttle: auth::LoginThrottle,
 }
 
 impl EngineApp {
@@ -97,6 +99,7 @@ impl EngineApp {
             verifier: scenario_verifier::ScenarioVerifier::new(),
             scoring: scoring_engine::ScoringEngine::new(),
             job_engine: core_domain::ctf::LocalJobEngine::new(),
+            login_throttle: auth::LoginThrottle::new(),
         }
     }
 }

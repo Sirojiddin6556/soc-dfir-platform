@@ -24,10 +24,23 @@ async fn test_engine_app_composition_and_dispatch() {
     let list_resp = app.dispatch_request(list_req).await;
     assert!(list_resp.contains("Incident Beta"));
 
-    // 4. Test Broker Execute (Authorized: ReadProcesses)
-    let broker_req = r#"{"api_version": 1, "request_id": "req-4", "method": "broker.execute", "params": {"CollectProcessMetadata": {"pid": 1234}}}"#;
-    let broker_resp = app.dispatch_request(broker_req).await;
-    assert!(broker_resp.contains("\"status\":\"running\""));
+    // 4. Test Broker Execute (Authorized: ReadProcesses) against a process
+    //    that really exists -- this test binary.
+    let me = std::process::id();
+    let broker_req = format!(
+        r#"{{"api_version": 1, "request_id": "req-4", "method": "broker.execute", "params": {{"CollectProcessMetadata": {{"pid": {}}}}}}}"#,
+        me
+    );
+    let broker_resp = app.dispatch_request(&broker_req).await;
+    let broker_val: serde_json::Value = serde_json::from_str(&broker_resp).unwrap();
+    assert_eq!(broker_val["result"]["pid"], me);
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    assert_ne!(broker_val["result"]["status"], "not_found");
+    // A pid that cannot exist (above Linux pid_max, not a multiple of 4 as
+    // every Windows pid is) must not be reported as running.
+    let ghost_req = r#"{"api_version": 1, "request_id": "req-4b", "method": "broker.execute", "params": {"CollectProcessMetadata": {"pid": 4294967}}}"#;
+    let ghost_resp = app.dispatch_request(ghost_req).await;
+    assert!(ghost_resp.contains("\"status\":\"not_found\""));
 
     // 5. Test Broker Execute (Forbidden: AcquireMemorySample without capability)
     let mem_req = r#"{"api_version": 1, "request_id": "req-5", "method": "broker.execute", "params": {"AcquireMemorySample": {"target": {"ProcessPid": 1234}, "chunk_size_mb": 64}}}"#;
@@ -51,14 +64,99 @@ async fn test_engine_app_composition_and_dispatch() {
     let _ = tokio::fs::remove_dir_all(temp_dir).await;
 }
 
+/// A real, harmless process (a copy of `sleep` / `PING.EXE`) running from a
+/// world-writable directory: precisely the on-host condition CORR-LIN-001b
+/// (Linux) and CORR-WIN-001f (Windows) detect. Live correlation of a clean
+/// machine legitimately produces no facts, so a test that needs facts must
+/// create a genuine finding on the host rather than rely on whatever happens
+/// to be running. Killed and removed on drop.
+struct SuspiciousProcess {
+    child: std::process::Child,
+    dir: std::path::PathBuf,
+}
+
+impl SuspiciousProcess {
+    fn spawn() -> Self {
+        #[cfg(target_os = "windows")]
+        let (bases, sources, file, args): (&[&str], &[&str], &str, &[&str]) = (
+            &["C:\\Users\\Public"],
+            &["C:\\Windows\\System32\\PING.EXE"],
+            "ping.exe",
+            &["-n", "120", "127.0.0.1"],
+        );
+        #[cfg(not(target_os = "windows"))]
+        let (bases, sources, file, args): (&[&str], &[&str], &str, &[&str]) = (
+            &["/tmp", "/var/tmp", "/dev/shm"],
+            &["/bin/sleep", "/usr/bin/sleep"],
+            "sleep",
+            &["120"],
+        );
+        let source = sources
+            .iter()
+            .find(|s| std::path::Path::new(s).exists())
+            .expect("a harmless system binary to copy");
+        for base in bases {
+            let dir =
+                std::path::Path::new(base).join(format!("soc-dfir-it-{}", uuid::Uuid::now_v7()));
+            if std::fs::create_dir_all(&dir).is_err() {
+                continue;
+            }
+            let exe = dir.join(file);
+            if std::fs::copy(source, &exe).is_ok() {
+                // A noexec mount makes spawn fail; try the next directory.
+                if let Ok(child) = spawn_retrying_busy(
+                    std::process::Command::new(&exe)
+                        .args(args)
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null()),
+                ) {
+                    return Self { child, dir };
+                }
+            }
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+        panic!(
+            "could not execute a binary from any world-writable directory {:?}",
+            bases
+        );
+    }
+}
+
+/// Executing a file right after copying it can fail with ETXTBSY when
+/// another test thread forks while the copy's write handle is still open;
+/// the forked child drops it on exec, so retry briefly.
+fn spawn_retrying_busy(cmd: &mut std::process::Command) -> std::io::Result<std::process::Child> {
+    let mut attempts = 0;
+    loop {
+        match cmd.spawn() {
+            Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy && attempts < 50 => {
+                attempts += 1;
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            other => return other,
+        }
+    }
+}
+
+impl Drop for SuspiciousProcess {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
 #[tokio::test]
 async fn test_case_id_required_and_data_survives_restart() {
+    let suspicious = SuspiciousProcess::spawn();
+    let suspicious_pid = suspicious.child.id();
+
     let scratch =
         std::env::temp_dir().join(format!("engine_persist_test_{}", uuid::Uuid::now_v7()));
     let cas_dir = scratch.join("cas");
     let db_path = scratch.join("case.db");
 
-    let case_id = {
+    let (case_id, finding_id) = {
         let app = EngineApp::new(cas_dir.clone(), db_path.clone()).expect("open persistent db");
 
         // Collection must be rejected without a real case_id, not silently
@@ -81,16 +179,57 @@ async fn test_case_id_required_and_data_survives_restart() {
         let correlate_resp = app.dispatch_request(&correlate_req).await;
         assert!(correlate_resp.contains("\"error\":null"));
 
-        // Facts from correlation must be stored under the real case id.
+        // Facts from correlation must be stored under the real case id, and
+        // must include the finding for the process this test started.
         let cid = core_domain::id::EntityId::parse(&case_id).unwrap();
         let facts = app.storage.get_facts_for_case(cid).unwrap();
-        assert!(
-            !facts.is_empty(),
-            "correlation should have produced facts for the real case"
-        );
+        let finding = facts
+            .iter()
+            .find(|f| f.data["pid"] == suspicious_pid)
+            .unwrap_or_else(|| {
+                panic!(
+                    "live correlation must flag pid {} running from a world-writable dir; facts: {:?}",
+                    suspicious_pid,
+                    facts.iter().map(|f| &f.data["rule_id"]).collect::<Vec<_>>()
+                )
+            });
+        #[cfg(target_os = "linux")]
+        assert_eq!(finding.data["rule_id"], "CORR-LIN-001b");
+        #[cfg(target_os = "windows")]
+        assert_eq!(finding.data["rule_id"], "CORR-WIN-001f");
 
-        case_id
+        // Re-running collection (the workspace does it on every load) must
+        // not store the same finding again.
+        let finding_count = |facts: &[core_domain::fact::Fact]| {
+            facts
+                .iter()
+                .filter(|f| f.data["pid"] == suspicious_pid)
+                .count()
+        };
+        assert_eq!(finding_count(&facts), 1);
+        for _ in 0..2 {
+            app.dispatch_request(&correlate_req).await;
+            let snapshot_req = format!(
+                r#"{{"api_version": 1, "request_id": "r3b", "method": "investigation.snapshot", "params": {{"case_id": "{}"}}}}"#,
+                case_id
+            );
+            let snap: serde_json::Value =
+                serde_json::from_str(&app.dispatch_request(&snapshot_req).await).unwrap();
+            // The graph links the finding to the process it is about.
+            let edges = snap["result"]["graph"]["edges"].as_array().unwrap();
+            let finding_node = format!("finding-{}", finding.id);
+            assert!(
+                edges.iter().any(|e| e["target"] == finding_node.as_str()
+                    && e["source"] == format!("proc-{suspicious_pid}").as_str()),
+                "finding must hang off pid {suspicious_pid}"
+            );
+        }
+        let facts_again = app.storage.get_facts_for_case(cid).unwrap();
+        assert_eq!(finding_count(&facts_again), 1, "no duplicate findings");
+
+        (case_id, finding.id)
     }; // app dropped here, simulating the application closing
+    drop(suspicious);
 
     // Reopen against the same db file, as a fresh process would.
     let reopened = EngineApp::new(cas_dir, db_path.clone()).expect("reopen persistent db");
@@ -104,8 +243,8 @@ async fn test_case_id_required_and_data_survives_restart() {
     let cid = core_domain::id::EntityId::parse(&case_id).unwrap();
     let facts_after_restart = reopened.storage.get_facts_for_case(cid).unwrap();
     assert!(
-        !facts_after_restart.is_empty(),
-        "facts must still be there after reopening the database"
+        facts_after_restart.iter().any(|f| f.id == finding_id),
+        "the finding must still be there after reopening the database"
     );
 
     let _ = tokio::fs::remove_dir_all(scratch).await;

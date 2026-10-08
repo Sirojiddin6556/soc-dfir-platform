@@ -1,39 +1,32 @@
-version: '3.8'
+# Runs the engine (UI + API) behind nginx.
+#   docker compose -f config/docker/docker-compose.yml up --build
+# Then open http://localhost/ and set the owner password on first launch.
+# To reach it by another name or IP, set SOC_PUBLIC_HOST, e.g.
+#   SOC_PUBLIC_HOST=soc.lab.local docker compose ... up
+# Note: inside a container the live host inspection sees the container,
+# not the machine running Docker.
 
 services:
   engine:
     build:
       context: ../..
       dockerfile: config/docker/Dockerfile
-    image: soc-dfir/engine-server:v0.1.0-alpha
-    container_name: soc-dfir-engine
+    image: soc-dfir/engine-server:latest
     restart: unless-stopped
     environment:
       - RUST_LOG=info
-      - APP_PORT=8080
-      - CAS_STORAGE_PATH=/app/cas
-      - DB_PATH=/app/data/ctf_workspace.db
+      - SOC_ALLOWED_HOSTS=${SOC_PUBLIC_HOST:-localhost}
     volumes:
-      - ctf_data:/app/data
-      - ctf_cas:/app/cas
-      - ctf_logs:/app/logs
+      - soc_data:/app/data
     networks:
       - internal_net
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://127.0.0.1:8080/health/live"]
-      interval: 15s
-      timeout: 5s
-      retries: 3
-      start_period: 5s
 
-  frontend:
+  proxy:
     image: nginx:1.27-alpine
-    container_name: soc-dfir-frontend
     restart: unless-stopped
     ports:
-      - "80:80"
+      - "127.0.0.1:80:80"
     volumes:
-      - ../../apps/desktop-ui:/usr/share/nginx/html:ro
       - ../nginx/nginx.conf:/etc/nginx/nginx.conf:ro
     depends_on:
       engine:
@@ -42,9 +35,7 @@ services:
       - internal_net
 
 volumes:
-  ctf_data:
-  ctf_cas:
-  ctf_logs:
+  soc_data:
 
 networks:
   internal_net:
