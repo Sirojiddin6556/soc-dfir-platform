@@ -135,7 +135,8 @@ jobs:
   windows-app:
     # A ready-to-run Windows build: download the artifact, unpack it and
     # start desktop-app.exe. The interface files sit next to it, and the
-    # app keeps its data in a `data` folder there.
+    # app keeps its data in a `data` folder there. engine-server.exe is the
+    # same engine without the native window: it opens the interface in Edge.
     name: Windows app package
     runs-on: windows-latest
     timeout-minutes: 60
@@ -155,37 +156,46 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-release-
 
-      - name: Build desktop-app
-        run: cargo build --release -p desktop-app
+      - name: Build the app
+        run: cargo build --release -p desktop-app -p engine-server
 
       - name: Assemble the package
         shell: pwsh
         run: |
           $dir = "package/soc-dfir-platform"
           New-Item -ItemType Directory -Force "$dir/apps/desktop-ui" | Out-Null
-          Copy-Item target/release/desktop-app.exe $dir/
+          Copy-Item target/release/desktop-app.exe, target/release/engine-server.exe $dir/
           Copy-Item -Recurse apps/desktop-ui/index.html, apps/desktop-ui/css, apps/desktop-ui/js "$dir/apps/desktop-ui/"
 
       - name: The packaged app starts and serves its interface
         shell: pwsh
         working-directory: package/soc-dfir-platform
+        env:
+          SOC_NO_BROWSER: "1"
         run: |
-          $app = Start-Process -FilePath .\desktop-app.exe -PassThru
-          $ok = $false
-          foreach ($i in 1..60) {
-            Start-Sleep -Seconds 1
-            if ($app.HasExited) { break }
-            try {
-              $page = Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8080/
-              $rpc = Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8080/rpc -ContentType 'application/json' `
-                -Body '{"jsonrpc":"2.0","id":1,"method":"auth.status","params":{}}'
-              if ($page.Content -match 'code' -and $null -ne $rpc.result) { $ok = $true; break }
-            } catch { }
+          $failed = @()
+          foreach ($exe in 'desktop-app', 'engine-server') {
+            $app = Start-Process -FilePath ".\$exe.exe" -PassThru `
+              -RedirectStandardOutput "$env:RUNNER_TEMP\$exe.out" -RedirectStandardError "$env:RUNNER_TEMP\$exe.err"
+            $ok = $false
+            foreach ($i in 1..60) {
+              Start-Sleep -Seconds 1
+              if ($app.HasExited) { break }
+              try {
+                $page = Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8080/
+                $rpc = Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8080/rpc -ContentType 'application/json' `
+                  -Body '{"api_version":1,"request_id":"ci","method":"auth.status","params":{}}'
+                if ($page.Content -match 'code' -and $null -ne $rpc.result) { $ok = $true; break }
+              } catch { }
+            }
+            $exited = $app.HasExited
+            if (-not $exited) { Stop-Process -Id $app.Id -Force; $app.WaitForExit() }
+            Write-Host "--- $exe.exe output (serves: $ok, exited by itself: $exited) ---"
+            Get-Content "$env:RUNNER_TEMP\$exe.out", "$env:RUNNER_TEMP\$exe.err" -ErrorAction SilentlyContinue
+            if (-not $ok) { $failed += $exe }
+            Remove-Item -Recurse -Force -ErrorAction SilentlyContinue data
           }
-          if (-not $app.HasExited) { Stop-Process -Id $app.Id -Force }
-          if (-not $ok) { throw "desktop-app.exe did not serve the interface (exited: $($app.HasExited))" }
-          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue data
-          Write-Host "desktop-app.exe serves the interface and answers the engine API"
+          if ($failed) { throw "did not serve the interface: $($failed -join ', ')" }
 
       - name: Upload the package
         uses: actions/upload-artifact@v4
