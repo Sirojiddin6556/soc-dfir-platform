@@ -3,7 +3,7 @@
 pub mod network;
 pub mod probe;
 
-pub use network::{execute_cve_scan, execute_network_scan};
+pub use network::execute_network_scan;
 pub use probe::{
     fingerprint_os, probe_service_details, resolve_hostname, Confidence, DiscoveredService,
     ScanMethod,
@@ -69,14 +69,5 @@ mod tests {
         let s = probe_service_details("127.0.0.1", 135).await;
         assert_eq!(s.port, 135);
         assert_eq!(s.service_name, "MSRPC");
-    }
-
-    #[test]
-    fn test_cve_scan() {
-        let cve_h1 = execute_cve_scan("h_local");
-        assert_eq!(cve_h1["host_id"], "h_local");
-        assert_eq!(cve_h1["calculated_risk"], 1.0);
-        let vulns = cve_h1["vulnerabilities"].as_array().unwrap();
-        assert!(vulns.is_empty());
     }
 }

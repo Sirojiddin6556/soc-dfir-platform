@@ -214,9 +214,38 @@ impl EngineApp {
                     .params
                     .get("host_id")
                     .and_then(|v| v.as_str())
-                    .unwrap_or("h1");
-                let result = scanner::execute_cve_scan(host_id);
-                respond_res(req.request_id, Ok::<_, ProblemDetails>(result))
+                    .unwrap_or(crate::default_host_id())
+                    .to_string();
+                let vulndb = self.vulndb.clone();
+                let result =
+                    tokio::task::spawn_blocking(move || vulndb.scan_local_packages(&host_id))
+                        .await
+                        .map_err(|e| ProblemDetails::bad_request(&e.to_string(), vec![]));
+                respond_res(req.request_id, result)
+            }
+            "vulndb.status" => {
+                let vulndb = self.vulndb.clone();
+                let result = tokio::task::spawn_blocking(move || vulndb.status())
+                    .await
+                    .map_err(|e| ProblemDetails::bad_request(&e.to_string(), vec![]));
+                respond_res(req.request_id, result)
+            }
+            "vulndb.update" => {
+                let ecosystems: Vec<String> = req
+                    .params
+                    .get("ecosystems")
+                    .and_then(|v| v.as_array())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|e| e.as_str().map(str::to_string))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let res = self
+                    .vulndb
+                    .start_update(ecosystems)
+                    .map_err(|e| ProblemDetails::bad_request(&e, vec!["ecosystems".to_string()]));
+                respond_res(req.request_id, res)
             }
             "host.overview" => {
                 let host_id = req

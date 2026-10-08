@@ -9,6 +9,7 @@ use storage_sqlite::SqliteStorage;
 use workflow_dag::{ResourceLimiter, WorkflowScheduler};
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 pub mod analysis;
 pub mod auth;
@@ -24,6 +25,7 @@ pub mod scanner;
 pub mod scenario_eval;
 pub mod scope;
 pub mod target_parser;
+pub mod vulndb;
 
 pub use http::{bind_server, handle_connection, run_embedded_server, run_server_loop};
 
@@ -48,6 +50,7 @@ pub struct EngineApp {
     pub scoring: scoring_engine::ScoringEngine,
     pub job_engine: core_domain::ctf::LocalJobEngine,
     pub login_throttle: auth::LoginThrottle,
+    pub vulndb: Arc<vulndb::VulnDbService>,
 }
 
 impl EngineApp {
@@ -73,7 +76,16 @@ impl EngineApp {
     }
 
     fn from_storage(storage: SqliteStorage, cas_root: PathBuf) -> Self {
-        let staging_dir = cas_root.parent().unwrap_or(&cas_root).join("staging");
+        let data_dir = cas_root.parent().unwrap_or(&cas_root).to_path_buf();
+        let staging_dir = data_dir.join("staging");
+        // SOC_VULNDB_OFFLINE_DIR: import feeds from this directory, never download.
+        let offline_dir = std::env::var_os("SOC_VULNDB_OFFLINE_DIR")
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from);
+        let vulndb = Arc::new(vulndb::VulnDbService::new(
+            data_dir.join("vulndb"),
+            offline_dir,
+        ));
         let staging = evidence::StagingManager::new(staging_dir);
         let session_mgr = evidence::IngestSessionManager::new(staging);
         let cas = ContentAddressedStorage::new(cas_root);
@@ -100,6 +112,7 @@ impl EngineApp {
             scoring: scoring_engine::ScoringEngine::new(),
             job_engine: core_domain::ctf::LocalJobEngine::new(),
             login_throttle: auth::LoginThrottle::new(),
+            vulndb,
         }
     }
 }
