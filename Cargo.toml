@@ -65,8 +65,23 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 evtx = "0.12"
 regex = "1.10"
 flate2 = "1.0"
+zip = { version = "8.6", default-features = false, features = ["deflate-flate2"] }
+ureq = { version = "3.4", default-features = false, features = ["rustls", "platform-verifier", "gzip"] }
 
 # Live host inspection hashes every running executable (and evidence ingest
 # hashes uploads); unoptimized SHA-256 makes a dev-build snapshot ~15x slower.
 [profile.dev.package.sha2]
+opt-level = 3
+
+# Importing an OSV distribution export inflates and parses ~1 GB of JSON;
+# unoptimized, that takes about a minute in dev builds instead of seconds.
+[profile.dev.package.vulnerability-engine]
+opt-level = 3
+[profile.dev.package.miniz_oxide]
+opt-level = 3
+[profile.dev.package.crc32fast]
+opt-level = 3
+[profile.dev.package.zip]
+opt-level = 3
+[profile.dev.package.serde_json]
 opt-level = 3
