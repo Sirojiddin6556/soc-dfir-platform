@@ -724,6 +724,34 @@ fn check_count(
     );
 }
 
+/// Checks writing the text a format makes, `(lo, hi, taint)` as
+/// `format_len` gives it, and its NUL.
+fn check_format(
+    it: &mut Interp,
+    dst: &Value,
+    (lo, hi, open): (i64, i64, Taint),
+    w: i64,
+    what: &str,
+    span: Span,
+) {
+    let (most, sure) = if hi == UNBOUNDED {
+        (MAX, false)
+    } else {
+        (scaled(hi + 1, w), lo == hi)
+    };
+    check_bytes(
+        it,
+        dst,
+        scaled(lo + 1, w),
+        most,
+        sure,
+        &open,
+        true,
+        what,
+        span,
+    );
+}
+
 /// Checks writing a string of `len` elements and its NUL.
 /// `reached`: the longest length certainly occurs.
 #[allow(clippy::too_many_arguments)]
@@ -1029,38 +1057,24 @@ pub fn check_call(it: &mut Interp, name: &str, args: &[ArgVal], span: Span) {
                 span,
             );
         }
-        "snprintf" | "vsnprintf" | "swprintf" | "vswprintf" | "_snprintf" | "_vsnprintf"
-        | "_snwprintf" | "_vsnwprintf" => {
+        "snprintf" | "swprintf" | "_snprintf" | "_snwprintf" => {
+            // `snprintf(s, 64, "%lldB", n)` writes the text it makes when
+            // that always fits in the size it is given.
+            let made = format_len(&arg(args, 2), args.get(3..).unwrap_or(&[]));
+            let size = arg(args, 1);
+            match num_bounds(&size) {
+                Some((least, _)) if made.1 != UNBOUNDED && least > made.1 => {
+                    check_format(it, &arg(args, 0), made, w, &what, span);
+                }
+                _ => check_count(it, &arg(args, 0), &size, w, true, &what, span),
+            }
+        }
+        "vsnprintf" | "vswprintf" | "_vsnprintf" | "_vsnwprintf" => {
             check_count(it, &arg(args, 0), &arg(args, 1), w, true, &what, span);
         }
         "sprintf" | "vsprintf" | "_swprintf" | "_vswprintf" => {
-            let (lo, hi, open) = format_len(&arg(args, 1), args.get(2..).unwrap_or(&[]));
-            let dst = arg(args, 0);
-            if hi == UNBOUNDED {
-                check_bytes(
-                    it,
-                    &dst,
-                    scaled(lo + 1, w),
-                    MAX,
-                    false,
-                    &open,
-                    true,
-                    &what,
-                    span,
-                );
-            } else {
-                check_bytes(
-                    it,
-                    &dst,
-                    scaled(lo + 1, w),
-                    scaled(hi + 1, w),
-                    lo == hi,
-                    &open,
-                    true,
-                    &what,
-                    span,
-                );
-            }
+            let made = format_len(&arg(args, 1), args.get(2..).unwrap_or(&[]));
+            check_format(it, &arg(args, 0), made, w, &what, span);
         }
         "gets" | "_getws" => {
             let msg = format!("{what} читает строку любой длины: используйте fgets()");

@@ -1788,6 +1788,20 @@ impl<'s> Lower<'s> {
                 }
             }
             "call_expression" => {
+                // `likely(x)` and `expect_true(x)` macros end in
+                // `__builtin_expect(x, 1)`, which is `x`.
+                let builtin = node.child_by_field_name("function").is_some_and(|f| {
+                    matches!(
+                        self.text(f),
+                        "__builtin_expect" | "__builtin_expect_with_probability"
+                    )
+                });
+                let first = node
+                    .child_by_field_name("arguments")
+                    .and_then(|a| named_children(a).into_iter().next());
+                if let (true, Some(first)) = (builtin, first) {
+                    return self.expr(first);
+                }
                 let args: Vec<Arg> = node
                     .child_by_field_name("arguments")
                     .map(|a| {

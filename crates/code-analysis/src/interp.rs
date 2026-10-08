@@ -1754,6 +1754,13 @@ impl<'p> Interp<'p> {
                     }
                 }
             }
+            // `(n > 16) != 0`, as `expect_true(n > 16)` expands: the test
+            // itself.
+            Expr::Bin(op @ (BinOp::Eq | BinOp::NotEq), l, r)
+                if self.in_c() && is_test(l) && matches!(**r, Expr::Lit(Const::Int(0))) =>
+            {
+                self.collect_facts(l, (*op == BinOp::NotEq) == truth, out);
+            }
             // `preg_match(...) == 1`, `in_array(...) === false`
             Expr::Bin(op @ (BinOp::Eq | BinOp::NotEq | BinOp::Is | BinOp::IsNot), l, r)
                 if matches!(&**l, Expr::Call { .. }) && const_truth(r).is_some() =>
@@ -4141,6 +4148,10 @@ pub fn values_eq(a: &Value, b: &Value) -> Option<bool> {
             Some((*x as f64) == *y)
         }
         (Value::Bool(x), Value::Bool(y)) => Some(x == y),
+        // `(n > 16) != 0` in C, `False == 0` in Python and PHP.
+        (Value::Bool(x), Value::Int(y)) | (Value::Int(y), Value::Bool(x)) => {
+            Some(i64::from(*x) == *y)
+        }
         (Value::None, Value::None) => Some(true),
         (Value::None, v) | (v, Value::None) if is_const(v) => Some(false),
         (Value::Str(_), Value::Str(_)) => match (a.as_str(), b.as_str()) {
@@ -4816,5 +4827,24 @@ fn collect_functions(
             }
             _ => {}
         }
+    }
+}
+
+/// A comparison or a logical combination of them: true or false.
+fn is_test(e: &Expr) -> bool {
+    match e {
+        Expr::Bin(op, ..) => matches!(
+            op,
+            BinOp::Lt
+                | BinOp::LtE
+                | BinOp::Gt
+                | BinOp::GtE
+                | BinOp::Eq
+                | BinOp::NotEq
+                | BinOp::And
+                | BinOp::Or
+        ),
+        Expr::Un(UnOp::Not, _) => true,
+        _ => false,
     }
 }

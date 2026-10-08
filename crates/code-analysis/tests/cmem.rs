@@ -408,3 +408,63 @@ void f(void) {
         "{found:?}"
     );
 }
+
+/// `expect_true(maxlen > 16)` expands to `__builtin_expect((maxlen > 16)
+/// != 0, 1)`: the branch runs only when the comparison holds.
+#[test]
+fn branch_hint_macros_keep_their_test() {
+    let callee = r#"#include <stddef.h>
+#define expect_true(expr) __builtin_expect((expr) != 0, 1)
+static int scan(const unsigned char *ip, size_t n) {
+    unsigned int len = 2;
+    size_t maxlen = n - len;
+    if (expect_true(maxlen > 16)) {
+        len++;
+        if (ip[len + 8] != 0)
+            return 1;
+    }
+    return 0;
+}
+"#;
+    let short = format!(
+        "{callee}int f(void) {{\n    unsigned char a[8] = \"abcdefg\";\n    return scan(a, 8);\n}}\n"
+    );
+    let found = scan(&[("a.c", &short)]);
+    assert_eq!(
+        lines(&found, "buffer-overread", "a.c"),
+        Vec::<u32>::new(),
+        "{found:?}"
+    );
+    let long = format!(
+        "{callee}int f(void) {{\n    unsigned char a[10] = \"abcdefghi\";\n    return scan(a, 40);\n}}\n"
+    );
+    let found = scan(&[("a.c", &long)]);
+    assert_eq!(
+        lines(&found, "buffer-overread", "a.c"),
+        vec![8],
+        "{found:?}"
+    );
+}
+
+/// `snprintf` writes no more than the text its format makes: a number
+/// fits in 64 bytes even one byte into the buffer. A size larger than the
+/// buffer is still reported when the text may be that long.
+#[test]
+fn snprintf_writes_the_text_it_makes() {
+    let src = r#"#include <stdio.h>
+void f(long long n, const char *name) {
+    char b[64];
+    char *s = b;
+    if (n < 0) { *s = '-'; s++; n = -n; }
+    snprintf(s, sizeof(b), "%lldB", n);
+    char c[8];
+    snprintf(c, 16, "%s", name);
+}
+"#;
+    let found = scan(&[("a.c", src)]);
+    assert_eq!(
+        lines(&found, "buffer-overflow", "a.c"),
+        vec![8],
+        "{found:?}"
+    );
+}
