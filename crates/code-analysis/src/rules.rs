@@ -253,9 +253,17 @@ rule!(
 rule!(
     BUFFER_OVERFLOW,
     "buffer-overflow",
-    120,
+    787,
     Critical,
     "Переполнение буфера",
+    0
+);
+rule!(
+    BUFFER_OVERREAD,
+    "buffer-overread",
+    125,
+    High,
+    "Чтение за границей буфера",
     0
 );
 rule!(

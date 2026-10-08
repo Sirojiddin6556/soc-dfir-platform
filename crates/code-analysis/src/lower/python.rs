@@ -1,6 +1,6 @@
 //! Python front end (tree-sitter-python).
 
-use super::{children, field_children, named_children, span, text};
+use super::{children, field_children, named_children, span, test_span, text};
 use crate::ir::*;
 use std::rc::Rc;
 use tree_sitter::Node;
@@ -98,6 +98,7 @@ impl<'s> Lower<'s> {
                     iter: Some(self.expr_opt(node.child_by_field_name("right"))),
                     test: None,
                     body: self.opt_block(node.child_by_field_name("body")),
+                    span: span(node),
                 });
                 if let Some(alt) = node.child_by_field_name("alternative") {
                     out.extend(self.opt_block(alt.child_by_field_name("body")));
@@ -109,6 +110,7 @@ impl<'s> Lower<'s> {
                     iter: None,
                     test: Some(self.expr_opt(node.child_by_field_name("condition"))),
                     body: self.opt_block(node.child_by_field_name("body")),
+                    span: test_span(node),
                 });
                 if let Some(alt) = node.child_by_field_name("alternative") {
                     out.extend(self.opt_block(alt.child_by_field_name("body")));
@@ -372,6 +374,7 @@ impl<'s> Lower<'s> {
             test,
             then,
             other: self.alternatives(&alternatives),
+            span: test_span(node),
         }
     }
 
@@ -384,6 +387,7 @@ impl<'s> Lower<'s> {
                 test: self.expr_opt(first.child_by_field_name("condition")),
                 then: self.opt_block(first.child_by_field_name("consequence")),
                 other: self.alternatives(rest),
+                span: test_span(*first),
             }],
             "else_clause" => self.opt_block(first.child_by_field_name("body")),
             _ => Vec::new(),

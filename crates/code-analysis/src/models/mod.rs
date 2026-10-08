@@ -1,6 +1,7 @@
 //! Language models: what libraries and frameworks do with data.
 
 pub mod c;
+pub mod cmem;
 pub mod common;
 pub mod java;
 pub mod php;

@@ -97,6 +97,10 @@ pub enum Fact {
     /// Safe, and so is every variable holding only data from the same
     /// inputs: the check was on a canonical form of them (C `realpath`).
     SafeSources(u32),
+    /// A C integer lies in `lo..=hi` (`x < 10`, `x >= 0`).
+    Bounds(i64, i64),
+    /// A C integer is not this value (`n != -1`).
+    Not(i64),
 }
 
 /// What a fact from a call condition is about.
@@ -249,8 +253,8 @@ struct Frame {
     /// a PHP script that ends with `exit` still defined them.
     exit_env: Option<Env>,
     /// C pointer and reference parameters, with their values where the
-    /// function returned.
-    outs: Vec<(Rc<str>, Option<Value>)>,
+    /// function returned having changed them, and on entry.
+    outs: Vec<(Rc<str>, Option<Value>, Option<Value>)>,
     /// C globals where the function returned.
     exit_globals: Option<HashMap<Rc<str>, Value>>,
     /// `break` and `continue` statements run so far.
@@ -323,6 +327,9 @@ pub struct Interp<'p> {
     c_outs: Vec<(usize, Value)>,
     /// See `crate::cmembers`.
     c_members: Option<Rc<HashMap<String, Vec<String>>>>,
+    /// Calls through a struct member run on a guess at its function (see
+    /// `c_call_member`): findings in them need user data.
+    guessed: usize,
     /// User data stored in `c_globals` in this entry, which C calls'
     /// results depend on (see `memo_key`), and whether there is any.
     c_globals_taint: Taint,
@@ -337,9 +344,14 @@ pub struct Interp<'p> {
 /// modules by name.
 type CIndex = Rc<HashMap<String, Vec<CDef>>>;
 
-/// A call's result: its value, the receiver it left and the C out
-/// parameters it changed.
-type Memo = (Value, Option<Value>, Rc<[(usize, Value)]>);
+/// A call's result: its value, the receiver it left, the C out
+/// parameters it changed and the C globals it set.
+type Memo = (
+    Value,
+    Option<Value>,
+    Rc<[(usize, Value)]>,
+    Rc<[(Rc<str>, Value)]>,
+);
 
 #[derive(Clone)]
 enum CDef {
@@ -389,6 +401,7 @@ impl<'p> Interp<'p> {
             c_globals: HashMap::new(),
             c_outs: Vec::new(),
             c_members: None,
+            guessed: 0,
             c_globals_taint: Taint::clean(),
             c_globals_tainted: false,
             c_summary: HashMap::new(),
@@ -607,8 +620,22 @@ impl<'p> Interp<'p> {
         true
     }
 
+    /// Reports a finding with the input that controls it, when `taint`
+    /// holds user data.
+    pub fn flag_tainted(&mut self, rule: &'static Rule, span: Span, what: &str, taint: &Taint) {
+        let module = self.module();
+        let src = taint.sources.iter().find(|s| !s.weak_random).cloned();
+        self.report(rule, module, span, what, src);
+    }
+
     /// Reports a finding that does not depend on data flow.
+    /// A finding without user data. Not made in a call that runs on a guess
+    /// at which function a struct member holds, with arguments that may
+    /// never meet that function.
     pub fn flag(&mut self, rule: &'static Rule, span: Span, what: &str) {
+        if self.guessed > 0 {
+            return;
+        }
         let module = self.module();
         self.report(rule, module, span, what, None);
     }
@@ -621,6 +648,25 @@ impl<'p> Interp<'p> {
         what: &str,
         src: Option<Source>,
     ) {
+        if trace_reports() {
+            let stack: Vec<String> = self
+                .frames
+                .iter()
+                .map(|f| {
+                    let name = f.func.as_ref().map_or("<top>", |func| func.name.as_str());
+                    format!(
+                        "{}:{}@{}",
+                        self.project.modules[f.module].path, name, f.span.line
+                    )
+                })
+                .collect();
+            eprintln!(
+                "[trace] {} line {}: {what}\n    {}",
+                rule.id,
+                span.line,
+                stack.join("\n    ")
+            );
+        }
         // One finding per sink: the same sink reached from several handlers
         // or callers is reported once, with the first source found and the
         // others listed. A predictable random value is reported once where
@@ -917,6 +963,10 @@ impl<'p> Interp<'p> {
             Stmt::Expr(e, span) => {
                 self.frame().span = *span;
                 self.eval(e);
+                // `if (p == NULL) exit(1);`: nothing runs after exit().
+                if self.in_c() && is_c_exit(e) {
+                    self.frame().env = None;
+                }
             }
             Stmt::Raw(e, span) => {
                 self.frame().span = *span;
@@ -924,13 +974,22 @@ impl<'p> Interp<'p> {
                 let model = self.model();
                 model.raw(self, &v, *span);
             }
-            Stmt::If { test, then, other } => self.exec_if(test, then, other),
+            Stmt::If {
+                test,
+                then,
+                other,
+                span,
+            } => {
+                self.at(*span);
+                self.exec_if(test, then, other)
+            }
             Stmt::Loop {
                 target,
                 iter,
                 test,
                 body,
-            } => self.exec_loop(target.as_ref(), iter.as_ref(), test.as_ref(), body),
+                span,
+            } => self.exec_loop(target.as_ref(), iter.as_ref(), test.as_ref(), body, *span),
             Stmt::Switch {
                 subject,
                 cases,
@@ -1072,13 +1131,20 @@ impl<'p> Interp<'p> {
             }
         }
         if let Some(env) = &f.env {
-            for (name, last) in f.outs.iter_mut() {
-                if let Some(v) = env.get(name.as_ref()) {
-                    *last = Some(match last.take() {
-                        None => v.clone(),
-                        Some(prev) => join(&prev, v),
-                    });
-                }
+            for (name, last, entry) in f.outs.iter_mut() {
+                // `if (!(tp = realloc(...))) return -1; *dp = tp;`: a path
+                // that leaves the caller's pointer alone does not undo the
+                // others, whose result the caller goes on with.
+                let Some(v) = env
+                    .get(name.as_ref())
+                    .filter(|v| Some(*v) != entry.as_ref())
+                else {
+                    continue;
+                };
+                *last = Some(match last.take() {
+                    None => v.clone(),
+                    Some(prev) => join(&prev, v),
+                });
             }
         }
     }
@@ -1121,17 +1187,95 @@ impl<'p> Interp<'p> {
         }
     }
 
+    /// A counter that the loop's test bounds and its body steps by one:
+    /// `for (i = a; i < n; i++)`, `while (i >= 0) { ...; i--; }`.
+    fn loop_counter(&mut self, test: &Expr, body: &[Stmt]) -> Option<Counter> {
+        let Expr::Bin(op, l, r) = test else {
+            return None;
+        };
+        let (var, op, bound) = match (&**l, &**r) {
+            (Expr::Name(v), b) => (v.as_str(), *op, b),
+            (b, Expr::Name(v)) => (
+                v.as_str(),
+                match op {
+                    BinOp::Lt => BinOp::Gt,
+                    BinOp::LtE => BinOp::GtE,
+                    BinOp::Gt => BinOp::Lt,
+                    BinOp::GtE => BinOp::LtE,
+                    other => *other,
+                },
+                b,
+            ),
+            _ => return None,
+        };
+        let mut writes = Vec::new();
+        assigned_names(body, &mut writes);
+        let step = single_step(body, var)?;
+        if writes.iter().filter(|w| w.as_str() == var).count() != 1 {
+            return None;
+        }
+        let mut read = Vec::new();
+        expr_names(bound, &mut read);
+        if read.iter().any(|n| writes.contains(n)) {
+            return None;
+        }
+        let start = self.get_var(var)?.bounds()?;
+        let limit = self.eval(bound);
+        let taint = limit.taint();
+        let (blo, bhi) = match &limit {
+            Value::Unknown(_) => (i64::MIN, i64::MAX),
+            other => other.bounds()?,
+        };
+        let (lo, hi) = match (step, op) {
+            (1, BinOp::Lt) => (start.0, if bhi == i64::MAX { i64::MAX } else { bhi - 1 }),
+            (1, BinOp::LtE) => (start.0, bhi),
+            (1, BinOp::NotEq) if blo == bhi => (start.0, bhi - 1),
+            (-1, BinOp::Gt) => (if blo == i64::MIN { i64::MIN } else { blo + 1 }, start.1),
+            (-1, BinOp::GtE) => (blo, start.1),
+            _ => return None,
+        };
+        if lo > hi || lo == i64::MIN && hi == i64::MAX {
+            return None;
+        }
+        // From a constant start to a constant limit the loop takes every
+        // value, the last one included.
+        let inside = if start.0 == start.1 && blo == bhi {
+            Value::range_reached(lo, hi, taint.clone())
+        } else {
+            Value::range(lo, hi, taint.clone())
+        };
+        let exit = match step {
+            1 if hi != i64::MAX => Value::Int(hi + 1),
+            -1 if lo != i64::MIN => Value::Int(lo - 1),
+            _ => Value::Unknown(taint.clone()),
+        };
+        let inside_or_exit = join(&inside, &exit);
+        Some(Counter {
+            var: var.into(),
+            inside,
+            exit,
+            inside_or_exit,
+        })
+    }
+
     fn exec_loop(
         &mut self,
         target: Option<&Target>,
         iter: Option<&Expr>,
         test: Option<&Expr>,
         body: &[Stmt],
+        span: Span,
     ) {
+        self.at(span);
         let element = iter.map(|e| {
             let it = self.eval(e);
             it.element()
         });
+        // `for (i = 0; i < n; i++)` in C: the body sees every value of `i`.
+        let counter = match (target, test) {
+            (None, Some(t)) if self.in_c() => self.loop_counter(t, body),
+            _ => None,
+        };
         // C globals the body sets may also keep their value: it can run
         // no times.
         let globals_before = self.c_globals.clone();
@@ -1139,6 +1283,10 @@ impl<'p> Interp<'p> {
         let mut state = entry.clone();
         let mut exits = None;
         let mut settled = true;
+        // A counted loop whose test holds on entry runs at least once: it
+        // ends after one of its passes, not before them.
+        let mut first_true = false;
+        let mut ends: Vec<Option<Env>> = Vec::new();
         self.frame().loops.push(LoopAcc {
             breaks: None,
             continues: None,
@@ -1147,19 +1295,23 @@ impl<'p> Interp<'p> {
         for pass in 0..2 {
             self.frame().env = state.clone();
             if let Some(t) = test {
+                self.at(span);
                 let c = self.eval(t);
                 match c.truthy() {
                     Some(false) => {
                         exits = join_env(exits, self.frame().env.take());
                         break;
                     }
-                    Some(true) => {}
+                    Some(true) => first_true |= pass == 0,
                     None => exits = join_env(exits, self.frame().env.clone()),
                 }
                 self.refine(t, true);
             }
             if let (Some(t), Some(el)) = (target, &element) {
                 self.assign(t, el.clone(), Span::default());
+            }
+            if let Some(c) = &counter {
+                self.set_var(&c.var, c.inside.clone());
             }
             self.exec_block(body);
             let end = self.frame().env.take();
@@ -1172,6 +1324,18 @@ impl<'p> Interp<'p> {
             if end.is_none() {
                 break;
             }
+            if counter.is_some() {
+                ends.push(end.clone());
+            }
+            // `for (i = 0; i < 1; i++)` runs its body exactly once.
+            if first_true
+                && counter
+                    .as_ref()
+                    .is_some_and(|c| matches!(c.inside, Value::Int(_)))
+            {
+                state = end;
+                break;
+            }
             let next = join_env(state.clone(), end);
             if pass == 1 || env_eq(&next, &state) {
                 settled = env_eq(&next, &state);
@@ -1181,12 +1345,24 @@ impl<'p> Interp<'p> {
             state = next;
         }
         let acc = self.frame().loops.pop().expect("loop");
+        let broke = acc.breaks.is_some();
+        if counter.is_some() && first_true && !ends.is_empty() {
+            let first = ends.first().cloned().flatten();
+            let all = ends.into_iter().fold(None, join_env);
+            let all = match (&first, settled) {
+                (Some(f), false) => all.map(|a| widen_changed(a, Some(f))),
+                _ => all,
+            };
+            exits = None;
+            state = all;
+        }
         let mut out = join_env(exits, acc.breaks);
         if test.is_none() {
             // A for loop may run zero times or to completion.
             out = join_env(out, join_env(entry, state));
         } else if let Some(t) = test {
             // `while cond:` exits when the condition fails.
+            self.at(span);
             if self.eval_in(state.clone(), t).truthy() != Some(true) {
                 out = join_env(out, state);
             } else if !settled && !matches!(t, Expr::Lit(_)) {
@@ -1196,8 +1372,22 @@ impl<'p> Interp<'p> {
             }
         }
         self.frame().env = out;
+        if let Some(c) = counter {
+            if self.live() {
+                let v = if broke { c.inside_or_exit } else { c.exit };
+                self.set_var(&c.var, v);
+            }
+        }
         let after = std::mem::take(&mut self.c_globals);
         self.c_globals = join_globals(globals_before, after);
+    }
+
+    /// Findings in a test point at it; IR built without a span keeps the
+    /// statement's.
+    fn at(&mut self, span: Span) {
+        if span.line != 0 {
+            self.frame().span = span;
+        }
     }
 
     fn eval_in(&mut self, env: Option<Env>, e: &Expr) -> Value {
@@ -1316,6 +1506,23 @@ impl<'p> Interp<'p> {
                         o.set_field(field, value);
                         self.assign_expr(obj, Value::Obj(Rc::new(o)), span);
                     }
+                    // `p->field = v` on an array or allocation of structs.
+                    Value::Buf(b) => {
+                        let mut o = match &b.content {
+                            Value::Obj(o) => (**o).clone(),
+                            other => {
+                                let mut o = Obj::new("");
+                                o.taint = other.taint();
+                                o
+                            }
+                        };
+                        o.set_field(field, value);
+                        let nb = Buf {
+                            content: Value::Obj(Rc::new(o)),
+                            ..(**b).clone()
+                        };
+                        self.assign_expr(obj, Value::Buf(Rc::new(nb)), span);
+                    }
                     // `p->field = v` on a struct the analysis has not seen
                     // made (`malloc`, a parameter).
                     Value::Unknown(t) if self.in_c() => {
@@ -1382,6 +1589,11 @@ impl<'p> Interp<'p> {
 
     /// Writes a changed receiver back to the place it was read from.
     pub fn assign_expr(&mut self, e: &Expr, value: Value, span: Span) {
+        if let (Expr::Cast(ty, inner), true) = (e, self.in_c()) {
+            let model = self.model();
+            let value = model.coerce(self, ty, value);
+            return self.assign_expr(inner, value, span);
+        }
         let target = match e {
             Expr::Name(n) => Target::Name(n.clone()),
             Expr::Attr(o, f) => Target::Attr(o.clone(), f.clone()),
@@ -1427,6 +1639,7 @@ impl<'p> Interp<'p> {
             };
             let mut bits = model.facts_safety(&facts, &cur);
             let mut narrowed = None;
+            let numeric = narrow_numbers(&cur, &facts, self.in_c());
             for f in &facts {
                 match f {
                     Fact::Safe(b) => bits |= b,
@@ -1440,17 +1653,33 @@ impl<'p> Interp<'p> {
                     _ => {}
                 }
             }
-            let refined = match narrowed {
-                Some(n) => n,
-                None if bits != 0 => cur.sanitized(bits),
-                None => continue,
+            let bounded = narrowed.is_none() && numeric.is_some();
+            let refined = match (narrowed, numeric) {
+                (Some(n), _) => n,
+                (None, Some(n)) if bits != 0 => n.sanitized(bits),
+                (None, Some(n)) => n,
+                (None, None) if bits != 0 => cur.sanitized(bits),
+                (None, None) => continue,
             };
+            let ranged = bounded && refined != cur;
             match field {
-                // Only checks that make user data safe write a field back.
-                Some(e) if bits != 0 && cur.taint().is_tainted() => {
+                // Only checks that make user data safe, or bound a number
+                // or a pointer (`p->n > 0`, `p->buf != NULL`), write a field
+                // back.
+                Some(e) if (bits != 0 && cur.taint().is_tainted()) || ranged => {
                     self.assign_expr(e, refined, Span::default())
                 }
                 Some(_) => {}
+                // A C global stays global: a local copy would hide what
+                // calls store in it.
+                None if self.in_c()
+                    && !self.is_local(&var)
+                    && !paths.iter().any(|(k, _)| *k == var)
+                    && self.frame_ref().func.is_some()
+                    && self.this_field(&var).is_none() =>
+                {
+                    self.c_globals.insert(var, refined);
+                }
                 None => self.set_var(&var, refined),
             }
         }
@@ -1544,6 +1773,49 @@ impl<'p> Interp<'p> {
                             self.fact_on(r, Fact::OneOf(vec![lv]), out);
                         }
                     }
+                } else if self.in_c() {
+                    // `n != -1`: a C integer is not that value; `p != NULL`:
+                    // a pointer is not NULL.
+                    match (self.eval(l), self.eval(r)) {
+                        (_, Value::Int(k)) => self.fact_on(l, Fact::Not(k), out),
+                        (Value::Int(k), _) => self.fact_on(r, Fact::Not(k), out),
+                        (_, Value::None) => self.fact_on(l, Fact::Not(0), out),
+                        (Value::None, _) => self.fact_on(r, Fact::Not(0), out),
+                        _ => {}
+                    }
+                }
+            }
+            // `i < n`: in C both sides are bounded by the other.
+            Expr::Bin(op @ (BinOp::Lt | BinOp::LtE | BinOp::Gt | BinOp::GtE), l, r)
+                if self.in_c() =>
+            {
+                let op = if truth {
+                    *op
+                } else {
+                    match op {
+                        BinOp::Lt => BinOp::GtE,
+                        BinOp::LtE => BinOp::Gt,
+                        BinOp::Gt => BinOp::LtE,
+                        _ => BinOp::Lt,
+                    }
+                };
+                let lv = self.eval(l);
+                let rv = self.eval(r);
+                if let Some((c, d)) = rv.bounds() {
+                    if let Some(b) = below(op, c, d) {
+                        self.fact_on(l, b, out);
+                    }
+                }
+                if let Some((a, b)) = lv.bounds() {
+                    let mirrored = match op {
+                        BinOp::Lt => BinOp::Gt,
+                        BinOp::LtE => BinOp::GtE,
+                        BinOp::Gt => BinOp::Lt,
+                        _ => BinOp::LtE,
+                    };
+                    if let Some(f) = below(mirrored, a, b) {
+                        self.fact_on(r, f, out);
+                    }
                 }
             }
             Expr::Call { func, args, .. } if matches!(&**func, Expr::Name(_)) => {
@@ -1566,6 +1838,14 @@ impl<'p> Interp<'p> {
                         }
                     }
                 }
+            }
+            // `if (p)`, `if (n)`: not NULL, not zero.
+            Expr::Name(_) | Expr::Attr(..) if truth && self.in_c() => {
+                self.fact_on(e, Fact::Not(0), out);
+            }
+            // `if (!p)`: NULL, or zero.
+            Expr::Name(_) | Expr::Attr(..) if self.in_c() => {
+                self.fact_on(e, Fact::Bounds(0, 0), out);
             }
             Expr::Call { func, args, .. } => {
                 if let Expr::Attr(recv, name) = &**func {
@@ -2084,8 +2364,16 @@ impl<'p> Interp<'p> {
         }
         let mut out: Option<Value> = None;
         for f in targets {
-            if let Some(fv) = self.c_lookup(f) {
+            // A function of this file is in its scope; c_lookup finds the
+            // other files' ones.
+            let found = match self.get_var(f) {
+                Some(v @ Value::Func(_)) => Some(v),
+                _ => self.c_lookup(f),
+            };
+            if let Some(fv) = found {
+                self.guessed += 1;
                 let v = self.call_value(&fv, args, span);
+                self.guessed -= 1;
                 out = Some(match out {
                     None => v,
                     Some(p) => join(&p, &v),
@@ -2492,15 +2780,51 @@ impl<'p> Interp<'p> {
         if self.quiet && self.frames.len() >= QUIET_DEPTH && !self.c_globals_tainted {
             let t =
                 args_taint(args).union(&fv.bound.as_ref().map(|b| b.taint()).unwrap_or_default());
-            if !t.is_tainted() {
+            // A C array is followed a little further: its size is known only
+            // where it was declared.
+            let sized = self.frames.len() < QUIET_DEPTH + 3
+                && args.iter().any(|a| {
+                    a.value
+                        .alternatives()
+                        .iter()
+                        .any(|v| matches!(v, Value::Buf(_)))
+                });
+            if !t.is_tainted() && !sized {
+                // C globals the skipped function sets are no longer known:
+                // a sentinel it would replace (`first_free = -1`) must not
+                // stay exact.
+                if matches!(
+                    self.project.modules[fv.module].lang,
+                    crate::Language::C | crate::Language::Cpp
+                ) {
+                    for g in set_globals(&fv.def) {
+                        self.c_globals
+                            .insert(g.into(), Value::Unknown(Taint::clean()));
+                    }
+                }
                 return (Value::Unknown(t), fv.bound.clone());
             }
         }
         let key = self.memo_key(fv, args);
-        if let Some((v, s, outs)) = key.as_ref().and_then(|k| self.memo.get(k)).cloned() {
+        if let Some((v, s, outs, set)) = key.as_ref().and_then(|k| self.memo.get(k)).cloned() {
             merge_outs(&mut self.c_outs, &outs);
+            // `first_free = i;` in a function called before with the same
+            // arguments happens again.
+            for (g, val) in set.iter() {
+                let t = val.taint();
+                if t.is_tainted() {
+                    self.c_globals_tainted = true;
+                    self.c_globals_taint = self.c_globals_taint.union(&t);
+                }
+                self.c_globals.insert(g.clone(), val.clone());
+            }
             return (v, s);
         }
+        let c_callee = matches!(
+            self.project.modules[fv.module].lang,
+            crate::Language::C | crate::Language::Cpp
+        );
+        let globals_before = (key.is_some() && c_callee).then(|| self.c_globals.clone());
         let cutoffs = self.cutoffs;
         let before = std::mem::take(&mut self.c_outs);
         let result = self.run_function(fv, args, span);
@@ -2511,8 +2835,17 @@ impl<'p> Interp<'p> {
                 if self.memo.len() >= MAX_MEMO {
                     self.memo.clear();
                 }
+                let set: Rc<[(Rc<str>, Value)]> = match &globals_before {
+                    Some(b) => self
+                        .c_globals
+                        .iter()
+                        .filter(|(g, v)| b.get(*g) != Some(*v))
+                        .map(|(g, v)| (g.clone(), v.clone()))
+                        .collect(),
+                    None => Rc::from([]),
+                };
                 self.memo
-                    .insert(k, (result.0.clone(), result.1.clone(), outs));
+                    .insert(k, (result.0.clone(), result.1.clone(), outs, set));
             }
         }
         result
@@ -2527,12 +2860,14 @@ impl<'p> Interp<'p> {
         }
         let mut key = String::new();
         let route = self.current_route().map(|r| r.path.as_str()).unwrap_or("");
+        // A guessed call reports less (see `flag`): its result is its own.
         let _ = write!(
             key,
-            "{:p}/{}/{}/{}:{route}",
+            "{:p}/{}/{}{}/{}:{route}",
             Rc::as_ptr(&fv.def),
             fv.module,
             u8::from(self.quiet),
+            u8::from(self.guessed > 0),
             route.len()
         );
         // C functions read globals, which may hold user data by now.
@@ -2621,6 +2956,9 @@ impl<'p> Interp<'p> {
         }
         // C: what the function leaves in pointer and reference parameters
         // reaches the caller's variables.
+        // `char *p` is a copy of the caller's pointer: moving it moves only
+        // the callee's copy. Through `char **pp` the callee moves the caller's.
+        let mut by_value: Vec<bool> = Vec::new();
         let outs: Vec<(usize, Rc<str>)> = if matches!(
             self.project.modules[fv.module].lang,
             crate::Language::C | crate::Language::Cpp
@@ -2632,7 +2970,11 @@ impl<'p> Interp<'p> {
                     p.ty.as_deref()
                         .is_some_and(|t| t.contains(['*', '&', '[']) && !t.contains("const"))
                 })
-                .map(|(i, p)| (i, Rc::from(p.name.as_str())))
+                .map(|(i, p)| {
+                    let t = p.ty.as_deref().unwrap_or("");
+                    by_value.push(t.matches(['*', '[']).count() == 1 && !t.contains('&'));
+                    (i, Rc::from(p.name.as_str()))
+                })
                 .collect()
         } else {
             Vec::new()
@@ -2642,7 +2984,13 @@ impl<'p> Interp<'p> {
         frame.scope = Scope::of_body(&fv.def.body, fv.scope.clone());
         frame.self_name = self_name;
         frame.span = span;
-        frame.outs = outs.iter().map(|(_, n)| (n.clone(), None)).collect();
+        frame.outs = outs
+            .iter()
+            .map(|(_, n)| {
+                let entry = frame.env.as_ref().and_then(|e| e.get(n.as_ref())).cloned();
+                (n.clone(), None, entry)
+            })
+            .collect();
         self.frames.push(frame);
         // Defaults of missing parameters, evaluated in the callee's module.
         for p in &params[idx..] {
@@ -2674,8 +3022,15 @@ impl<'p> Interp<'p> {
         self.globals_at_exit(&frame);
         let positional: Vec<&ArgVal> = args.iter().filter(|a| a.name.is_none()).collect();
         let mut changed = Vec::new();
-        for ((i, _), (_, v)) in outs.iter().zip(frame.outs) {
+        for (((i, _), (_, v, _)), copy) in outs.iter().zip(frame.outs).zip(by_value) {
             if let (Some(v), Some(a)) = (v, positional.get(*i)) {
+                // `*dst++ = c` moves the callee's copy of the pointer only:
+                // the caller's still points where it did, at what the
+                // callee wrote.
+                let v = match &a.value {
+                    Value::Buf(ob) if copy => same_pointer(&v, ob),
+                    _ => v,
+                };
                 if v != a.value {
                     changed.push((*i, v));
                 }
@@ -2722,6 +3077,11 @@ impl<'p> Interp<'p> {
                     .unwrap_or_else(|| Value::Unknown(o.taint.clone()))
             }
             Value::Ref(path, t) => self.ref_attr(path, t, name),
+            // `p->field` where `p` points into an array of structs.
+            Value::Buf(b) => {
+                let content = b.content.clone();
+                self.get_attr(&content, name)
+            }
             Value::Class(cv) => {
                 if let Some((m, owner)) = self.find_method(cv, name) {
                     return Value::Func(Rc::new(FuncVal {
@@ -3000,6 +3360,9 @@ impl<'p> Interp<'p> {
     /// file. Definitions in the module itself, then in its directory win;
     /// up to four alternatives are kept when several files define the name.
     fn c_lookup(&mut self, name: &str) -> Option<Value> {
+        if self.model().library_over_project(name) {
+            return None;
+        }
         let index = self.c_index();
         let found = index.get(name)?;
         if let Some(c) = found.iter().find_map(|d| match d {
@@ -3415,6 +3778,52 @@ fn join_globals(
     a
 }
 
+/// Names a C function assigns that are neither its parameters nor its
+/// locals: the globals it sets directly.
+fn set_globals(def: &Function) -> Vec<String> {
+    fn walk(body: &[Stmt], locals: &mut HashSet<String>, out: &mut Vec<String>) {
+        for s in body {
+            match s {
+                Stmt::Declare { name, .. } => {
+                    locals.insert(name.clone());
+                }
+                Stmt::Assign {
+                    target: Target::Name(n),
+                    ..
+                } if !locals.contains(n) && !out.contains(n) => out.push(n.clone()),
+                Stmt::If { then, other, .. } => {
+                    walk(then, locals, out);
+                    walk(other, locals, out);
+                }
+                Stmt::Loop { body, .. } => walk(body, locals, out),
+                Stmt::Switch { cases, .. } => {
+                    for c in cases {
+                        walk(&c.body, locals, out);
+                    }
+                }
+                Stmt::Try {
+                    body,
+                    handlers,
+                    finally,
+                } => {
+                    walk(body, locals, out);
+                    for h in handlers {
+                        walk(h, locals, out);
+                    }
+                    walk(finally, locals, out);
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut locals: HashSet<String> = def.params.iter().map(|p| p.name.clone()).collect();
+    let mut out = Vec::new();
+    walk(&def.body, &mut locals, &mut out);
+    // A local declared after an assignment of the same name.
+    out.retain(|n| !locals.contains(n));
+    out
+}
+
 /// Adds out-parameter values of one more callee (see `Interp::c_outs`).
 fn merge_outs(into: &mut Vec<(usize, Value)>, more: &[(usize, Value)]) {
     for (i, v) in more {
@@ -3430,6 +3839,14 @@ fn c_place(e: &Expr) -> Option<Expr> {
     match e {
         Expr::Name(_) => Some(e.clone()),
         Expr::Attr(b, _) => c_place(b).map(|_| e.clone()),
+        // `read(fd, &len, 1)` into `u_char len` stores a byte.
+        Expr::Cast(t, x)
+            if matches!(**x, Expr::Name(_))
+                && crate::lower::c::small_int_range(t).is_some()
+                && !t.contains(['*', '[']) =>
+        {
+            Some(e.clone())
+        }
         Expr::Cast(_, x) => c_place(x),
         Expr::Bin(BinOp::Add | BinOp::Sub, l, _) => c_place(l),
         Expr::Index(b, _) => c_place(b),
@@ -3538,6 +3955,21 @@ fn fingerprint(v: &Value, out: &mut String) -> Option<()> {
             }
             out.push('|');
         }
+        Value::Range(lo, hi, t, r) => {
+            if t.is_tainted() {
+                return None;
+            }
+            let _ = write!(out, "R{lo}:{hi}:{r};");
+        }
+        Value::Buf(b) => {
+            let _ = write!(
+                out,
+                "B{}:{}:{:?}:{}:{}@{}/{}:{}<",
+                b.size, b.elem, b.off, b.len.0, b.len.1, b.module, b.at.line, b.at.column
+            );
+            fingerprint(&b.content, out)?;
+            out.push('>');
+        }
     }
     Some(())
 }
@@ -3573,6 +4005,7 @@ pub fn reaching(value: &Value, context: u32) -> Option<Taint> {
             None
         }
         Value::OneOf(alts) | Value::List(alts) => alts.iter().find_map(|a| reaching(a, context)),
+        Value::Buf(b) => reaching(&b.content, context),
         other => {
             let t = other.taint();
             t.reaches(context).then_some(t)
@@ -3676,14 +4109,17 @@ pub fn kind_of(v: &Value) -> Option<u8> {
     Some(match v {
         Value::None => 0,
         Value::Bool(_) => 1,
-        Value::Int(_) => 2,
+        Value::Int(_) | Value::Range(..) => 2,
         Value::Float(_) => 3,
         Value::Str(_) => 4,
         Value::List(_) | Value::Dict(_) => 5,
         Value::Obj(_) => 6,
-        Value::Func(_) | Value::Class(_) | Value::Unknown(_) | Value::Ref(..) | Value::OneOf(_) => {
-            return None
-        }
+        Value::Func(_)
+        | Value::Class(_)
+        | Value::Unknown(_)
+        | Value::Ref(..)
+        | Value::OneOf(_)
+        | Value::Buf(_) => return None,
     })
 }
 
@@ -3999,13 +4435,256 @@ pub fn join_env(a: Option<Env>, b: Option<Env>) -> Option<Env> {
 }
 
 /// Variables a loop was still changing become unknown, keeping their taint.
+/// A C buffer stays the same buffer, with what it holds unknown.
 fn widen_changed(mut state: Env, entry: Option<&Env>) -> Env {
     for (k, v) in state.iter_mut() {
-        if entry.and_then(|e| e.get(k)) != Some(v) {
-            *v = Value::Unknown(v.taint());
+        let before = entry.and_then(|e| e.get(k));
+        if before != Some(v) {
+            *v = match widened_buf(v, before) {
+                Some(b) => b,
+                None => Value::Unknown(v.taint()),
+            };
         }
     }
     state
+}
+
+/// A loop counter's values inside the loop and after it.
+struct Counter {
+    var: Rc<str>,
+    inside: Value,
+    exit: Value,
+    inside_or_exit: Value,
+}
+
+/// Variables a block assigns or declares, once per assignment. (`&x` is
+/// not marked in the IR, so writes through pointers are not seen.)
+fn assigned_names(body: &[Stmt], out: &mut Vec<String>) {
+    for s in body {
+        match s {
+            Stmt::Assign { target, .. } => target_names(target, out),
+            Stmt::Declare { name, .. } => out.push(name.clone()),
+            Stmt::If { then, other, .. } => {
+                assigned_names(then, out);
+                assigned_names(other, out);
+            }
+            Stmt::Loop { target, body, .. } => {
+                if let Some(t) = target {
+                    target_names(t, out);
+                }
+                assigned_names(body, out);
+            }
+            Stmt::Switch { cases, .. } => {
+                for c in cases {
+                    assigned_names(&c.body, out);
+                }
+            }
+            Stmt::Try {
+                body,
+                handlers,
+                finally,
+            } => {
+                assigned_names(body, out);
+                for h in handlers {
+                    assigned_names(h, out);
+                }
+                assigned_names(finally, out);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn target_names(t: &Target, out: &mut Vec<String>) {
+    match t {
+        Target::Name(n) => out.push(n.clone()),
+        Target::Tuple(ts) => ts.iter().for_each(|t| target_names(t, out)),
+        _ => {}
+    }
+}
+
+fn expr_names(e: &Expr, out: &mut Vec<String>) {
+    match e {
+        Expr::Name(n) => out.push(n.clone()),
+        Expr::Attr(b, _) => expr_names(b, out),
+        Expr::Index(b, k) => {
+            expr_names(b, out);
+            expr_names(k, out);
+        }
+        Expr::Bin(_, l, r) => {
+            expr_names(l, out);
+            expr_names(r, out);
+        }
+        Expr::Un(_, x) | Expr::Cast(_, x) => expr_names(x, out),
+        Expr::Call { args, .. } => args.iter().for_each(|a| expr_names(&a.value, out)),
+        _ => {}
+    }
+}
+
+/// +1 or -1 when the block's own statements step `var` by one, once.
+fn single_step(body: &[Stmt], var: &str) -> Option<i64> {
+    let mut found = None;
+    for s in body {
+        if let Stmt::Assign {
+            target: Target::Name(n),
+            value: Expr::Bin(op @ (BinOp::Add | BinOp::Sub), l, r),
+            ..
+        } = s
+        {
+            if n == var
+                && matches!(&**l, Expr::Name(x) if x == var)
+                && matches!(&**r, Expr::Lit(Const::Int(1)))
+            {
+                if found.is_some() {
+                    return None;
+                }
+                found = Some(if *op == BinOp::Add { 1 } else { -1 });
+            }
+        }
+    }
+    found
+}
+
+/// The bounds `x OP v` puts on `x`, for `v` in `lo..=hi`.
+fn below(op: BinOp, lo: i64, hi: i64) -> Option<Fact> {
+    Some(match op {
+        BinOp::Lt if hi != i64::MIN => {
+            Fact::Bounds(i64::MIN, hi.saturating_sub(1).min(i64::MAX - 1))
+        }
+        BinOp::LtE => Fact::Bounds(i64::MIN, hi),
+        BinOp::Gt if lo != i64::MAX => {
+            Fact::Bounds(lo.saturating_add(1).max(i64::MIN + 1), i64::MAX)
+        }
+        BinOp::GtE => Fact::Bounds(lo, i64::MAX),
+        _ => return None,
+    })
+}
+
+/// A C number after checks that bound it; None when they change nothing.
+/// `v` with its pointers into `orig`'s buffer moved back to where `orig`
+/// points.
+fn same_pointer(v: &Value, orig: &Rc<Buf>) -> Value {
+    match v {
+        Value::Buf(b) if b.same(orig) => Value::Buf(Rc::new(Buf {
+            off: orig.off,
+            ..(**b).clone()
+        })),
+        Value::OneOf(alts) => {
+            join_all(alts.iter().map(|a| same_pointer(a, orig))).unwrap_or_else(|| v.clone())
+        }
+        _ => v.clone(),
+    }
+}
+
+/// `CODE_ANALYSIS_TRACE=1` prints the call stack of every report, for
+/// debugging the analysis.
+fn trace_reports() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("CODE_ANALYSIS_TRACE").is_some())
+}
+
+/// A call of a C library function that ends the process.
+fn is_c_exit(e: &Expr) -> bool {
+    matches!(e, Expr::Call { func, .. } if matches!(&**func, Expr::Name(n)
+        if matches!(n.as_str(), "exit" | "_exit" | "_Exit" | "abort" | "quick_exit")))
+}
+
+/// `c` is C, where a pointer known not to be 0 is not NULL.
+fn narrow_numbers(cur: &Value, facts: &[Fact], c: bool) -> Option<Value> {
+    if !facts
+        .iter()
+        .any(|f| matches!(f, Fact::Bounds(..) | Fact::Not(_)))
+    {
+        return None;
+    }
+    let one = |v: &Value| -> Option<Value> {
+        let (mut lo, mut hi, t) = match v {
+            Value::Int(_) => return Some(v.clone()),
+            Value::Range(a, b, t, _) => (*a, *b, t.clone()),
+            Value::Unknown(t) => (i64::MIN, i64::MAX, t.clone()),
+            // Checked for NULL.
+            Value::Buf(b) if b.nullable && facts.iter().any(|f| matches!(f, Fact::Not(0))) => {
+                return Some(Value::Buf(Rc::new(Buf {
+                    nullable: false,
+                    ..(**b).clone()
+                })))
+            }
+            // `if (!p)`: what may be NULL is NULL there.
+            Value::Buf(b) if c && facts.iter().any(|f| matches!(f, Fact::Bounds(0, 0))) => {
+                return b.nullable.then_some(Value::None)
+            }
+            _ => return Some(v.clone()),
+        };
+        for _ in 0..2 {
+            for f in facts {
+                match f {
+                    Fact::Bounds(a, b) => {
+                        lo = lo.max(*a);
+                        hi = hi.min(*b);
+                    }
+                    Fact::Not(k) if *k == lo && lo != i64::MAX => lo += 1,
+                    Fact::Not(k) if *k == hi && hi != i64::MIN => hi -= 1,
+                    _ => {}
+                }
+            }
+        }
+        // A path no value takes.
+        (lo <= hi).then(|| Value::range(lo, hi, t))
+    };
+    let out = match cur {
+        Value::OneOf(alts) => {
+            let not_null = c && facts.iter().any(|f| matches!(f, Fact::Not(0)));
+            let kept: Vec<Value> = alts
+                .iter()
+                .filter(|a| !(not_null && matches!(a, Value::None)))
+                .filter(|a| match a.bounds() {
+                    Some((x, y)) if x == y => facts.iter().all(|f| match f {
+                        Fact::Bounds(lo, hi) => *lo <= x && x <= *hi,
+                        Fact::Not(k) => *k != x,
+                        _ => true,
+                    }),
+                    _ => true,
+                })
+                .filter_map(one)
+                .collect();
+            join_all(kept.into_iter())?
+        }
+        other => one(other)?,
+    };
+    (out != *cur).then_some(out)
+}
+
+/// A buffer, or one of several pointers into the same buffer, after a
+/// loop: the pointer stays where it was only if every path left it there.
+fn widened_buf(v: &Value, before: Option<&Value>) -> Option<Value> {
+    let alts = v.alternatives();
+    let first = match alts.first()? {
+        Value::Buf(b) => b.clone(),
+        _ => return None,
+    };
+    let mut off = first.off;
+    for a in &alts {
+        match a {
+            Value::Buf(b) if b.same(&first) => {
+                if b.off != off {
+                    off = None;
+                }
+            }
+            _ => return None,
+        }
+    }
+    if let Some(Value::Buf(b)) = before {
+        if b.same(&first) && b.off != off {
+            off = None;
+        }
+    }
+    Some(Value::Buf(Rc::new(Buf {
+        off,
+        len: (0, UNBOUNDED),
+        len_sure: false,
+        content: Value::Unknown(v.taint()),
+        ..(*first).clone()
+    })))
 }
 
 fn env_eq(a: &Option<Env>, b: &Option<Env>) -> bool {

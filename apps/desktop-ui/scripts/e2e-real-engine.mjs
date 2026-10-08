@@ -418,6 +418,23 @@ int main(void) {
     return 0;
 }
 `,
+  'cgi/name.c': `#include <stdlib.h>
+#include <string.h>
+
+int main(void) {
+    char name[16];
+    char safe[16];
+    char tag[4];
+    const char *q = getenv("QUERY_STRING");
+    if (!q)
+        return 1;
+    strcpy(name, q);
+    strncpy(safe, q, sizeof(safe) - 1);
+    safe[sizeof(safe) - 1] = 0;
+    strcpy(tag, "draft");
+    return name[0] + safe[0] + tag[0];
+}
+`,
   'tests/test_views.py': `import os
 from flask import request
 
@@ -432,6 +449,8 @@ const CODE_EXPECTED = [
   'sql-injection web/item.php:4',
   'path-traversal src/shop/Download.java:14',
   'command-injection cgi/report.c:8',
+  'buffer-overflow cgi/name.c:11',
+  'buffer-overflow cgi/name.c:14',
 ];
 const CODE_EXPECTED_TEST = 'command-injection tests/test_views.py:6';
 
@@ -492,7 +511,9 @@ async function checkCodeScan(page, base, shot, allowIpcError) {
     console.log(`  engine: ${found.join(', ')}; files ${report.files}, ${report.load_ms + report.analysis_ms} ms`);
     check(JSON.stringify([...found].sort()) === JSON.stringify([...CODE_EXPECTED].sort()),
       `engine reports exactly the planted flaws, not the safe calls or the test (${found.length})`);
-    check(report.findings.every((f) => f.trace.length > 0 && f.source && f.snippet),
+    // A string that does not fit is a flaw without any input.
+    const sourced = (f) => f.source || (f.rule === 'buffer-overflow' && f.line === 14);
+    check(report.findings.every((f) => f.trace.length > 0 && sourced(f) && f.snippet),
       'every finding has its source, data path and code line');
     check(report.test_files === 1, `the test file is counted as skipped (${report.test_files})`);
 
@@ -508,6 +529,15 @@ async function checkCodeScan(page, base, shot, allowIpcError) {
     check(await detail.isVisible(), 'a finding expands to its data path');
     check((await detail.locator('.code-trace li').count()) === report.findings.find((f) => f.file === 'web/item.php').trace.length,
       'the expanded path has every step the engine reported');
+
+    const overflow = page.locator('#codeTable tr.vuln-row[data-file="cgi/name.c"][data-line="11"]');
+    check((await overflow.textContent()).includes('Переполнение буфера') && (await overflow.textContent()).includes('getenv()'),
+      'a network-sized copy is shown as a buffer overflow from QUERY_STRING');
+    const constant = page.locator('#codeTable tr.vuln-row[data-file="cgi/name.c"][data-line="14"]');
+    await constant.click();
+    const constantDetail = await constant.locator('xpath=following-sibling::tr[1]').textContent();
+    check(constantDetail.includes('записывает 6 байт в буфер размером 4 байта'),
+      `a string longer than its array says by how much (${constantDetail.trim().split('\n')[0]})`);
 
     await page.selectOption('#codeRule', 'command-injection');
     const shown = await page.locator('#codeTable tr.vuln-row').count();

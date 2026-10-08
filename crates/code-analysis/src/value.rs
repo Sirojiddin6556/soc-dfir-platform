@@ -165,6 +165,55 @@ pub enum Value {
     Class(Rc<ClassVal>),
     /// One of several values, depending on the path taken.
     OneOf(Rc<Vec<Value>>),
+    /// A C integer known to lie in `lo..=hi`, such as a loop counter or a
+    /// checked index; `i64::MIN` and `i64::MAX` leave an end open.
+    ///
+    /// The flag is set when both ends are values the program certainly
+    /// takes (a counted loop's `i` in `for (i = 0; i < 10; i++)`), not
+    /// just limits of what it may take.
+    Range(i64, i64, Taint, bool),
+    /// A C array or a block of memory of known size.
+    Buf(Rc<Buf>),
+}
+
+/// The length of a string with no terminating NUL known.
+pub const UNBOUNDED: i64 = i64::MAX;
+
+/// A C array (`char b[50]`) or allocation (`malloc(100)`) and what it holds.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Buf {
+    /// Size in bytes.
+    pub size: i64,
+    /// Bytes per element: 1 for `char`, 4 for `wchar_t` and `int`.
+    pub elem: i64,
+    /// Where the pointer points, in elements from the start; None after
+    /// arithmetic by an unknown amount.
+    pub off: Option<i64>,
+    /// Length of the string it holds, in elements from the start: at
+    /// least `len.0` and at most `len.1` ([`UNBOUNDED`] when no NUL is
+    /// known to end it).
+    pub len: (i64, i64),
+    /// Both ends of `len` occur: the lengths of joined paths that each
+    /// knew theirs.
+    pub len_sure: bool,
+    pub content: Value,
+    /// Where it was declared or allocated.
+    pub module: usize,
+    pub at: Span,
+    /// An allocation not yet checked for NULL; an array never is NULL.
+    pub nullable: bool,
+}
+
+impl Buf {
+    /// Whether the string's shortest and longest lengths both occur.
+    pub fn len_is_sure(&self) -> bool {
+        self.len.0 == self.len.1 || self.len_sure
+    }
+
+    /// Whether two values point into the same array or allocation.
+    pub fn same(&self, other: &Buf) -> bool {
+        self.module == other.module && self.at == other.at && self.size == other.size
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -371,6 +420,8 @@ impl PartialEq for Value {
             (Obj(a), Obj(b)) => Rc::ptr_eq(a, b) || a == b,
             (Func(a), Func(b)) => Rc::ptr_eq(a, b) || a == b,
             (Class(a), Class(b)) => Rc::ptr_eq(a, b) || a == b,
+            (Range(a, b, x, r), Range(c, d, y, q)) => a == c && b == d && x == y && r == q,
+            (Buf(a), Buf(b)) => Rc::ptr_eq(a, b) || a == b,
             _ => false,
         }
     }
@@ -406,7 +457,8 @@ impl Value {
     /// Everything user-controlled this value holds.
     pub fn taint(&self) -> Taint {
         match self {
-            Value::Unknown(t) | Value::Ref(_, t) => t.clone(),
+            Value::Unknown(t) | Value::Ref(_, t) | Value::Range(_, _, t, _) => t.clone(),
+            Value::Buf(b) => b.content.taint(),
             Value::Str(segs) => segs.iter().fold(Taint::clean(), |acc, s| match s {
                 Seg::Dyn(t) => acc.union(t),
                 Seg::Lit(_) => acc,
@@ -435,9 +487,55 @@ impl Value {
         Value::Unknown(self.taint())
     }
 
+    /// An integer in `lo..=hi`: a constant when both ends meet, any
+    /// number when both are open.
+    pub fn range(lo: i64, hi: i64, taint: Taint) -> Value {
+        if lo == hi {
+            Value::Int(lo)
+        } else if lo == i64::MIN && hi == i64::MAX {
+            Value::Unknown(taint)
+        } else {
+            Value::Range(lo, hi, taint, false)
+        }
+    }
+
+    /// A range both of whose ends the program certainly reaches.
+    pub fn range_reached(lo: i64, hi: i64, taint: Taint) -> Value {
+        match Value::range(lo, hi, taint) {
+            Value::Range(lo, hi, t, _) => Value::Range(lo, hi, t, true),
+            other => other,
+        }
+    }
+
+    /// Whether the value's smallest and largest numbers are both reached:
+    /// constants, and ranges marked so.
+    pub fn reached(&self) -> bool {
+        match self {
+            Value::Int(_) | Value::Bool(_) => true,
+            Value::Range(_, _, _, r) => *r,
+            Value::OneOf(alts) => alts.iter().all(|a| a.reached()),
+            _ => false,
+        }
+    }
+
+    /// The smallest and largest integer the value may be.
+    pub fn bounds(&self) -> Option<(i64, i64)> {
+        match self {
+            Value::Int(i) => Some((*i, *i)),
+            Value::Bool(b) => Some((*b as i64, *b as i64)),
+            Value::Range(lo, hi, _, _) => Some((*lo, *hi)),
+            Value::OneOf(alts) => alts.iter().try_fold((i64::MAX, i64::MIN), |(lo, hi), a| {
+                let (l, h) = a.bounds()?;
+                Some((lo.min(l), hi.max(h)))
+            }),
+            _ => None,
+        }
+    }
+
     /// Literal text when the value is a fully known string.
     pub fn as_str(&self) -> Option<String> {
         match self {
+            Value::Buf(b) => b.content.as_str(),
             Value::Str(segs) => {
                 let mut out = String::new();
                 for s in segs.iter() {
@@ -488,6 +586,8 @@ impl Value {
                     .all(|a| a.truthy() == Some(first))
                     .then_some(first)
             }
+            Value::Range(lo, hi, _, _) => (*lo > 0 || *hi < 0).then_some(true),
+            Value::Buf(b) => (!b.nullable).then_some(true),
             Value::Unknown(_) | Value::Ref(..) => None,
         }
     }
@@ -500,6 +600,7 @@ impl Value {
             Value::Bool(b) => vec![Seg::Lit(if *b { "True" } else { "False" }.into())],
             Value::None => vec![Seg::Lit("None".into())],
             Value::Float(f) => vec![Seg::Lit(format!("{f:?}"))],
+            Value::Buf(b) => b.content.to_segs(),
             Value::OneOf(alts) if alts.iter().all(|a| a.as_str().is_some()) => {
                 vec![Seg::Dyn(self.taint().with_safe(numeric_like(alts)))]
             }
@@ -518,6 +619,7 @@ impl Value {
             Value::OneOf(alts) => {
                 join_all(alts.iter().map(|a| a.element())).unwrap_or_else(Value::clean)
             }
+            Value::Buf(b) => b.content.element(),
             other => Value::Unknown(other.taint()),
         }
     }
@@ -536,6 +638,11 @@ impl Value {
         match self {
             Value::Unknown(t) => Value::Unknown(f(t)),
             Value::Ref(p, t) => Value::Ref(p.clone(), f(t)),
+            Value::Range(lo, hi, t, r) => Value::Range(*lo, *hi, f(t), *r),
+            Value::Buf(b) => Value::Buf(Rc::new(Buf {
+                content: b.content.map_taint(f),
+                ..(**b).clone()
+            })),
             Value::Str(segs) => Value::Str(Rc::new(
                 segs.iter()
                     .map(|s| match s {
@@ -623,6 +730,29 @@ pub fn join(a: &Value, b: &Value) -> Value {
             Value::Dict(Rc::new(pairs))
         }
         (Value::Unknown(x), Value::Unknown(y)) => Value::Unknown(x.union(y)),
+        (Value::Range(..), Value::Range(..) | Value::Int(_))
+        | (Value::Int(_), Value::Range(..)) => match (a.bounds(), b.bounds()) {
+            (Some((lo1, hi1)), Some((lo2, hi2))) => {
+                let t = a.taint().union(&b.taint());
+                if a.reached() && b.reached() {
+                    Value::range_reached(lo1.min(lo2), hi1.max(hi2), t)
+                } else {
+                    Value::range(lo1.min(lo2), hi1.max(hi2), t)
+                }
+            }
+            _ => Value::Unknown(a.taint().union(&b.taint())),
+        },
+        (Value::Buf(x), Value::Buf(y))
+            if x.size == y.size && x.elem == y.elem && x.off == y.off =>
+        {
+            Value::Buf(Rc::new(Buf {
+                len: (x.len.0.min(y.len.0), x.len.1.max(y.len.1)),
+                len_sure: x.len_is_sure() && y.len_is_sure(),
+                content: join(&x.content, &y.content),
+                nullable: x.nullable || y.nullable,
+                ..(**x).clone()
+            }))
+        }
         _ => {
             let mut alts: Vec<Value> = Vec::new();
             for v in a.alternatives().into_iter().chain(b.alternatives()) {

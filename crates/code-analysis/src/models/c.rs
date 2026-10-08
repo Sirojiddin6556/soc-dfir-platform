@@ -14,7 +14,8 @@
 //! another party's data.
 
 use crate::interp::{args_taint, ArgVal, Fact, FactOn, Interp, Model};
-use crate::ir::{Function, Param, Span};
+use crate::ir::{BinOp, Function, Param, Span};
+use crate::models::cmem;
 use crate::rules::*;
 use crate::value::*;
 
@@ -29,8 +30,33 @@ fn a(args: &[ArgVal], i: usize) -> Value {
 
 /// Writes `value` where pointer argument `i` points.
 fn store(it: &mut Interp, args: &[ArgVal], i: usize, value: Value, span: Span) {
+    let len = cmem::str_len(&value);
+    store_len(it, args, i, value, len, span);
+}
+
+/// Writes `value`, a string of `len` elements, where pointer argument `i`
+/// points: into the array it points into when its size is known.
+fn store_len(
+    it: &mut Interp,
+    args: &[ArgVal],
+    i: usize,
+    value: Value,
+    len: (i64, i64),
+    span: Span,
+) {
+    if cmem::put(it, args, i, &value, len, span) {
+        return;
+    }
     if let Some(place) = args.get(i).and_then(|a| a.place.clone()) {
         it.assign_expr(&place, value, span);
+    }
+}
+
+/// What `recv(s, buf, n)` and `read(fd, buf, n)` return: -1 to n.
+fn received(n: &Value) -> Value {
+    match n.as_int() {
+        Some(n) if n >= 0 => Value::range(-1, n, Taint::clean()),
+        _ => number(Taint::clean()),
     }
 }
 
@@ -91,6 +117,7 @@ fn external(it: &Interp, what: &str) -> Value {
 /// The text a value holds, as a string value.
 fn text(v: &Value) -> Value {
     match v {
+        Value::Buf(b) => text(&b.content),
         Value::Str(_) => v.clone(),
         Value::None => Value::str(""),
         Value::Int(_) | Value::Float(_) | Value::Bool(_) => v.clone(),
@@ -129,7 +156,11 @@ fn runs_shell(path: &Value) -> bool {
 /// `execv(path, argv)`.
 fn exec_args(name: &str, args: &[ArgVal]) -> Vec<Value> {
     if name.contains('v') {
-        match a(args, 1) {
+        let argv = match a(args, 1) {
+            Value::Buf(b) => b.content.clone(),
+            other => other,
+        };
+        match argv {
             Value::List(items) => items.to_vec(),
             other => vec![other],
         }
@@ -266,6 +297,25 @@ impl Model for C {
     }
 
     fn coerce(&self, it: &mut Interp, ty: &str, value: Value) -> Value {
+        // `(u_char) c`, `u_char ch = *p;`: an integer of that type.
+        if !ty.contains(['*', '[', '&', '(']) {
+            if let Some((lo, hi)) = crate::lower::c::small_int_range(ty) {
+                return cmem::as_small_int(it, &value, lo, hi);
+            }
+            if let Value::Buf(b) = &value {
+                if crate::lower::c::is_int_type(ty) {
+                    return cmem::element(it, b);
+                }
+            }
+            if let Value::Int(k) = value {
+                if (-(1 << 32)..0).contains(&k) && crate::lower::c::is_unsigned32(ty) {
+                    return Value::Int(k + (1 << 32));
+                }
+            }
+        }
+        if let Value::Buf(b) = &value {
+            return cmem::retyped(it, ty, b);
+        }
         if matches!(value, Value::List(_) | Value::Dict(_)) {
             return initialized(it, ty, value);
         }
@@ -345,8 +395,9 @@ impl Model for C {
         }
     }
 
-    fn index(&self, _it: &mut Interp, base: &Value, _key: &Value) -> Option<Value> {
+    fn index(&self, it: &mut Interp, base: &Value, key: &Value) -> Option<Value> {
         match base {
+            Value::Buf(b) => Some(cmem::read_at(it, b, key)),
             Value::Ref(..) | Value::Unknown(_) => Some(Value::Unknown(base.taint())),
             _ => None,
         }
@@ -354,13 +405,25 @@ impl Model for C {
 
     fn store_index(
         &self,
-        _it: &mut Interp,
+        it: &mut Interp,
         base: &Value,
-        _key: &Value,
+        key: &Value,
         value: &Value,
-        _span: Span,
+        span: Span,
     ) -> Option<Value> {
         match base {
+            Value::Buf(b) => Some(cmem::write_at(it, b, key, value, span)),
+            Value::OneOf(alts) if alts.iter().any(|a| matches!(a, Value::Buf(_))) => {
+                let vals: Vec<Value> = alts
+                    .iter()
+                    .map(|a| {
+                        self.store_index(it, a, key, value, span)
+                            .or_else(|| crate::interp::store_index(a, key, value.clone()))
+                            .unwrap_or_else(|| a.clone())
+                    })
+                    .collect();
+                Some(join_all(vals.into_iter()).unwrap_or_else(Value::clean))
+            }
             Value::List(_) | Value::Dict(_) => None,
             // A character written into a string, or an element into an
             // array or container the analysis does not track by element.
@@ -369,8 +432,19 @@ impl Model for C {
         }
     }
 
+    fn binop(&self, _it: &mut Interp, op: BinOp, l: &Value, r: &Value) -> Option<Value> {
+        cmem::binop(op, l, r)
+    }
+
     fn quiet_entries(&self) -> bool {
         true
+    }
+
+    /// Projects that bring their own copy of a C library function
+    /// (OpenSSH's `openbsd-compat/strlcat.c`) get the library's
+    /// behaviour: the copy's pointer loops are beyond the analysis.
+    fn library_over_project(&self, name: &str) -> bool {
+        LIBC_OVER_PROJECT.contains(&name)
     }
 
     fn facts_safety(&self, facts: &[Fact], _value: &Value) -> u32 {
@@ -483,6 +557,7 @@ fn initialized(it: &mut Interp, ty: &str, value: Value) -> Value {
 
 fn function(it: &mut Interp, name: &str, args: &[ArgVal], span: Span) -> Value {
     let a0 = a(args, 0);
+    cmem::check_call(it, name, args, span);
     // printf family: the format must be a fixed string.
     if let Some((fi, into_buffer)) = format_index(name) {
         let fmt = a(args, fi);
@@ -490,7 +565,17 @@ fn function(it: &mut Interp, name: &str, args: &[ArgVal], span: Span) -> Value {
         if into_buffer {
             let rest = args.get(fi + 1..).unwrap_or(&[]);
             let result = format_result(&fmt, rest);
-            store(it, args, 0, result, span);
+            let (lo, hi, _) = cmem::format_len(&fmt, rest);
+            // `snprintf` stops one short of its size.
+            let cap = match fi {
+                2 => a(args, 1).as_int().map(|n| n - 1),
+                _ => None,
+            };
+            let len = match cap {
+                Some(c) if c >= 0 => (lo.min(c), hi.min(c)),
+                _ => (lo, hi),
+            };
+            store_len(it, args, 0, result, len, span);
         }
         return Value::clean();
     }
@@ -514,8 +599,8 @@ fn function(it: &mut Interp, name: &str, args: &[ArgVal], span: Span) -> Value {
             } else {
                 Value::Unknown(it.source(&format!("{name}()")))
             };
-            store(it, args, 1, v, span);
-            number(Taint::clean())
+            store_len(it, args, 1, v, (0, UNBOUNDED), span);
+            received(&a(args, 2))
         }
         "fgets" | "fgetws" | "gets" | "_getws" | "gets_s" => {
             let stream = if matches!(name, "gets" | "_getws" | "gets_s") {
@@ -524,13 +609,20 @@ fn function(it: &mut Interp, name: &str, args: &[ArgVal], span: Span) -> Value {
                 a(args, 2)
             };
             let v = read_from(it, &stream, name);
-            store(it, args, 0, v.clone(), span);
+            let len = match a(args, 1).as_int() {
+                Some(n) if n > 0 && !matches!(name, "gets" | "_getws") => (0, n - 1),
+                _ => (0, UNBOUNDED),
+            };
+            store_len(it, args, 0, v.clone(), len, span);
             v
         }
         "fread" => {
             let v = read_from(it, &a(args, 3), name);
-            store(it, args, 0, v, span);
-            number(Taint::clean())
+            store_len(it, args, 0, v, (0, UNBOUNDED), span);
+            match a(args, 2).as_int() {
+                Some(n) if n >= 0 => Value::range(0, n, Taint::clean()),
+                _ => number(Taint::clean()),
+            }
         }
         "getline" | "getdelim" | "__getline" => {
             // C `getline(&line, &n, stream)` and C++ `getline(stream, s)`.
@@ -599,7 +691,7 @@ fn function(it: &mut Interp, name: &str, args: &[ArgVal], span: Span) -> Value {
             } else {
                 a(args, 1)
             };
-            store(it, args, 0, text(&src), span);
+            store_len(it, args, 0, text(&src), cmem::copy_len(name, args), span);
             text(&src)
         }
         "strcat" | "wcscat" | "strncat" | "wcsncat" | "strcat_s" | "strncat_s" | "wcscat_s"
@@ -610,23 +702,43 @@ fn function(it: &mut Interp, name: &str, args: &[ArgVal], span: Span) -> Value {
                 a(args, 1)
             };
             let joined = concat(&[text(&a0), text(&src)]);
-            store(it, args, 0, joined.clone(), span);
+            store_len(
+                it,
+                args,
+                0,
+                joined.clone(),
+                cmem::copy_len(name, args),
+                span,
+            );
             joined
         }
         "strdup" | "_strdup" | "wcsdup" | "_wcsdup" | "strndup" | "strchr" | "strrchr"
         | "wcschr" | "wcsrchr" | "strstr" | "wcsstr" | "strpbrk" | "wcspbrk" | "strtok"
         | "wcstok" | "strtok_r" | "memchr" | "basename" | "dirname" => text(&a0),
-        "strlen" | "wcslen" | "strnlen" | "wcsnlen" | "strcmp" | "strncmp" | "wcscmp"
-        | "wcsncmp" | "strcasecmp" | "strncasecmp" | "memcmp" | "strspn" | "strcspn" | "wcsspn"
-        | "wcscspn" | "isdigit" | "isalpha" | "isalnum" | "isspace" | "isupper" | "islower"
-        | "iswdigit" | "toupper" | "tolower" | "towupper" | "towlower" => Value::clean(),
+        "strlen" | "wcslen" | "lstrlenA" | "lstrlenW" => cmem::strlen(&a0),
+        "strnlen" | "wcsnlen" => match (cmem::strlen(&a0), a(args, 1).as_int()) {
+            (len, Some(n)) => match len.bounds() {
+                Some((lo, hi)) => Value::range(lo.min(n), hi.min(n), len.taint()),
+                None => Value::range(0, n, len.taint()),
+            },
+            (len, None) => len,
+        },
+        "strcmp" | "strncmp" | "wcscmp" | "wcsncmp" | "strcasecmp" | "strncasecmp" | "memcmp"
+        | "strspn" | "strcspn" | "wcsspn" | "wcscspn" | "isdigit" | "isalpha" | "isalnum"
+        | "isspace" | "isupper" | "islower" | "iswdigit" | "toupper" | "tolower" | "towupper"
+        | "towlower" => Value::clean(),
         "atoi" | "atol" | "atoll" | "atof" | "strtol" | "strtoul" | "strtoll" | "strtoull"
         | "strtod" | "strtof" | "wcstol" | "wcstoul" | "_wtoi" | "_wtol" | "abs" | "labs" => {
             number(a0.taint())
         }
         "memset" | "wmemset" | "bzero" | "explicit_bzero" | "SecureZeroMemory" => {
             if !matches!(a0, Value::Obj(_)) {
-                store(it, args, 0, Value::clean(), span);
+                let len = if name.ends_with("memset") {
+                    cmem::memset_len(name, args)
+                } else {
+                    (0, 0)
+                };
+                store_len(it, args, 0, Value::clean(), len, span);
             }
             Value::clean()
         }
@@ -644,10 +756,24 @@ fn function(it: &mut Interp, name: &str, args: &[ArgVal], span: Span) -> Value {
         }
         "vector" | "list" | "deque" | "map" | "set" | "unordered_map" | "unordered_set"
         | "multimap" => Value::Unknown(args_taint(args)),
-        "__c_new_array" | "malloc" | "calloc" | "_alloca" | "alloca" | "operator new" => {
+        "__c_array" => cmem::array(it, args, span),
+        // `char *p[N];`: N pointers, so `p[2] = buf` keeps what it points to.
+        "__c_slots" => {
+            if let (Value::Unknown(t), Some(n)) = (&a0, a(args, 1).as_int()) {
+                if !t.is_tainted() && (1..=64).contains(&n) {
+                    let slots = Value::list(vec![Value::clean(); n as usize]);
+                    store(it, args, 0, slots, span);
+                }
+            }
             Value::clean()
         }
-        "realloc" => Value::Unknown(a0.taint()),
+        "__c_new_array" | "malloc" | "calloc" | "_alloca" | "alloca" | "operator new"
+        | "__builtin_alloca" | "valloc" => {
+            cmem::alloc(it, name, args, span).unwrap_or_else(Value::clean)
+        }
+        "realloc" => {
+            cmem::alloc(it, name, args, span).unwrap_or_else(|| Value::Unknown(a0.taint()))
+        }
         // `delete p` and the end of the block declaring an object run its
         // destructor.
         "__c_delete" | "__c_destroy" => {
@@ -743,8 +869,57 @@ fn function(it: &mut Interp, name: &str, args: &[ArgVal], span: Span) -> Value {
             store(it, args, 0, v.clone(), span);
             v
         }
-        "sizeof" | "alignof" | "offsetof" | "time" | "rand" | "random" | "getpid" => Value::clean(),
+        // `sizeof(T)` of a struct or class of the project.
+        "sizeof" => {
+            // `sizeof(wchar_t)` and `sizeof(S)` parse as a name in parentheses.
+            let ty = match &a0 {
+                Value::Ref(p, _) => Some(p.to_string()),
+                Value::Class(cv) => Some(cv.def.name.clone()),
+                other => other.as_str(),
+            };
+            ty.and_then(|t| cmem::type_size(it, &t))
+                .map(Value::Int)
+                .unwrap_or_else(Value::clean)
+        }
+        "alignof" | "offsetof" | "time" | "rand" | "random" | "getpid" => Value::clean(),
         // Anything else: its result depends on its arguments.
         _ => Value::Unknown(args_taint(args)),
     }
 }
+
+/// C library functions the model knows; see `Model::library_over_project`.
+const LIBC_OVER_PROJECT: &[&str] = &[
+    "bzero",
+    "explicit_bzero",
+    "memchr",
+    "memcmp",
+    "memcpy",
+    "memmove",
+    "memset",
+    "snprintf",
+    "sprintf",
+    "asprintf",
+    "vasprintf",
+    "vsnprintf",
+    "strcat",
+    "strchr",
+    "strcpy",
+    "strcspn",
+    "strdup",
+    "strlcat",
+    "strlcpy",
+    "strlen",
+    "strncat",
+    "strncpy",
+    "strndup",
+    "strnlen",
+    "strpbrk",
+    "strrchr",
+    "strspn",
+    "strstr",
+    "strtok_r",
+    "wcslen",
+    "wcsnlen",
+    "wcslcat",
+    "wcslcpy",
+];

@@ -9,7 +9,10 @@
 //! TPR - FPR over test cases, also split by input and by flow variant.
 //!
 //! cargo run --release -p code-analysis --example juliet -- DIR [--cwe CWE78]
-//!     [--no-external] [--misses] [--fps] [--show NAME] [--limit N]
+//!     [--no-external] [--misses] [--fps] [--show NAME] [--limit N] [--other]
+//!
+//! `--other` lists findings of other rules, which in a test case written
+//! for one flaw are false positives unless they point into a `bad` function.
 
 use code_analysis::ir::{Function, Stmt};
 use code_analysis::project::Project;
@@ -26,6 +29,8 @@ fn rule_for(cwe: &str) -> Option<&'static str> {
         "CWE134" => "format-string",
         "CWE23" | "CWE36" => "path-traversal",
         "CWE90" => "ldap-injection",
+        "CWE121" | "CWE122" | "CWE124" => "buffer-overflow",
+        "CWE126" | "CWE127" => "buffer-overread",
         _ => return None,
     })
 }
@@ -63,6 +68,7 @@ fn main() {
         .unwrap_or(usize::MAX);
     let misses = flag("--misses");
     let fps = flag("--fps");
+    let other = flag("--other");
 
     let support: Vec<(String, String)> = ["io.c", "std_testcase.h", "std_testcase_io.h"]
         .iter()
@@ -147,6 +153,12 @@ fn main() {
                     for f in &report.findings {
                         let func = enclosing_function(&project, &f.file, f.line);
                         let side = side_of(&func, &f.file);
+                        if other && f.rule != rule {
+                            out.lines.push(format!(
+                                "OTHER {:?} {} {}:{} {}",
+                                side, f.rule, f.file, f.line, f.message
+                            ));
+                        }
                         if f.rule == rule {
                             match side {
                                 Side::Bad => out.bad_hit = true,
@@ -218,6 +230,11 @@ fn main() {
         }
         if fps && o.good_hit {
             println!("FP   {}/{first}", c.cwe);
+        }
+        if other && show.is_none() {
+            for l in o.lines.iter().filter(|l| l.starts_with("OTHER")) {
+                println!("{l}");
+            }
         }
         if show.is_some() {
             println!(

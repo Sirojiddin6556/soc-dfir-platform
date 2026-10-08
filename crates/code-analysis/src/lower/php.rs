@@ -12,7 +12,7 @@
 //! walks `__php_pairs($a)`, `include` and `require` call `include`, and
 //! output (`echo`, `print`, backticks) calls `echo` or `shell_exec`.
 
-use super::{children, named_children, span, text};
+use super::{children, named_children, span, test_span, text};
 use crate::ir::*;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -258,6 +258,7 @@ impl<'s> Lower<'s> {
                     iter: None,
                     test: Some(test),
                     body,
+                    span: test_span(node),
                 });
             }
             "do_statement" => {
@@ -269,6 +270,7 @@ impl<'s> Lower<'s> {
                     iter: None,
                     test: Some(test),
                     body,
+                    span: test_span(node),
                 });
             }
             "for_statement" => {
@@ -298,6 +300,7 @@ impl<'s> Lower<'s> {
                     iter: None,
                     test: Some(test),
                     body,
+                    span: test_span(node),
                 });
             }
             "foreach_statement" => out.push(self.foreach(node)),
@@ -648,7 +651,12 @@ impl<'s> Lower<'s> {
                 .collect()
         };
         let other = self.else_chain(&alts);
-        Stmt::If { test, then, other }
+        Stmt::If {
+            test,
+            then,
+            other,
+            span: test_span(node),
+        }
     }
 
     fn else_chain(&self, alts: &[Node]) -> Vec<Stmt> {
@@ -663,6 +671,7 @@ impl<'s> Lower<'s> {
                     test,
                     then,
                     other: self.else_chain(rest),
+                    span: test_span(*first),
                 }]
             }
             _ => self.body_of(*first),
@@ -681,6 +690,7 @@ impl<'s> Lower<'s> {
                 iter: None,
                 test: None,
                 body,
+                span: span(node),
             };
         };
         let subject_e = self.expr(*subject);
@@ -703,6 +713,7 @@ impl<'s> Lower<'s> {
             iter: Some(iter),
             test: None,
             body,
+            span: sp,
         }
     }
 

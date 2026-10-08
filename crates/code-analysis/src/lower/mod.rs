@@ -19,6 +19,13 @@ pub(crate) fn span(node: Node) -> Span {
     }
 }
 
+/// Where a statement's test is: its `condition` field, else the statement.
+pub(crate) fn test_span(node: Node) -> Span {
+    node.child_by_field_name("condition")
+        .map(span)
+        .unwrap_or_else(|| span(node))
+}
+
 pub(crate) fn text<'a>(node: Node, src: &'a str) -> &'a str {
     src.get(node.byte_range()).unwrap_or("")
 }

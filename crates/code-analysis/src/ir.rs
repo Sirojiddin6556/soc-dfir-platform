@@ -139,10 +139,12 @@ pub enum Stmt {
         span: Span,
     },
     Expr(Expr, Span),
+    /// `span` is where the test is, for findings in it.
     If {
         test: Expr,
         then: Vec<Stmt>,
         other: Vec<Stmt>,
+        span: Span,
     },
     /// `for target in iter` (iter set) or `while test` (test set).
     Loop {
@@ -150,6 +152,7 @@ pub enum Stmt {
         iter: Option<Expr>,
         test: Option<Expr>,
         body: Vec<Stmt>,
+        span: Span,
     },
     Switch {
         subject: Expr,

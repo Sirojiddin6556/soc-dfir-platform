@@ -85,8 +85,13 @@ fn stmt(s: &Stmt, ind: usize, out: &mut String) {
             out,
         ),
         Stmt::Expr(e, span) => line(ind, &format!("{}  # {}", expr(e), span.line), out),
-        Stmt::If { test, then, other } => {
-            line(ind, &format!("if {}:", expr(test)), out);
+        Stmt::If {
+            test,
+            then,
+            other,
+            span,
+        } => {
+            line(ind, &format!("if {}:  # {}", expr(test), span.line), out);
             block(then, ind + 1, out);
             if !other.is_empty() {
                 line(ind, "else:", out);
@@ -98,10 +103,15 @@ fn stmt(s: &Stmt, ind: usize, out: &mut String) {
             iter,
             test,
             body,
+            span,
         } => {
             match (target, iter, test) {
-                (Some(t), Some(i), _) => line(ind, &format!("for {} in {}:", tgt(t), expr(i)), out),
-                (_, _, Some(t)) => line(ind, &format!("while {}:", expr(t)), out),
+                (Some(t), Some(i), _) => line(
+                    ind,
+                    &format!("for {} in {}:  # {}", tgt(t), expr(i), span.line),
+                    out,
+                ),
+                (_, _, Some(t)) => line(ind, &format!("while {}:  # {}", expr(t), span.line), out),
                 _ => line(ind, "loop:", out),
             }
             block(body, ind + 1, out);

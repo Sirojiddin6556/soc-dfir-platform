@@ -136,7 +136,9 @@ impl<'a> Found<'a> {
             }
             Stmt::Expr(e, _) | Stmt::Raw(e, _) => self.expr(e, func),
             Stmt::Return(Some(e), _) => self.expr(e, func),
-            Stmt::If { test, then, other } => {
+            Stmt::If {
+                test, then, other, ..
+            } => {
                 self.expr(test, func);
                 for s in then.iter().chain(other) {
                     self.stmt(s, func);

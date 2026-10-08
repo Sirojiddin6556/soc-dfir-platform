@@ -8,7 +8,7 @@
 //! `this.field` or `Class.field`, a call to a method of the class becomes
 //! `this.method(...)` or `Class.method(...)`.
 
-use super::{children, named_children, span, text};
+use super::{children, named_children, span, test_span, text};
 use crate::ir::*;
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
@@ -744,7 +744,12 @@ impl<'s> Lower<'s> {
                 let test = self.cond(node.child_by_field_name("condition"));
                 let then = self.block_of(node.child_by_field_name("consequence"));
                 let other = self.block_of(node.child_by_field_name("alternative"));
-                out.push(Stmt::If { test, then, other });
+                out.push(Stmt::If {
+                    test,
+                    then,
+                    other,
+                    span: test_span(node),
+                });
             }
             "while_statement" | "do_statement" => {
                 let test = self.cond(node.child_by_field_name("condition"));
@@ -754,6 +759,7 @@ impl<'s> Lower<'s> {
                     iter: None,
                     test: Some(test),
                     body,
+                    span: test_span(node),
                 });
             }
             "for_statement" => {
@@ -781,6 +787,7 @@ impl<'s> Lower<'s> {
                     iter: None,
                     test: Some(test),
                     body,
+                    span: test_span(node),
                 });
             }
             "enhanced_for_statement" => {
@@ -805,6 +812,7 @@ impl<'s> Lower<'s> {
                     iter: Some(iter),
                     test: None,
                     body,
+                    span: span(node),
                 });
             }
             "switch_expression" => out.push(self.switch(node)),
