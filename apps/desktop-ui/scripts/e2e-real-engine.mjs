@@ -496,6 +496,9 @@ async function main() {
     await page.reload();
     await page.waitForFunction(() => /^[0-9a-f-]{36}$/.test(document.getElementById('caseId').textContent.trim()), null, { timeout: 15000 });
     check(await page.isHidden('#authOverlay'), 'reload keeps the session');
+    // Let the app finish loading first: a call still in flight when the
+    // session ends comes back 401, which is not what this step tests.
+    await page.waitForLoadState('networkidle');
     await page.click('#logoutButton');
     await page.waitForSelector('#authOverlay:not([hidden])');
     check((await page.textContent('#authTitle')).includes('Вход'), 'logout shows the login form');
