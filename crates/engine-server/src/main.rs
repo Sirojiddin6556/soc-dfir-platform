@@ -28,6 +28,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     //   SOC_UI_DIR         desktop UI assets, default ./apps/desktop-ui
     //   SOC_ALLOWED_HOSTS  extra Host names to accept (reverse proxy setups)
     //   SOC_NO_BROWSER=1   do not open a browser window on start
+    //   SOC_VULNDB_OFFLINE_DIR  import vulnerability feeds from this directory
+    //                      instead of downloading them (air-gapped installs)
     let base_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let data_dir = env_path("SOC_DATA_DIR").unwrap_or_else(|| base_dir.join("data"));
     let ui_dir = env_path("SOC_UI_DIR").unwrap_or_else(|| base_dir.join("apps").join("desktop-ui"));

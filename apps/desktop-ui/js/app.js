@@ -4,6 +4,7 @@ import { OperationsSpace } from './operations/operations.js';
 import { EvidenceSpace } from './evidence/evidence.js';
 import { RangeSpace } from './range/range.js';
 import { SystemSpace } from './system/system.js';
+import { VulnerabilitySpace } from './vulns/vulns.js';
 import { TeamPresence } from './collaboration/presence.js';
 import { CtfApp } from './ctf/ctf_app.js';
 import { ctfIpc } from './ctf/ctf_ipc.js';
@@ -21,6 +22,7 @@ class SocDfirApplication {
       document.getElementById('nav-ctf-workspace')?.click();
     });
     this.system = new SystemSpace(this.ipc);
+    this.vulns = new VulnerabilitySpace(this.ipc);
     this.ctfApp = new CtfApp({
       ipc: ctfIpc,
       onNavigateLegacy: (caseId) => this.switchCase(caseId)
@@ -171,6 +173,8 @@ class SocDfirApplication {
         this.range.render(altContainer);
       } else if (space === 'system') {
         this.system.render(altContainer);
+      } else if (space === 'vulns') {
+        this.vulns.render(altContainer);
       }
     }
   }

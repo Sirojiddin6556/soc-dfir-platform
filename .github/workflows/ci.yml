@@ -66,9 +66,10 @@ jobs:
 
   e2e:
     # Starts the real engine-server binary and drives the real UI in Chromium:
-    # first-run setup, login, evidence ingest, live host collection, every
-    # space, with zero console/page errors allowed. On Windows this exercises
-    # the PowerShell collectors against a real Windows host.
+    # first-run setup, login, evidence ingest, live host collection, a real
+    # vulnerability database download and package CVE scan, every space, with
+    # zero console/page errors allowed. On Windows this exercises the
+    # PowerShell collectors against a real Windows host.
     name: Real-engine browser E2E (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
@@ -109,6 +110,8 @@ jobs:
         working-directory: apps/desktop-ui
         env:
           E2E_SCREENSHOTS: ${{ github.workspace }}/e2e-screenshots
+          # Runners have open internet: OSV, CISA KEV and FIRST EPSS must all load.
+          E2E_REQUIRE_ALL_FEEDS: "1"
         run: |
           mkdir -p "$E2E_SCREENSHOTS"
           node scripts/e2e-real-engine.mjs

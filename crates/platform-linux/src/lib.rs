@@ -167,6 +167,56 @@ pub fn collect_host_snapshot() -> HostSnapshot {
     }
 }
 
+/// Installed distribution packages of this machine, read fresh from the
+/// package manager without the rest of the host snapshot -- what package
+/// vulnerability scanning needs after every upgrade.
+#[derive(Debug, Clone, Default)]
+pub struct PackageInventory {
+    /// "Ubuntu 24.04.3 LTS (x86_64)"
+    pub os_name: String,
+    /// OSV ecosystem of the distribution ("Ubuntu:24.04:LTS"), when known.
+    pub ecosystem: Option<String>,
+    pub packages: Vec<SoftwareObservation>,
+    pub errors: Vec<String>,
+}
+
+pub fn collect_package_inventory() -> PackageInventory {
+    #[cfg(target_os = "linux")]
+    {
+        let root = std::path::Path::new("/");
+        let mut errors = Vec::new();
+        let os_release = os::live::read_os_release(root).unwrap_or_else(|| {
+            errors.push("/etc/os-release не найден: дистрибутив не определён".to_string());
+            os::OsRelease::default()
+        });
+        let packages = software::live::collect(root, &os_release, &mut errors);
+        PackageInventory {
+            os_name: format!(
+                "{} ({})",
+                os_release.display_name(),
+                os::live::machine_arch()
+            ),
+            ecosystem: os_release.osv_ecosystem(),
+            packages,
+            errors,
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let os_name = match std::env::consts::OS {
+            "windows" => "Windows",
+            "macos" => "macOS",
+            other => other,
+        };
+        PackageInventory {
+            os_name: os_name.to_string(),
+            ecosystem: None,
+            packages: Vec::new(),
+            errors: vec!["Список пакетов dpkg/rpm собирается только на Linux".to_string()],
+        }
+    }
+}
+
 #[cfg(target_os = "linux")]
 mod live {
     use super::*;
