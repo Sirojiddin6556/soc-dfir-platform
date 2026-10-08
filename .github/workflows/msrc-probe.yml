@@ -11,13 +11,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Security Update Guide API format
+        continue-on-error: true
         shell: bash
         run: |
+          set +e +o pipefail
           S='https://api.msrc.microsoft.com/sug/v2.0/en-US/affectedProduct'
           curl -sS -H 'Accept: application/json' "$S?%24filter=cveNumber%20eq%20%27CVE-2024-43572%27" | jq -c '.value[0]'
           for f in "productId%20eq%2012436%20and%20releaseDate%20gt%202026-08-01T00%3A00%3A00Z" "productId%20eq%20%2712436%27" "product%20eq%20%27Windows%20Server%202025%27%20and%20releaseDate%20gt%202026-08-01T00%3A00%3A00Z"; do
             echo "--- filter $f"
-            curl -sS -H 'Accept: application/json' -w '\nHTTP %{http_code}\n' "$S?%24filter=$f" | head -c 1500; echo
+            curl -sS -H 'Accept: application/json' -w '\nHTTP %{http_code}\n' "$S?%24filter=$f" > sug.txt; head -c 1500 sug.txt; echo
           done
       - name: Dump CVRF documents
         shell: bash
