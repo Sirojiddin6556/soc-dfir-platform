@@ -220,6 +220,7 @@ const { WriteupView } = await load('ctf/components/writeup_view.js');
 const { TerminalView } = await load('ctf/components/terminal_view.js');
 const { RecipeBuilder } = await load('ctf/components/recipe_builder.js');
 const { CtfApp } = await load('ctf/ctf_app.js');
+const { CodeSpace } = await load('code/code.js');
 
 // ---------------------------------------------------------------------------
 // Harness
@@ -388,6 +389,55 @@ await sink('operations case grid (data-case attr, title, status)', async (v) => 
   const root = freshEl();
   await ops.render(root);
   return root.querySelector('#opsCaseGrid').innerHTML;
+});
+
+console.log('\n=== Code analysis ===');
+// File names, code snippets and source notes come from the scanned project,
+// which is exactly the code an attacker controls.
+const codeStatus = (v, extra = {}) => ({
+  running: false, path: v, external_sources: true, include_tests: false,
+  started_at: '2026-01-01T00:00:00Z', finished_at: '2026-01-01T00:00:05Z', error: null,
+  report: {
+    files: v, lines: v, languages: [[v, v]], skipped: [[v, v]], parse_errors: [v], test_files: v,
+    load_ms: v, analysis_ms: v,
+    findings: [{
+      rule: v, cwe: v, severity: v, title: v, message: v, file: v, line: v, column: v, snippet: v,
+      source: { file: v, line: v, column: v, note: v },
+      trace: [{ file: v, line: v, column: v, note: v }],
+      other_sources: [{ file: v, line: v, column: v, note: v }]
+    }]
+  },
+  ...extra
+});
+async function codeSpace(status, setup = () => {}) {
+  const space = new CodeSpace({ call: async () => status });
+  setup(space);
+  const root = freshEl();
+  await space.render(root);
+  return { space, root };
+}
+await sink('code analysis findings (file, snippet, trace, rule select, parse errors)', async (v) => {
+  const { root } = await codeSpace(codeStatus(v));
+  return root.querySelector('#codeResultPanel').innerHTML;
+});
+await sink('code analysis search box value attr', async (v) => {
+  // The findings carry the same value, so the filter keeps the row in both renders.
+  const { space, root } = await codeSpace(codeStatus(v));
+  space.query = v;
+  space.renderResult();
+  return root.querySelector('#codeResultPanel').innerHTML;
+});
+await sink('code analysis form (remembered path in value attr)', async (v) => {
+  const { root } = await codeSpace({ running: false, report: null }, (space) => { space.path = v; });
+  return root.innerHTML;
+});
+await sink('code analysis progress (running path, engine error)', async (v) => {
+  const { space, root } = await codeSpace(codeStatus(v, { running: true, report: null }));
+  space.stopPolling();
+  const running = root.querySelector('#codeProgress').innerHTML;
+  space.status = codeStatus(v, { error: v, report: null });
+  space.renderProgress();
+  return `${running}\n${root.querySelector('#codeProgress').innerHTML}`;
 });
 
 console.log('\n=== CTF ===');
