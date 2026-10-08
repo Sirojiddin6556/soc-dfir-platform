@@ -24,6 +24,7 @@ members = [
     "crates/host-snapshot",
     "crates/scan-engine",
     "crates/vulnerability-engine",
+    "crates/code-analysis",
     "crates/engine-server", "crates/desktop-app",
 ]
 

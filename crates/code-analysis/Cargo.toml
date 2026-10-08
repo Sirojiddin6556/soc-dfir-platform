@@ -1,0 +1,17 @@
+[package]
+name = "code-analysis"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Static analysis of Python, PHP, Java and C/C++ source code for security defects"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tree-sitter = "0.25"
+tree-sitter-python = "0.25"
+tree-sitter-php = "0.24"
+tree-sitter-java = "0.23"
+tree-sitter-c = "0.24"
+tree-sitter-cpp = "0.23"
