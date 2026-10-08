@@ -11,6 +11,7 @@ const SEVERITY_LABELS = {
 
 const FEED_TITLES = {
   osv: 'OSV',
+  msrc: 'Microsoft MSRC',
   kev: 'CISA KEV',
   epss: 'FIRST EPSS'
 };
@@ -30,8 +31,9 @@ function formatEpss(f) {
 
 /**
  * Vulnerability space: keeps the local vulnerability database up to date
- * (OSV distribution advisories, CISA KEV, FIRST EPSS) and lists the CVEs that
- * affect the packages installed on the machine the engine runs on.
+ * (OSV distribution advisories, Microsoft MSRC security updates, CISA KEV,
+ * FIRST EPSS) and lists the CVEs that affect the machine the engine runs on:
+ * its installed packages on Linux, its OS build and updates on Windows.
  */
 export class VulnerabilitySpace {
   constructor(ipc) {
@@ -53,12 +55,12 @@ export class VulnerabilitySpace {
       <div class="vuln-space">
         <div class="vuln-header">
           <div>
-            <h2>⛨ УЯЗВИМОСТИ ПАКЕТОВ</h2>
-            <div class="vuln-subtitle">Известные CVE в пакетах, установленных на этой машине: базы OSV (Debian, Ubuntu, AlmaLinux, Rocky Linux), CISA KEV и FIRST EPSS</div>
+            <h2>⛨ УЯЗВИМОСТИ СИСТЕМЫ</h2>
+            <div class="vuln-subtitle">Известные CVE на этой машине: пакеты Linux по базам OSV (Debian, Ubuntu, AlmaLinux, Rocky Linux), сборка и обновления Windows по бюллетеням безопасности Microsoft (MSRC); CISA KEV и FIRST EPSS</div>
           </div>
           <div class="vuln-actions">
             <button id="vulnUpdateBtn" class="ctf-btn ctf-btn-secondary">⟳ Обновить базу</button>
-            <button id="vulnScanBtn" class="primary-action">Проверить пакеты</button>
+            <button id="vulnScanBtn" class="primary-action">Проверить</button>
           </div>
         </div>
         <div id="vulnDbPanel" class="vuln-panel"></div>
@@ -78,9 +80,20 @@ export class VulnerabilitySpace {
     }
   }
 
+  isWindows() {
+    return this.status?.host?.platform === 'windows';
+  }
+
+  scanLabel() {
+    return this.isWindows() ? 'Проверить Windows' : 'Проверить пакеты';
+  }
+
   hostDatabaseLoaded() {
-    const eco = this.status?.host?.ecosystem;
-    return !!eco && (this.status.feeds || []).some(f => f.kind === 'osv' && f.ecosystem === eco);
+    const host = this.status?.host;
+    const feeds = this.status?.feeds || [];
+    if (!host?.supported) return false;
+    if (host.platform === 'windows') return feeds.some(f => f.kind === 'msrc');
+    return !!host.ecosystem && feeds.some(f => f.kind === 'osv' && f.ecosystem === host.ecosystem);
   }
 
   async refreshStatus() {
@@ -148,7 +161,7 @@ export class VulnerabilitySpace {
       this.scanning = false;
       if (btn) {
         btn.disabled = false;
-        btn.textContent = 'Проверить пакеты';
+        btn.textContent = this.scanLabel();
       }
     }
     this.renderResult();
@@ -167,6 +180,8 @@ export class VulnerabilitySpace {
     const feeds = s.feeds || [];
     const updateBtn = this.container.querySelector('#vulnUpdateBtn');
     if (updateBtn) updateBtn.disabled = !!update.running;
+    const scanBtn = this.container.querySelector('#vulnScanBtn');
+    if (scanBtn && !this.scanning) scanBtn.textContent = this.scanLabel();
 
     const feedRows = feeds.map(f => `
       <tr data-feed="${escapeAttr(f.name)}">
@@ -183,11 +198,18 @@ export class VulnerabilitySpace {
       </div>`).join('');
 
     let hostLine;
-    if (host.supported) {
+    if (host.platform === 'windows' && host.supported) {
+      hostLine = `Эта машина: <strong>${escapeHtml(host.os)}</strong>, сборка <span class="vuln-mono">${escapeHtml(host.build)}</span>, продукт в бюллетенях MSRC: <strong>${escapeHtml(host.product)}</strong>, установленных обновлений: <strong>${escapeHtml(String(host.installed_updates ?? 0))}</strong>`;
+    } else if (host.platform === 'windows') {
+      hostLine = `Эта машина: <strong>${escapeHtml(host.os || 'Windows')}</strong>. ${escapeHtml(host.detail || 'Версию Windows определить не удалось')}`;
+    } else if (host.supported) {
       hostLine = `Эта машина: <strong>${escapeHtml(host.os)}</strong>, пакетов: <strong>${escapeHtml(String(host.packages))}</strong>, база: <span class="vuln-mono">${escapeHtml(host.ecosystem)}</span>`;
     } else {
       hostLine = `Эта машина: <strong>${escapeHtml(host.os || 'неизвестная ОС')}</strong>. Поиск CVE в пакетах работает для Debian, Ubuntu, AlmaLinux и Rocky Linux`;
     }
+    const emptyNote = host.platform === 'windows'
+      ? 'База пуста: нажмите «Обновить базу», чтобы скачать бюллетени безопасности Microsoft за последние 12 месяцев, CISA KEV и FIRST EPSS.'
+      : 'База пуста: нажмите «Обновить базу», чтобы скачать данные OSV, CISA KEV и FIRST EPSS.';
 
     panel.innerHTML = `
       <div class="vuln-panel-title">БАЗА УЯЗВИМОСТЕЙ</div>
@@ -199,7 +221,7 @@ export class VulnerabilitySpace {
             <thead><tr><th>Источник</th><th class="vuln-num">Записей</th><th>Версия данных</th><th>Проверено</th><th>Откуда</th></tr></thead>
             <tbody>${feedRows}</tbody>
           </table>`
-        : '<div class="vuln-note" id="vulnDbEmpty">База пуста: нажмите «Обновить базу», чтобы скачать данные OSV, CISA KEV и FIRST EPSS.</div>'}
+        : `<div class="vuln-note" id="vulnDbEmpty">${escapeHtml(emptyNote)}</div>`}
       <div id="vulnUpdateProgress" class="vuln-progress" ${update.running ? '' : 'hidden'}>
         <span class="vuln-spinner"></span> ${escapeHtml(update.current || 'Обновление...')}
       </div>
@@ -217,7 +239,8 @@ export class VulnerabilitySpace {
       if (!q) return true;
       return f.id.toLowerCase().includes(q)
         || f.component.toLowerCase().includes(q)
-        || (f.packages || []).some(p => p.toLowerCase().includes(q));
+        || (f.packages || []).some(p => p.toLowerCase().includes(q))
+        || (f.sources || []).some(src => src.toLowerCase().includes(q));
     });
   }
 
@@ -249,19 +272,37 @@ export class VulnerabilitySpace {
         <div class="vuln-chip vuln-sev-low"><span>${escapeHtml(String(sm.low))}</span>низких</div>
         <div class="vuln-chip"><span>${escapeHtml(String(sm.unknown))}</span>без оценки</div>
         <div class="vuln-chip vuln-kev-chip"><span>${escapeHtml(String(sm.kev))}</span>в CISA KEV</div>
+        ${sm.exploited !== undefined ? `<div class="vuln-chip vuln-exploited-chip" id="vulnExploited"><span>${escapeHtml(String(sm.exploited))}</span>атакуются (Microsoft)</div>` : ''}
         <div class="vuln-chip"><span>${escapeHtml(String(fixCount))}</span>есть исправление</div>
         <div class="vuln-chip"><span>${escapeHtml(String(sm.no_fix))}</span>исправления нет</div>
         <div class="vuln-chip vuln-chip-ok"><span>${escapeHtml(String(sm.patched))}</span>уже исправлено</div>
+        ${sm.unverified ? `<div class="vuln-chip" title="Исправления выпущены только для другой ветки сборок"><span>${escapeHtml(String(sm.unverified))}</span>не проверить</div>` : ''}
       </div>` : '';
 
-    const meta = scan.ecosystem ? `
+    const feedNotes = `
+        ${scan.database && !scan.database.epss_loaded ? 'Оценки EPSS не загружены.' : ''}
+        ${scan.database && !scan.database.kev_loaded ? 'Каталог CISA KEV не загружен.' : ''}`;
+    const win = scan.windows;
+    let meta = '';
+    if (win && (win.documents || []).length) {
+      const docs = win.documents;
+      const range = docs.length > 1 ? `${docs[docs.length - 1]} – ${docs[0]}` : docs[0];
+      meta = `
+      <div class="vuln-note" id="vulnWindowsMeta">
+        Проверено ${escapeHtml(formatDate(scan.scanned_at))}: сборка <span class="vuln-mono">${escapeHtml(win.build)}</span>
+        (${escapeHtml(win.product)}), установленных обновлений: ${escapeHtml(String((win.installed_updates || []).length))},
+        по бюллетеням MSRC за ${escapeHtml(String(docs.length))} мес. (${escapeHtml(range)}).
+        ${feedNotes}
+      </div>`;
+    } else if (scan.ecosystem) {
+      meta = `
       <div class="vuln-note">
         Проверено ${escapeHtml(formatDate(scan.scanned_at))}: ${escapeHtml(String(scan.packages_total))} пакетов
         (${escapeHtml(String(scan.components_checked))} исходных компонентов, по ${escapeHtml(String(scan.components_with_advisories))} есть бюллетени) по базе
         <span class="vuln-mono">${escapeHtml(scan.ecosystem)}</span>.
-        ${scan.database && !scan.database.epss_loaded ? 'Оценки EPSS не загружены.' : ''}
-        ${scan.database && !scan.database.kev_loaded ? 'Каталог CISA KEV не загружен.' : ''}
-      </div>` : '';
+        ${feedNotes}
+      </div>`;
+    }
 
     const shown = this.filteredFindings();
     const rows = shown.slice(0, this.limit).map(f => this.findingRow(f)).join('');
@@ -281,12 +322,12 @@ export class VulnerabilitySpace {
           ${filterBtn('fix', 'Есть исправление', fixCount)}
           ${filterBtn('nofix', 'Исправления нет', sm.no_fix ?? 0)}
           ${filterBtn('all', 'Все', findings.length)}
-          <input id="vulnSearch" type="text" placeholder="CVE или пакет..." value="${escapeAttr(this.query)}">
+          <input id="vulnSearch" type="text" placeholder="${win ? 'CVE, компонент или KB...' : 'CVE или пакет...'}" value="${escapeAttr(this.query)}">
         </div>
         <table class="vuln-table" id="vulnTable">
           <thead><tr>
             <th>CVE</th><th>Компонент</th><th>Установлено</th><th>Исправлено в</th>
-            <th>Важность</th><th class="vuln-num">CVSS</th><th class="vuln-num">EPSS</th><th>KEV</th>
+            <th>Важность</th><th class="vuln-num">CVSS</th><th class="vuln-num">EPSS</th><th>Атаки</th>
           </tr></thead>
           <tbody>${rows || '<tr><td colspan="8" class="vuln-note">Нет записей для выбранного фильтра</td></tr>'}</tbody>
         </table>
@@ -323,17 +364,23 @@ export class VulnerabilitySpace {
 
   findingRow(f) {
     const sev = f.severity || 'unknown';
+    const windows = !!this.scan?.windows;
+    const rater = windows ? 'Оценка Microsoft' : 'Оценка дистрибутива';
+    const firstUpdate = windows ? (f.sources || [])[0] : null;
     // Feed data: only plain web links become clickable.
     const idCell = f.url && /^https?:\/\//i.test(f.url)
       ? `<a href="${escapeAttr(f.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(f.id)}</a>`
       : escapeHtml(f.id);
     const fixed = f.status === 'fix_available'
-      ? `<span class="vuln-mono">${escapeHtml(f.fixed_version)}</span>`
+      ? `<span class="vuln-mono">${escapeHtml(f.fixed_version)}</span>${firstUpdate ? `<div class="vuln-pkgs">${escapeHtml(firstUpdate)}</div>` : ''}`
       : '<span class="vuln-nofix">нет исправления</span>';
     const kev = f.kev
       ? `<span class="vuln-badge vuln-kev" title="${escapeAttr(`${f.kev.name}; добавлено ${f.kev.date_added}`)}">KEV</span>`
       : '';
-    const prio = f.distro_priority ? ` title="Оценка дистрибутива: ${escapeAttr(f.distro_priority)}"` : '';
+    const exploited = f.exploited
+      ? ' <span class="vuln-badge vuln-exploited" title="Microsoft сообщает об эксплуатации в атаках">АТАКУЕТСЯ</span>'
+      : '';
+    const prio = f.distro_priority ? ` title="${rater}: ${escapeAttr(f.distro_priority)}"` : '';
     return `
       <tr class="vuln-row" data-id="${escapeAttr(f.id)}" data-component="${escapeAttr(f.component)}" data-status="${escapeAttr(f.status)}">
         <td class="vuln-mono">${idCell}</td>
@@ -343,14 +390,14 @@ export class VulnerabilitySpace {
         <td><span class="vuln-badge vuln-sev-${escapeAttr(sev)}"${prio}>${escapeHtml(SEVERITY_LABELS[sev] || sev)}</span></td>
         <td class="vuln-num">${f.cvss_score !== null && f.cvss_score !== undefined ? escapeHtml(f.cvss_score.toFixed(1)) : '—'}</td>
         <td class="vuln-num">${escapeHtml(formatEpss(f))}</td>
-        <td>${kev}</td>
+        <td>${kev}${exploited}</td>
       </tr>
       <tr class="vuln-detail" hidden>
         <td colspan="8">
           <div>${escapeHtml(f.summary || 'Описание отсутствует')}</div>
           <div class="vuln-detail-meta">
-            Источники: ${escapeHtml((f.sources || []).join(', '))}
-            ${f.distro_priority ? ` · Оценка дистрибутива: ${escapeHtml(f.distro_priority)}` : ''}
+            ${windows ? 'Обновления с исправлением' : 'Источники'}: ${escapeHtml((f.sources || []).join(', ') || '—')}
+            ${f.distro_priority ? ` · ${rater}: ${escapeHtml(f.distro_priority)}` : ''}
             ${f.cvss_vector ? ` · <span class="vuln-mono">${escapeHtml(f.cvss_vector)}</span>` : ''}
             ${f.published ? ` · Опубликовано: ${escapeHtml(formatDate(f.published))}` : ''}
           </div>

@@ -241,10 +241,25 @@ impl EngineApp {
                             .collect()
                     })
                     .unwrap_or_default();
-                let res = self
-                    .vulndb
-                    .start_update(ecosystems)
-                    .map_err(|e| ProblemDetails::bad_request(&e, vec!["ecosystems".to_string()]));
+                let msrc_months = match req.params.get("msrc_months") {
+                    None => Ok(None),
+                    Some(v) if v.is_null() => Ok(None),
+                    Some(v) => v
+                        .as_u64()
+                        .and_then(|m| u32::try_from(m).ok())
+                        .map(Some)
+                        .ok_or_else(|| "msrc_months должно быть целым числом месяцев".to_string()),
+                };
+                let res = msrc_months
+                    .and_then(|months| self.vulndb.start_update(ecosystems, months))
+                    .map_err(|e| {
+                        let field = if e.contains("msrc_months") {
+                            "msrc_months"
+                        } else {
+                            "ecosystems"
+                        };
+                        ProblemDetails::bad_request(&e, vec![field.to_string()])
+                    });
                 respond_res(req.request_id, res)
             }
             "host.overview" => {
