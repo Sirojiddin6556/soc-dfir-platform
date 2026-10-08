@@ -29,12 +29,14 @@ pub mod ctx {
     /// Only values from weak random generators are checked against it,
     /// and no conversion makes them safe for it.
     pub const SECRET: u32 = 1 << 14;
+    /// Trusted as a CORS origin: a fixed or allowlisted value.
+    pub const ORIGIN: u32 = 1 << 15;
     /// Holds no single quote: safe inside a single-quoted literal.
     pub const NO_SQUOTE: u32 = 1 << 20;
     /// Holds no double quote: safe inside a double-quoted literal.
     pub const NO_DQUOTE: u32 = 1 << 21;
     /// A number or a value restricted to a known safe alphabet.
-    pub const ALL: u32 = 0x3FFF | NO_SQUOTE | NO_DQUOTE;
+    pub const ALL: u32 = 0x3FFF | ORIGIN | NO_SQUOTE | NO_DQUOTE;
 }
 
 const MAX_SOURCES: usize = 3;

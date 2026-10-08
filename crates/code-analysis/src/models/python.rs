@@ -1056,8 +1056,8 @@ impl Model for Python {
         check_body(it, &body, span, "ответ обработчика");
     }
 
-    fn sanitizer_of(&self, name: &str) -> u32 {
-        name_sanitizer(name)
+    fn sanitizer_of(&self, qualname: &str) -> u32 {
+        name_sanitizer(qualname.rsplit('.').next().unwrap_or(qualname))
     }
 
     fn refine_method(
@@ -1130,7 +1130,7 @@ impl Model for Python {
 
 /// `re.sub(pattern, repl, s)`: removing every character outside a class
 /// leaves only that class.
-fn regex_sub(pattern: &str, repl: Option<&Value>, s: &Value) -> Value {
+pub(crate) fn regex_sub(pattern: &str, repl: Option<&Value>, s: &Value) -> Value {
     let repl = repl.and_then(|r| r.as_str());
     let (Some(repl), Some(removed)) = (repl, regex_chars(pattern.trim_end_matches(['+', '*'])))
     else {
@@ -1365,7 +1365,7 @@ const SHELLS: &[&str] = &[
     "pwsh.exe",
 ];
 
-fn is_shell(v: &Value) -> bool {
+pub(crate) fn is_shell(v: &Value) -> bool {
     v.alternatives().iter().any(|a| {
         a.as_str()
             .map(|s| {
@@ -1398,7 +1398,7 @@ fn check_subprocess(it: &mut Interp, args: &[ArgVal], span: Span, what: &str) {
     check_argv(it, &cmd, span, what);
 }
 
-fn check_argv(it: &mut Interp, cmd: &Value, span: Span, what: &str) {
+pub(crate) fn check_argv(it: &mut Interp, cmd: &Value, span: Span, what: &str) {
     match cmd {
         Value::List(items) => {
             let Some(program) = items.first() else { return };
@@ -1502,7 +1502,7 @@ fn is_str_method(name: &str) -> bool {
     )
 }
 
-fn str_method(segs: &[Seg], name: &str, args: &[ArgVal]) -> Value {
+pub(crate) fn str_method(segs: &[Seg], name: &str, args: &[ArgVal]) -> Value {
     let lit = literal(segs);
     let taint = Value::Str(Rc::new(segs.to_vec())).taint();
     let a = |i: usize| arg(args, i, "").and_then(|v| v.as_str());
@@ -1852,10 +1852,18 @@ fn handler_method(
     match (kind, name) {
         ("http.server" | "tornado", "send_header" | "set_header" | "add_header") => {
             let header = a(0).as_str().unwrap_or_default().to_ascii_lowercase();
-            if header == "location" {
-                it.sink(&REDIRECT, &a(1), span, name);
-            } else {
-                it.sink(&HEADER, &a(1), span, name);
+            match header.as_str() {
+                "location" => {
+                    it.sink(&REDIRECT, &a(1), span, name);
+                }
+                "access-control-allow-origin" => {
+                    it.sink(&CORS, &a(1), span, name);
+                }
+                // Tornado rejects header values with CR or LF.
+                _ if kind == "tornado" => {}
+                _ => {
+                    it.sink(&HEADER, &a(1), span, name);
+                }
             }
             if header == "set-cookie" {
                 it.sink(&WEAK_RANDOM, &a(1), span, "значение cookie");

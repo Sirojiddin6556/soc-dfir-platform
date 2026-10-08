@@ -44,6 +44,7 @@ pub fn parse_tree(lang: Language, src: &str) -> Option<tree_sitter::Tree> {
 pub fn lower_tree(lang: Language, tree: &tree_sitter::Tree, src: &str) -> Option<ir::Module> {
     match lang {
         Language::Python => Some(lower::python::lower(tree.root_node(), src)),
+        Language::Java => Some(lower::java::lower(tree.root_node(), src)),
         _ => None,
     }
 }
@@ -75,6 +76,8 @@ pub struct Report {
     pub languages: Vec<(String, usize)>,
     pub skipped: Vec<(String, String)>,
     pub parse_errors: Vec<String>,
+    /// Test files: loaded so calls resolve, not analyzed unless asked.
+    pub test_files: usize,
     /// Time spent reading and parsing the files, then analyzing them.
     pub load_ms: u64,
     pub analysis_ms: u64,
@@ -84,9 +87,20 @@ pub struct Report {
 /// imports and nested expressions.
 const STACK_BYTES: usize = 512 * 1024 * 1024;
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Options {
+    /// Also look for defects in test code, which does not run in
+    /// production.
+    pub include_tests: bool,
+}
+
 /// Loads and analyzes every supported file under `root`, on a thread with
 /// a stack large enough for deep projects.
 pub fn analyze_dir(root: &std::path::Path) -> std::io::Result<Report> {
+    analyze_dir_with(root, Options::default())
+}
+
+pub fn analyze_dir_with(root: &std::path::Path, options: Options) -> std::io::Result<Report> {
     let root = root.to_path_buf();
     std::thread::Builder::new()
         .name("code-analysis".into())
@@ -95,7 +109,7 @@ pub fn analyze_dir(root: &std::path::Path) -> std::io::Result<Report> {
             let started = std::time::Instant::now();
             let project = project::Project::from_dir(&root)?;
             let load_ms = started.elapsed().as_millis() as u64;
-            let mut report = analyze(&project);
+            let mut report = analyze_with(&project, options);
             report.load_ms = load_ms;
             Ok(report)
         })?
@@ -105,16 +119,21 @@ pub fn analyze_dir(root: &std::path::Path) -> std::io::Result<Report> {
 
 /// Analyzes every file of a project.
 pub fn analyze(project: &project::Project) -> Report {
+    analyze_with(project, Options::default())
+}
+
+pub fn analyze_with(project: &project::Project, options: Options) -> Report {
     let started = std::time::Instant::now();
-    let python = models::python::Python;
-    let mut interp = interp::Interp::new(project, &python);
+    let mut interp = interp::Interp::new(project);
     let mut languages: Vec<(String, usize)> = Vec::new();
     for (i, m) in project.modules.iter().enumerate() {
         match languages.iter_mut().find(|(l, _)| l == m.lang.name()) {
             Some(slot) => slot.1 += 1,
             None => languages.push((m.lang.name().to_string(), 1)),
         }
-        if m.lang == Language::Python {
+        if matches!(m.lang, Language::Python | Language::Java)
+            && (options.include_tests || !m.is_test)
+        {
             interp.analyze_module(i);
         }
     }
@@ -138,6 +157,11 @@ pub fn analyze(project: &project::Project) -> Report {
             .filter(|m| m.parse_errors)
             .map(|m| m.path.clone())
             .collect(),
+        test_files: if options.include_tests {
+            0
+        } else {
+            project.modules.iter().filter(|m| m.is_test).count()
+        },
         load_ms: 0,
         analysis_ms: started.elapsed().as_millis() as u64,
     }

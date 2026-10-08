@@ -4,7 +4,6 @@
 //!
 //! cargo run --release -p code-analysis --example owasp_benchmark -- DIR [--misses CATEGORY] [--show TEST]
 
-use code_analysis::project::Project;
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -48,11 +47,7 @@ fn main() {
         })
         .collect();
 
-    let started = std::time::Instant::now();
-    let project = Project::from_dir(root).expect("load project");
-    let loaded = started.elapsed();
-    let report = code_analysis::analyze(&project);
-    let analyzed = started.elapsed();
+    let report = code_analysis::analyze_dir(root).expect("analyze");
 
     // test name -> set of CWEs reported in it
     let mut flagged: BTreeMap<String, Vec<u32>> = BTreeMap::new();
@@ -112,12 +107,12 @@ fn main() {
         }
     }
     println!(
-        "{} files, {} lines, {} findings; load {:.1?}, analysis {:.1?}",
+        "{} files, {} lines, {} findings; load {} ms, analysis {} ms",
         report.files,
         report.lines,
         report.findings.len(),
-        loaded,
-        analyzed - loaded
+        report.load_ms,
+        report.analysis_ms
     );
     println!(
         "{:<16} {:>4} {:>4} {:>4} {:>4} {:>7} {:>7} {:>7}",

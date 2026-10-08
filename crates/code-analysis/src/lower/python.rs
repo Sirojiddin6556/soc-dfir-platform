@@ -12,6 +12,7 @@ pub fn lower(root: Node, src: &str) -> Module {
     };
     Module {
         body: l.block(root),
+        package: None,
     }
 }
 

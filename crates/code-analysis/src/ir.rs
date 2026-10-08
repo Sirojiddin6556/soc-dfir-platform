@@ -208,4 +208,6 @@ pub struct Class {
 pub struct Module {
     /// Top-level statements; functions and classes appear as definitions.
     pub body: Vec<Stmt>,
+    /// Java package (`org.example.web`), which names the file's classes.
+    pub package: Option<String>,
 }

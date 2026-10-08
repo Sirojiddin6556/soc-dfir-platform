@@ -15,6 +15,8 @@ use std::rc::Rc;
 
 const MAX_DEPTH: usize = 10;
 const MAX_STEPS: usize = 400_000;
+/// Call frames explored from an entry with no user data (see `quiet`).
+const QUIET_DEPTH: usize = 3;
 
 /// An evaluated call argument.
 #[derive(Debug, Clone)]
@@ -160,9 +162,10 @@ pub trait Model {
         Value::clean()
     }
     fn on_return(&self, _it: &mut Interp, _route: &Route, _value: &Value, _span: Span) {}
-    /// Safety the result of a user function gets from its name alone
-    /// (`escape_html`), for hand-written escapers the interpreter cannot see through.
-    fn sanitizer_of(&self, _name: &str) -> u32 {
+    /// Safety the result of a user function gets from its qualified name
+    /// alone (`escape_html`, `Escape.htmlElementContent`), for hand-written
+    /// escapers the interpreter cannot see through.
+    fn sanitizer_of(&self, _qualname: &str) -> u32 {
         0
     }
     /// Facts from a method call used as a condition: `x.startswith("'")`
@@ -185,8 +188,13 @@ pub trait Model {
     fn facts_safety(&self, _facts: &[Fact], _value: &Value) -> u32 {
         0
     }
+    /// Whether entries that receive no request data explore their calls
+    /// only a few frames deep (see `Interp::quiet`).
+    fn quiet_entries(&self) -> bool {
+        false
+    }
     /// A typed declaration (`int n = ...`).
-    fn coerce(&self, _ty: &str, value: Value) -> Value {
+    fn coerce(&self, _it: &mut Interp, _ty: &str, value: Value) -> Value {
         value
     }
     fn raw(&self, _it: &mut Interp, _value: &Value, _span: Span) {}
@@ -220,7 +228,6 @@ enum Globals {
 
 pub struct Interp<'p> {
     pub project: &'p Project,
-    model: &'p dyn Model,
     globals: Vec<Globals>,
     frames: Vec<Frame>,
     /// Call sites from the entry function down to the current frame.
@@ -228,6 +235,11 @@ pub struct Interp<'p> {
     pub findings: Vec<Finding>,
     seen: HashSet<(String, usize, u32, u32, usize, u32)>,
     steps: usize,
+    /// The entry being analyzed is not a handler and receives no request
+    /// data. Its callees are entries of their own, so clean calls are only
+    /// followed a few frames deep: whole-program walks from every test or
+    /// helper made large projects slow without finding more.
+    quiet: bool,
     /// Nesting of expression evaluation, bounded to keep the stack safe.
     depth: usize,
     /// Modules whose top level is being run (imports inside imports).
@@ -238,7 +250,15 @@ pub struct Interp<'p> {
     /// Results of calls with clean arguments, by callee and arguments: the
     /// same helper called the same way behaves the same.
     memo: HashMap<String, (Value, Option<Value>)>,
+    /// State a language model keeps for the entry being analyzed, such as
+    /// the content type its response was given.
+    pub notes: HashMap<&'static str, Value>,
+    /// See `subclass_index`.
+    subclasses: Option<SubclassIndex>,
 }
+
+/// Project classes deriving directly from each class, by qualified name.
+type SubclassIndex = Rc<HashMap<Rc<str>, Vec<Rc<ClassVal>>>>;
 
 const MAX_MEMO: usize = 200_000;
 
@@ -246,16 +266,19 @@ const MAX_EVAL_DEPTH: usize = 300;
 const MAX_IMPORT_DEPTH: usize = 12;
 
 impl<'p> Interp<'p> {
-    pub fn new(project: &'p Project, model: &'p dyn Model) -> Self {
+    pub fn new(project: &'p Project) -> Self {
         Interp {
             project,
-            model,
             globals: project.modules.iter().map(|_| Globals::Pending).collect(),
             frames: Vec::new(),
             calls: Vec::new(),
             findings: Vec::new(),
             seen: HashSet::new(),
             steps: 0,
+            quiet: false,
+            notes: HashMap::new(),
+            subclasses: None,
+
             depth: 0,
             loading: 0,
             cutoffs: 0,
@@ -281,6 +304,7 @@ impl<'p> Interp<'p> {
                     scope: scope.clone(),
                 })
             });
+            self.notes.clear();
             self.analyze_entry(module, func, scope, class);
         }
     }
@@ -292,7 +316,7 @@ impl<'p> Interp<'p> {
         scope: Option<Rc<Scope>>,
         class: Option<Rc<ClassVal>>,
     ) {
-        let model = self.model;
+        let model = crate::models::for_language(self.project.modules[module].lang);
         let route = model.route(self, module, &func);
         let mut env = Env::new();
         let mut self_name = None;
@@ -316,6 +340,16 @@ impl<'p> Interp<'p> {
             };
             env.insert(p.name.as_str().into(), v);
         }
+        self.quiet = model.quiet_entries()
+            && route.is_none()
+            && func.params.iter().enumerate().all(|(i, p)| {
+                (i == 0 && self_name.is_some())
+                    || match env.get(p.name.as_str()) {
+                        Some(Value::Obj(_) | Value::Ref(..)) => false,
+                        Some(v) => !v.taint().is_tainted(),
+                        None => true,
+                    }
+            });
         let mut frame = Frame::new(module, Some(func.clone()), Some(env));
         frame.scope = Scope::of_body(&func.body, scope);
         frame.route = route;
@@ -329,6 +363,11 @@ impl<'p> Interp<'p> {
 
     pub fn module(&self) -> usize {
         self.frames.last().map(|f| f.module).unwrap_or(0)
+    }
+
+    /// Library knowledge for the language of the code being run.
+    fn model(&self) -> &'static dyn Model {
+        crate::models::for_language(self.project.modules[self.module()].lang)
     }
 
     pub fn span(&self) -> Span {
@@ -368,6 +407,20 @@ impl<'p> Interp<'p> {
     /// values are checked piece by piece, so data inside a quoted literal
     /// that cannot contain that quote is accepted.
     pub fn sink(&mut self, rule: &'static Rule, value: &Value, span: Span, what: &str) -> bool {
+        let module = self.module();
+        self.sink_at(rule, value, module, span, what)
+    }
+
+    /// Like `sink`, reported at a place in another module, such as where
+    /// the object that reached the sink was made.
+    pub fn sink_at(
+        &mut self,
+        rule: &'static Rule,
+        value: &Value,
+        module: usize,
+        span: Span,
+        what: &str,
+    ) -> bool {
         let Some(t) = reaching(value, rule.context) else {
             return false;
         };
@@ -377,20 +430,28 @@ impl<'p> Interp<'p> {
             .iter()
             .find(|s| s.weak_random == want_random)
             .cloned();
-        self.report(rule, span, what, src);
+        self.report(rule, module, span, what, src);
         true
     }
 
     /// Reports a finding that does not depend on data flow.
     pub fn flag(&mut self, rule: &'static Rule, span: Span, what: &str) {
-        self.report(rule, span, what, None);
+        let module = self.module();
+        self.report(rule, module, span, what, None);
     }
 
-    fn report(&mut self, rule: &'static Rule, span: Span, what: &str, src: Option<Source>) {
-        let module = self.module();
-        // One finding per sink and source: the same flow reached through
-        // several callers is reported once. A predictable random value is
-        // reported once where it is made, however many secrets it fills.
+    fn report(
+        &mut self,
+        rule: &'static Rule,
+        module: usize,
+        span: Span,
+        what: &str,
+        src: Option<Source>,
+    ) {
+        // One finding per sink: the same sink reached from several handlers
+        // or callers is reported once, with the first source found. A
+        // predictable random value is reported once where it is made,
+        // however many secrets it fills.
         let key = match &src {
             Some(s) if s.weak_random => (
                 rule.id.to_string(),
@@ -405,7 +466,7 @@ impl<'p> Interp<'p> {
                 module,
                 span.line,
                 span.column,
-                src.as_ref().map(|s| s.module).unwrap_or(usize::MAX),
+                usize::MAX,
                 0,
             ),
         };
@@ -578,7 +639,11 @@ impl<'p> Interp<'p> {
                     .as_ref()
                     .map(|e| self.eval(e))
                     .unwrap_or_else(Value::clean);
-                let v = self.model.coerce(ty, v);
+                let model = self.model();
+                let v = model.coerce(self, ty, v);
+                if secret_name(name) {
+                    self.sink(&WEAK_RANDOM, &v, *span, name);
+                }
                 self.set_var(name, v);
             }
             Stmt::Expr(e, span) => {
@@ -588,7 +653,7 @@ impl<'p> Interp<'p> {
             Stmt::Raw(e, span) => {
                 self.frame().span = *span;
                 let v = self.eval(e);
-                let model = self.model;
+                let model = self.model();
                 model.raw(self, &v, *span);
             }
             Stmt::If { test, then, other } => self.exec_if(test, then, other),
@@ -639,7 +704,7 @@ impl<'p> Interp<'p> {
                     self.sink(&WEAK_RANDOM, &v, *span, &format!("{}()", func.name));
                 }
                 if let Some(route) = self.frames.last().and_then(|f| f.route.clone()) {
-                    let model = self.model;
+                    let model = self.model();
                     model.on_return(self, &route, &v, *span);
                 }
                 self.capture_self();
@@ -665,8 +730,11 @@ impl<'p> Interp<'p> {
                 }
             }
             Stmt::Import { alias, path } => {
-                let v = self.import_value(path);
-                self.set_var(alias, v);
+                // Java wildcard imports are looked up on demand.
+                if alias != "*" {
+                    let v = self.import_value(path);
+                    self.set_var(alias, v);
+                }
             }
             Stmt::FuncDef(f) => {
                 for d in &f.decorators {
@@ -924,7 +992,7 @@ impl<'p> Interp<'p> {
                     let what = format!("{store}[{key_name:?}]");
                     self.sink(&WEAK_RANDOM, &value, span, &what);
                 }
-                let model = self.model;
+                let model = self.model();
                 if let Some(nb) = model.store_index(self, &base, &key, &value, span) {
                     self.assign_expr(base_e, nb, span);
                     return;
@@ -977,7 +1045,7 @@ impl<'p> Interp<'p> {
                 None => by_var.push((v, vec![f])),
             }
         }
-        let model = self.model;
+        let model = self.model();
         for (var, facts) in by_var {
             let Some(cur) = self.get_var(&var) else {
                 continue;
@@ -1061,7 +1129,7 @@ impl<'p> Interp<'p> {
                 if let Expr::Attr(recv, name) = &**func {
                     let argv: Vec<Value> = args.iter().map(|a| self.eval(&a.value)).collect();
                     let rv = self.eval(recv);
-                    let model = self.model;
+                    let model = self.model();
                     for (on, f) in model.refine_method(&rv, name, &argv, truth) {
                         match on {
                             FactOn::Recv => self.fact_on(recv, f, out),
@@ -1086,7 +1154,7 @@ impl<'p> Interp<'p> {
             Expr::Attr(base, field) => {
                 if let Expr::Name(n) = &**base {
                     if let Some(Value::Obj(o)) = self.get_var(n) {
-                        let model = self.model;
+                        let model = self.model();
                         for (var, bits) in model.refine_attr(&o, field, &fact) {
                             out.push((var, Fact::Safe(bits)));
                         }
@@ -1118,10 +1186,43 @@ impl<'p> Interp<'p> {
                 }
             }
             Expr::Call { func, args, .. } if args.is_empty() => {
-                // x.resolve().startswith(...) style chains.
-                if let Expr::Attr(recv, _) = &**func {
-                    if let Some(var) = root_var(recv) {
+                // `x.resolve().startswith(base)`, `x.toString().equals(s)`:
+                // facts carry over through conversions that keep the text,
+                // and a prefix check on a normalized path confines it.
+                // Chains such as `f.getCanonicalFile().toPath()` count too.
+                let mut normalized = false;
+                let mut cur = e;
+                while let Expr::Call { func, args, .. } = cur {
+                    let Expr::Attr(recv, method) = &**func else {
+                        return;
+                    };
+                    if !args.is_empty() {
+                        return;
+                    }
+                    let identity = matches!(
+                        method.as_str(),
+                        "toString" | "intern" | "__str__" | "toPath" | "toFile" | "getPath"
+                    );
+                    let normalizing = matches!(
+                        method.as_str(),
+                        "resolve"
+                            | "absolute"
+                            | "getCanonicalPath"
+                            | "getCanonicalFile"
+                            | "toRealPath"
+                            | "normalize"
+                    );
+                    if !identity && !normalizing {
+                        return;
+                    }
+                    normalized |= normalizing;
+                    cur = recv;
+                }
+                if let Some(var) = root_var(cur) {
+                    if !normalized {
                         out.push((var, fact));
+                    } else if matches!(fact, Fact::StartsWithValue | Fact::StartsWith(_)) {
+                        out.push((var, Fact::Safe(ctx::PATH)));
                     }
                 }
             }
@@ -1146,9 +1247,9 @@ impl<'p> Interp<'p> {
         self.steps += 1;
         match e {
             Expr::Lit(c) => const_value(c),
-            Expr::Name(n) => match self.get_var(n) {
+            Expr::Name(n) => match self.get_var(n).or_else(|| self.lookup_global(n)) {
                 Some(v) => v,
-                None => self.model.builtin(n),
+                None => self.model().builtin(n),
             },
             Expr::Attr(base, name) => {
                 let b = self.eval(base);
@@ -1180,36 +1281,31 @@ impl<'p> Interp<'p> {
             Expr::Call { func, args, span } => self.eval_call(func, args, *span),
             Expr::New { class, args, span } => {
                 let argv = self.eval_args(args, *span);
-                match self.get_var(class) {
+                match self.get_var(class).or_else(|| self.lookup_global(class)) {
                     Some(c @ Value::Class(_)) => self.call_value(&c, &argv, *span),
                     Some(Value::Ref(p, t)) => {
-                        let model = self.model;
+                        let model = self.model();
                         model.call_ref(self, &p, &t, &argv, *span)
                     }
                     _ => {
-                        let model = self.model;
+                        let model = self.model();
                         model.call_ref(self, class, &Taint::clean(), &argv, *span)
                     }
                 }
             }
-            Expr::Bin(BinOp::And, l, r) => {
+            // The right operand runs only when the left one decided nothing:
+            // `ok(f) && use(f)`, `!ok(f) || use(f)`.
+            Expr::Bin(op @ (BinOp::And | BinOp::Or), l, r) => {
                 let lv = self.eval(l);
+                let and = *op == BinOp::And;
                 match lv.truthy() {
-                    Some(false) => lv,
-                    Some(true) => self.eval(r),
+                    Some(t) if t != and => lv,
+                    Some(_) => self.eval(r),
                     None => {
+                        let saved = self.frame().env.clone();
+                        self.refine(l, and);
                         let rv = self.eval(r);
-                        join(&lv, &rv)
-                    }
-                }
-            }
-            Expr::Bin(BinOp::Or, l, r) => {
-                let lv = self.eval(l);
-                match lv.truthy() {
-                    Some(true) => lv,
-                    Some(false) => self.eval(r),
-                    None => {
-                        let rv = self.eval(r);
+                        self.frame().env = saved;
                         join(&lv, &rv)
                     }
                 }
@@ -1267,7 +1363,8 @@ impl<'p> Interp<'p> {
             }
             Expr::Cast(ty, inner) => {
                 let v = self.eval(inner);
-                self.model.coerce(ty, v)
+                let model = self.model();
+                model.coerce(self, ty, v)
             }
             Expr::Lambda(f) => {
                 let module = self.module();
@@ -1374,7 +1471,7 @@ impl<'p> Interp<'p> {
                 if let Some(attr) = o.field(name).cloned() {
                     return (self.call_value(&attr, args, span), None);
                 }
-                if let Some((m, owner)) = self.find_method(&cv, name) {
+                if let Some((m, owner)) = self.find_overload(&cv, name, Some(args.len())) {
                     let fv = FuncVal {
                         qualname: format!("{}.{}", owner.qualname, m.name).into(),
                         def: m.clone(),
@@ -1387,10 +1484,12 @@ impl<'p> Interp<'p> {
                         closure: None,
                         scope: owner.scope.clone(),
                     };
-                    let (v, final_self) = self.call_function(&fv, args, span);
-                    return (v, final_self);
+                    return self.call_user(&fv, args, span);
                 }
-                let model = self.model;
+                if let Some(v) = self.call_implementations(o, &cv, name, args, span) {
+                    return (v, None);
+                }
+                let model = self.model();
                 model.call_method(self, recv, name, args, span)
             }
             Value::Ref(path, t) => {
@@ -1398,7 +1497,7 @@ impl<'p> Interp<'p> {
                 (self.call_value(&callee, args, span), None)
             }
             Value::Class(cv) => {
-                if let Some((m, owner)) = self.find_method(cv, name) {
+                if let Some((m, owner)) = self.find_overload(cv, name, Some(args.len())) {
                     let fv = FuncVal {
                         qualname: format!("{}.{}", owner.qualname, m.name).into(),
                         def: m.clone(),
@@ -1407,15 +1506,136 @@ impl<'p> Interp<'p> {
                         closure: None,
                         scope: owner.scope.clone(),
                     };
-                    return (self.call_function(&fv, args, span).0, None);
+                    return (self.call_user(&fv, args, span).0, None);
                 }
                 (Value::Unknown(args_taint(args)), None)
             }
             _ => {
-                let model = self.model;
+                let model = self.model();
                 model.call_method(self, recv, name, args, span)
             }
         }
+    }
+
+    /// Runs a project function; a hand-written escaper's result is also
+    /// marked safe by its name.
+    fn call_user(&mut self, fv: &FuncVal, args: &[ArgVal], span: Span) -> (Value, Option<Value>) {
+        let (v, final_self) = self.call_function(fv, args, span);
+        let bits = self.model().sanitizer_of(&fv.qualname);
+        if bits != 0 {
+            (v.sanitized(bits), final_self)
+        } else {
+            (v, final_self)
+        }
+    }
+
+    /// A method an interface or abstract class only declares: the project
+    /// classes implementing it run instead, when there are few of them
+    /// (an injected `UserService` and its `UserServiceImpl`).
+    fn call_implementations(
+        &mut self,
+        o: &Obj,
+        cv: &Rc<ClassVal>,
+        name: &str,
+        args: &[ArgVal],
+        span: Span,
+    ) -> Option<Value> {
+        const MAX_IMPLEMENTATIONS: usize = 4;
+        let index = self.subclass_index();
+        let mut found: Vec<(Rc<ClassVal>, Rc<Function>, Rc<ClassVal>)> = Vec::new();
+        let mut todo = vec![cv.qualname.clone()];
+        let mut visited: HashSet<Rc<str>> = HashSet::new();
+        while let Some(q) = todo.pop() {
+            if !visited.insert(q.clone()) || visited.len() > 64 {
+                continue;
+            }
+            for sub in index.get(&q).into_iter().flatten() {
+                todo.push(sub.qualname.clone());
+                if !sub.def.methods.iter().any(|m| m.name == name) {
+                    continue;
+                }
+                if let Some((m, owner)) = self.find_overload(sub, name, Some(args.len())) {
+                    if !found.iter().any(|(_, f, _)| Rc::ptr_eq(f, &m)) {
+                        found.push((sub.clone(), m, owner));
+                    }
+                }
+            }
+        }
+        if found.is_empty() || found.len() > MAX_IMPLEMENTATIONS {
+            return None;
+        }
+        let mut out: Option<Value> = None;
+        for (sub, m, owner) in found {
+            let recv = Value::Obj(Rc::new(Obj {
+                class: sub.qualname.clone(),
+                def: Some(sub),
+                fields: o.fields.clone(),
+                taint: o.taint.clone(),
+            }));
+            let fv = FuncVal {
+                qualname: format!("{}.{}", owner.qualname, m.name).into(),
+                bound: if is_static(&m) { None } else { Some(recv) },
+                def: m,
+                module: owner.module,
+                closure: None,
+                scope: owner.scope.clone(),
+            };
+            let (v, _) = self.call_user(&fv, args, span);
+            out = Some(match out {
+                None => v,
+                Some(p) => join(&p, &v),
+            });
+        }
+        out
+    }
+
+    /// The project classes deriving directly from each class, by qualified
+    /// name. Test code is left out: it does not run in production.
+    fn subclass_index(&mut self) -> SubclassIndex {
+        if let Some(index) = &self.subclasses {
+            return index.clone();
+        }
+        let mut index: HashMap<Rc<str>, Vec<Rc<ClassVal>>> = HashMap::new();
+        for m in 0..self.project.modules.len() {
+            let info = &self.project.modules[m];
+            if info.is_test || info.lang != crate::Language::Java {
+                continue;
+            }
+            let names: Vec<String> = info
+                .ir
+                .body
+                .iter()
+                .filter_map(|s| match s {
+                    Stmt::ClassDef(c) => Some(c.name.clone()),
+                    _ => None,
+                })
+                .collect();
+            let Some(globals) = self.module_globals(m) else {
+                continue;
+            };
+            for n in names {
+                let Some(Value::Class(cv)) = globals.get(n.as_str()).cloned() else {
+                    continue;
+                };
+                for base in &cv.def.bases {
+                    let saved = self.frames.len();
+                    let mut frame = Frame::new(cv.module, None, Some(Env::new()));
+                    frame.scope = cv.scope.clone();
+                    self.frames.push(frame);
+                    let bv = self.lookup_dotted(base);
+                    self.frames.truncate(saved);
+                    if let Some(Value::Class(b)) = bv {
+                        index
+                            .entry(b.qualname.clone())
+                            .or_default()
+                            .push(cv.clone());
+                    }
+                }
+            }
+        }
+        let index = Rc::new(index);
+        self.subclasses = Some(index.clone());
+        index
     }
 
     pub fn call_value(&mut self, f: &Value, args: &[ArgVal], span: Span) -> Value {
@@ -1432,15 +1652,7 @@ impl<'p> Interp<'p> {
 
     fn call_value_inner(&mut self, f: &Value, args: &[ArgVal], span: Span) -> Value {
         match f {
-            Value::Func(fv) => {
-                let (v, _) = self.call_function(fv, args, span);
-                let bits = self.model.sanitizer_of(&fv.def.name);
-                if bits != 0 {
-                    v.sanitized(bits)
-                } else {
-                    v
-                }
-            }
+            Value::Func(fv) => self.call_user(fv, args, span).0,
             Value::Class(cv) => self.construct(cv, args, span),
             Value::Ref(path, t) => {
                 if let Some(v) = self.resolve_project_ref(path) {
@@ -1448,7 +1660,7 @@ impl<'p> Interp<'p> {
                         return self.call_value(&v, args, span);
                     }
                 }
-                let model = self.model;
+                let model = self.model();
                 model.call_ref(self, path, t, args, span)
             }
             Value::OneOf(alts) => {
@@ -1499,6 +1711,17 @@ impl<'p> Interp<'p> {
         cv: &Rc<ClassVal>,
         name: &str,
     ) -> Option<(Rc<Function>, Rc<ClassVal>)> {
+        self.find_overload(cv, name, None)
+    }
+
+    /// Finds a method; with `nargs`, the overload taking that many
+    /// arguments when the class has several (Java, C++).
+    fn find_overload(
+        &mut self,
+        cv: &Rc<ClassVal>,
+        name: &str,
+        nargs: Option<usize>,
+    ) -> Option<(Rc<Function>, Rc<ClassVal>)> {
         let mut todo = vec![cv.clone()];
         let mut visited = 0;
         while let Some(c) = todo.pop() {
@@ -1506,8 +1729,19 @@ impl<'p> Interp<'p> {
             if visited > 16 {
                 break;
             }
-            if let Some(m) = c.def.methods.iter().find(|m| m.name == name) {
-                return Some((m.clone(), c));
+            let mut found = c.def.methods.iter().filter(|m| m.name == name);
+            if let Some(first) = found.next() {
+                let arity = |m: &Function| {
+                    m.params.len() - usize::from(!is_static(m) && !m.params.is_empty())
+                };
+                let pick = match nargs {
+                    Some(n) => std::iter::once(first)
+                        .chain(found)
+                        .rfind(|m| arity(m) == n)
+                        .unwrap_or(first),
+                    None => first,
+                };
+                return Some((pick.clone(), c));
             }
             for base in &c.def.bases {
                 let saved = self.frames.len();
@@ -1522,6 +1756,71 @@ impl<'p> Interp<'p> {
             }
         }
         None
+    }
+
+    /// A field declared in the body of the class or of a project base
+    /// class, evaluated where that class is defined. A field without a
+    /// value takes what its declared type implies (an injected service).
+    fn field_value(&mut self, cv: &Rc<ClassVal>, name: &str) -> Option<Value> {
+        let mut todo = vec![cv.clone()];
+        let mut visited = 0;
+        while let Some(c) = todo.pop() {
+            visited += 1;
+            if visited > 16 {
+                break;
+            }
+            let saved = self.frames.len();
+            let mut frame = Frame::new(c.module, None, Some(Env::new()));
+            frame.scope = c.scope.clone();
+            self.frames.push(frame);
+            if let Some((value, ty)) = class_field(&c.def, name) {
+                let mut v = match value {
+                    Some(e) => self.eval(e),
+                    None => self.constructor_value(&c.def, name),
+                };
+                if let Some(ty) = ty {
+                    let model = self.model();
+                    v = model.coerce(self, ty, v);
+                }
+                self.frames.truncate(saved);
+                return Some(v);
+            }
+            for base in &c.def.bases {
+                if let Some(Value::Class(b)) = self.lookup_dotted(base) {
+                    todo.push(b);
+                }
+            }
+            self.frames.truncate(saved);
+        }
+        None
+    }
+
+    /// What the constructors of a class assign to a field declared without
+    /// a value (`this.random = new Random()`), their parameters unknown.
+    fn constructor_value(&mut self, class: &Class, name: &str) -> Value {
+        let mut vals = Vec::new();
+        for m in class.methods.iter().filter(|m| m.name == "__init__") {
+            let Some(this) = m.params.first() else {
+                continue;
+            };
+            for s in &m.body {
+                let Stmt::Assign {
+                    target: Target::Attr(base, field),
+                    value,
+                    ..
+                } = s
+                else {
+                    continue;
+                };
+                if field == name && matches!(&**base, Expr::Name(n) if *n == this.name) {
+                    for p in &m.params {
+                        self.set_var(&p.name, Value::clean());
+                    }
+                    vals.push(self.eval(value));
+                }
+            }
+        }
+        join_all(vals.into_iter()).unwrap_or_else(Value::clean)
     }
 
     /// Names of the library classes a project class derives from.
@@ -1552,6 +1851,9 @@ impl<'p> Interp<'p> {
     }
 
     fn lookup_dotted(&mut self, dotted: &str) -> Option<Value> {
+        if let Some(c) = self.lookup_global(dotted) {
+            return Some(c);
+        }
         let mut parts = dotted.split('.');
         let first = parts.next()?;
         let mut v = self.get_var(first)?;
@@ -1581,6 +1883,13 @@ impl<'p> Interp<'p> {
                 args_taint(args).union(&fv.bound.as_ref().map(|b| b.taint()).unwrap_or_default());
             return (Value::Unknown(t), fv.bound.clone());
         }
+        if self.quiet && self.frames.len() >= QUIET_DEPTH {
+            let t =
+                args_taint(args).union(&fv.bound.as_ref().map(|b| b.taint()).unwrap_or_default());
+            if !t.is_tainted() {
+                return (Value::Unknown(t), fv.bound.clone());
+            }
+        }
         let key = self.memo_key(fv, args);
         if let Some(hit) = key.as_ref().and_then(|k| self.memo.get(k)) {
             return hit.clone();
@@ -1609,9 +1918,10 @@ impl<'p> Interp<'p> {
         let route = self.current_route().map(|r| r.path.as_str()).unwrap_or("");
         let _ = write!(
             key,
-            "{:p}/{}/{}:{route}",
+            "{:p}/{}/{}/{}:{route}",
             Rc::as_ptr(&fv.def),
             fv.module,
+            u8::from(self.quiet),
             route.len()
         );
         match &fv.bound {
@@ -1701,7 +2011,7 @@ impl<'p> Interp<'p> {
                 self.set_var(&p.name, v);
             }
         }
-        let model = self.model;
+        let model = self.model();
         let route = model.route(self, fv.module, &fv.def);
         self.frame().route = route;
         self.calls.push((caller_module, span));
@@ -1741,16 +2051,11 @@ impl<'p> Interp<'p> {
                             scope: owner.scope.clone(),
                         }));
                     }
-                    if let Some(v) = class_field(&cv.def, name).cloned() {
-                        let saved = self.frames.len();
-                        self.frames
-                            .push(Frame::new(cv.module, None, Some(Env::new())));
-                        let v = self.eval(&v);
-                        self.frames.truncate(saved);
+                    if let Some(v) = self.field_value(&cv, name) {
                         return v;
                     }
                 }
-                let model = self.model;
+                let model = self.model();
                 model
                     .attr(self, base, name)
                     .unwrap_or_else(|| Value::Unknown(o.taint.clone()))
@@ -1767,24 +2072,14 @@ impl<'p> Interp<'p> {
                         scope: owner.scope.clone(),
                     }));
                 }
-                match class_field(&cv.def, name).cloned() {
-                    Some(e) => {
-                        let saved = self.frames.len();
-                        self.frames
-                            .push(Frame::new(cv.module, None, Some(Env::new())));
-                        let v = self.eval(&e);
-                        self.frames.truncate(saved);
-                        v
-                    }
-                    None => Value::clean(),
-                }
+                self.field_value(cv, name).unwrap_or_else(Value::clean)
             }
             Value::OneOf(alts) => {
                 let vals: Vec<Value> = alts.iter().map(|a| self.get_attr(a, name)).collect();
                 join_all(vals.into_iter()).unwrap_or_else(Value::clean)
             }
             other => {
-                let model = self.model;
+                let model = self.model();
                 model
                     .attr(self, other, name)
                     .unwrap_or_else(|| Value::Unknown(other.taint()))
@@ -1803,13 +2098,16 @@ impl<'p> Interp<'p> {
             }
         }
         let full = format!("{path}.{name}");
+        if let Some(c) = self.java_class(&full) {
+            return c;
+        }
         if self.project.is_module_or_package(&full) {
             return Value::Ref(full.into(), Taint::clean());
         }
         if self.project.is_module_or_package(path) {
             return Value::clean();
         }
-        let model = self.model;
+        let model = self.model();
         model.ref_attr(self, path, taint, name)
     }
 
@@ -1821,7 +2119,73 @@ impl<'p> Interp<'p> {
         g.get(member).cloned()
     }
 
+    /// A class of the project by qualified Java name.
+    fn java_class(&mut self, qualified: &str) -> Option<Value> {
+        let m = self.project.module_index(qualified)?;
+        if self.project.modules[m].lang != crate::Language::Java {
+            return None;
+        }
+        let last = qualified.rsplit('.').next().unwrap_or(qualified);
+        self.module_globals(m)?.get(last).cloned()
+    }
+
+    /// The project class a Java type names in the current module, such as
+    /// the declared type of an injected field.
+    pub fn java_type_class(&mut self, ty: &str) -> Option<Rc<ClassVal>> {
+        let name = ty.rsplit(' ').next().unwrap_or(ty);
+        let simple = name.rsplit('.').next().unwrap_or(name);
+        if name.ends_with("[]") || !simple.starts_with(|c: char| c.is_ascii_uppercase()) {
+            return None;
+        }
+        let found = if name.contains('.') {
+            self.lookup_dotted(name)
+        } else {
+            self.get_var(name).or_else(|| self.lookup_global(name))
+        };
+        match found {
+            Some(Value::Class(c)) => Some(c),
+            _ => None,
+        }
+    }
+
+    /// A name no scope defines: in Java, a class of the same package or of
+    /// a wildcard import, or a qualified class name.
+    fn lookup_global(&mut self, name: &str) -> Option<Value> {
+        let module = self.module();
+        let m = &self.project.modules[module];
+        if m.lang != crate::Language::Java {
+            return None;
+        }
+        if name.contains('.') {
+            return self.java_class(name);
+        }
+        let mut candidates = Vec::new();
+        if let Some(p) = &m.ir.package {
+            candidates.push(format!("{p}.{name}"));
+        }
+        for s in &m.ir.body {
+            if let Stmt::Import { alias, path } = s {
+                if alias == "*" {
+                    candidates.push(format!("{path}.{name}"));
+                }
+            }
+        }
+        candidates.into_iter().find_map(|c| self.java_class(&c))
+    }
+
     fn import_value(&mut self, path: &str) -> Value {
+        if self.project.modules[self.module()].lang == crate::Language::Java {
+            if let Some(c) = self.java_class(path) {
+                return c;
+            }
+            // `import static a.b.C.member`
+            if let Some((class, member)) = path.rsplit_once('.') {
+                if let Some(c) = self.java_class(class) {
+                    return self.get_attr(&c, member);
+                }
+            }
+            return Value::Ref(path.into(), Taint::clean());
+        }
         let mut resolved = self.resolve_relative(path);
         // A script imports modules next to it first (`sys.path[0]`).
         if !path.starts_with('.') {
@@ -1897,7 +2261,7 @@ impl<'p> Interp<'p> {
                 join_all(pairs.iter().map(|(_, v)| v.clone())).unwrap_or_else(Value::clean)
             }
             _ => {
-                let model = self.model;
+                let model = self.model();
                 model
                     .index(self, base, key)
                     .unwrap_or_else(|| Value::Unknown(base.taint()))
@@ -1916,7 +2280,7 @@ impl<'p> Interp<'p> {
                 return join_all(vals.into_iter()).unwrap_or_else(Value::clean);
             }
         }
-        let model = self.model;
+        let model = self.model();
         if let Some(v) = model.binop(self, op, l, r) {
             return v;
         }
@@ -2424,18 +2788,17 @@ fn is_static(f: &Function) -> bool {
         .any(|d| matches!(d, Expr::Name(n) if n == "staticmethod"))
 }
 
-fn class_field<'c>(c: &'c Class, name: &str) -> Option<&'c Expr> {
+/// A field set in the class body: its value, and its declared type.
+fn class_field<'c>(c: &'c Class, name: &str) -> Option<(Option<&'c Expr>, Option<&'c str>)> {
     c.fields.iter().rev().find_map(|s| match s {
         Stmt::Assign {
             target: Target::Name(n),
             value,
             ..
-        } if n == name => Some(value),
+        } if n == name => Some((Some(value), None)),
         Stmt::Declare {
-            name: n,
-            value: Some(value),
-            ..
-        } if n == name => Some(value),
+            name: n, value, ty, ..
+        } if n == name => Some((value.as_ref(), Some(ty.as_str()))),
         _ => None,
     })
 }

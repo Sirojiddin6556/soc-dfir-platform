@@ -1,12 +1,15 @@
 //! Prints the findings for a directory.
 //!
-//! cargo run --release -p code-analysis --example scan -- DIR [--json]
+//! cargo run --release -p code-analysis --example scan -- DIR [--json] [--tests]
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let root = std::path::Path::new(args.first().expect("directory"));
     let started = std::time::Instant::now();
-    let report = code_analysis::analyze_dir(root).expect("analyze");
+    let options = code_analysis::Options {
+        include_tests: args.iter().any(|a| a == "--tests"),
+    };
+    let report = code_analysis::analyze_dir_with(root, options).expect("analyze");
     if args.iter().any(|a| a == "--json") {
         println!("{}", serde_json::to_string_pretty(&report).expect("json"));
         return;
@@ -23,8 +26,9 @@ fn main() {
         );
     }
     eprintln!(
-        "{} files, {} lines, {} findings, {} parse errors, {:.1?} (load {} ms, analysis {} ms)",
+        "{} files ({} test files not analyzed), {} lines, {} findings, {} parse errors, {:.1?} (load {} ms, analysis {} ms)",
         report.files,
+        report.test_files,
         report.lines,
         report.findings.len(),
         report.parse_errors.len(),

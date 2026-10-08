@@ -35,6 +35,8 @@ pub struct ModuleInfo {
     pub path: String,
     pub lang: Language,
     pub is_package: bool,
+    /// Test code (see `is_test_path`).
+    pub is_test: bool,
     pub ir: Module,
     pub parse_errors: bool,
     source: String,
@@ -68,6 +70,9 @@ pub struct Project {
     packages: HashSet<String>,
     /// Files that were found but not analyzed, with the reason.
     pub skipped: Vec<(String, String)>,
+    /// Values of keys in the project's `.properties` files, every value
+    /// found for a key.
+    pub config: HashMap<String, Vec<String>>,
 }
 
 pub fn language_of(path: &Path) -> Option<Language> {
@@ -87,7 +92,8 @@ impl Project {
     pub fn from_dir(root: &Path) -> std::io::Result<Project> {
         let mut files = Vec::new();
         let mut skipped = Vec::new();
-        walk(root, root, &mut files, &mut skipped)?;
+        let mut config_files = Vec::new();
+        walk(root, root, &mut files, &mut skipped, &mut config_files)?;
         files.sort();
         let mut sources = Vec::new();
         for rel in files {
@@ -112,6 +118,11 @@ impl Project {
             .collect();
         let mut project = Project::from_sources_with(sources, &dirs_with_init);
         project.skipped.extend(skipped);
+        for rel in config_files {
+            if let Ok(text) = std::fs::read_to_string(root.join(&rel)) {
+                project.add_properties(&text);
+            }
+        }
         Ok(project)
     }
 
@@ -140,8 +151,44 @@ impl Project {
                     .push((path, "язык пока не поддерживается".into()));
                 continue;
             };
-            let (name, is_package) = module_name(&path, lang);
+            let (name, is_package) = match (lang, &ir.package) {
+                // Java classes are named by package: `org.example.Foo`.
+                (Language::Java, package) => {
+                    let stem = Path::new(&path)
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("");
+                    match package {
+                        Some(p) => (format!("{p}.{stem}"), false),
+                        None => (stem.to_string(), false),
+                    }
+                }
+                _ => module_name(&path, lang),
+            };
             let idx = project.modules.len();
+            if lang == Language::Java {
+                let package = ir.package.clone().unwrap_or_default();
+                let mut prefix = String::new();
+                for p in package.split('.').filter(|p| !p.is_empty()) {
+                    if !prefix.is_empty() {
+                        prefix.push('.');
+                    }
+                    prefix.push_str(p);
+                    project.packages.insert(prefix.clone());
+                }
+                // Other classes declared in the file are reachable by their
+                // own qualified names.
+                for s in &ir.body {
+                    if let crate::ir::Stmt::ClassDef(c) = s {
+                        let q = if package.is_empty() {
+                            c.name.clone()
+                        } else {
+                            format!("{package}.{}", c.name)
+                        };
+                        aliases.push((q, idx));
+                    }
+                }
+            }
             if lang == Language::Python {
                 // Also reachable without the leading directories that are not
                 // packages, the way `sys.path` usually points into a project.
@@ -165,6 +212,7 @@ impl Project {
             project.by_name.entry(name.clone()).or_insert(idx);
             project.modules.push(ModuleInfo {
                 name,
+                is_test: is_test_path(&path),
                 path,
                 lang,
                 is_package,
@@ -190,6 +238,25 @@ impl Project {
         project
     }
 
+    /// Reads `key=value` / `key: value` lines of a Java properties file.
+    pub fn add_properties(&mut self, text: &str) {
+        for line in text.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') || line.starts_with('!') {
+                continue;
+            }
+            let Some(pos) = line.find(['=', ':']) else {
+                continue;
+            };
+            let key = line[..pos].trim().to_string();
+            let value = line[pos + 1..].trim().to_string();
+            let values = self.config.entry(key).or_default();
+            if !values.contains(&value) {
+                values.push(value);
+            }
+        }
+    }
+
     pub fn module_index(&self, name: &str) -> Option<usize> {
         self.by_name.get(name).copied()
     }
@@ -212,11 +279,40 @@ fn module_name(path: &str, lang: Language) -> (String, bool) {
     }
 }
 
+/// Test code by the conventions of the languages: a `test`, `tests` or
+/// `__tests__` directory, `test_*.py`, `*_test.py`, `tests.py`,
+/// `conftest.py`, `*Test.java`, `*Tests.java`, `*IT.java`.
+pub fn is_test_path(path: &str) -> bool {
+    let mut parts: Vec<&str> = path.split('/').collect();
+    let file = parts.pop().unwrap_or("");
+    if parts
+        .iter()
+        .any(|d| matches!(*d, "test" | "tests" | "__tests__"))
+    {
+        return true;
+    }
+    match file.rsplit_once('.') {
+        Some((stem, "py")) => {
+            stem.starts_with("test_")
+                || stem.ends_with("_test")
+                || matches!(stem, "tests" | "conftest")
+        }
+        Some((stem, "java")) => {
+            stem.ends_with("Test")
+                || stem.ends_with("Tests")
+                || stem.ends_with("TestCase")
+                || stem.ends_with("IT")
+        }
+        _ => false,
+    }
+}
+
 fn walk(
     root: &Path,
     dir: &Path,
     out: &mut Vec<String>,
     skipped: &mut Vec<(String, String)>,
+    config: &mut Vec<String>,
 ) -> std::io::Result<()> {
     let mut entries: Vec<_> = std::fs::read_dir(dir)?.filter_map(|e| e.ok()).collect();
     entries.sort_by_key(|e| e.file_name());
@@ -231,7 +327,20 @@ fn walk(
             if SKIP_DIRS.contains(&name.as_str()) || name.starts_with('.') && name.len() > 1 {
                 continue;
             }
-            walk(root, &path, out, skipped)?;
+            walk(root, &path, out, skipped, config)?;
+        } else if ft.is_file() && name.ends_with(".properties") && config.len() < 1000 {
+            if entry
+                .metadata()
+                .map(|m| m.len() < 1024 * 1024)
+                .unwrap_or(false)
+            {
+                config.push(
+                    path.strip_prefix(root)
+                        .unwrap_or(&path)
+                        .to_string_lossy()
+                        .into_owned(),
+                );
+            }
         } else if ft.is_file() && language_of(&path).is_some() {
             let rel = path
                 .strip_prefix(root)

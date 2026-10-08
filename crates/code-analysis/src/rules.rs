@@ -167,6 +167,14 @@ rule!(
     ctx::HEADER
 );
 rule!(
+    CORS,
+    "cors-any-origin",
+    942,
+    Medium,
+    "CORS: доверие к любому Origin из запроса",
+    ctx::ORIGIN
+);
+rule!(
     SSRF,
     "ssrf",
     918,

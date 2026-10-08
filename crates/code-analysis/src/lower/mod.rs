@@ -1,5 +1,6 @@
 //! Front ends: tree-sitter syntax trees lowered to [`crate::ir`].
 
+pub mod java;
 pub mod python;
 
 use crate::ir::Span;
