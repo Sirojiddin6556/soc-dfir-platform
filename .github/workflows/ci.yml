@@ -5,6 +5,13 @@ on:
     branches: [ "main" ]
   pull_request:
     branches: [ "main" ]
+    # ready_for_review: a draft that is marked ready gets the Windows jobs.
+    types: [ opened, synchronize, reopened, ready_for_review ]
+
+# A new push to a pull request cancels its older run; runs on main finish.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -14,10 +21,12 @@ jobs:
   test:
     name: Rust + frontend tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        # Draft pull requests run on Linux only: Windows minutes count double.
+        os: ${{ fromJSON(github.event.pull_request.draft && '["ubuntu-latest"]' || '["ubuntu-latest", "windows-latest"]') }}
 
     steps:
       - name: Checkout Source Code
@@ -72,10 +81,12 @@ jobs:
     # PowerShell collectors against a real Windows host.
     name: Real-engine browser E2E (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        # Draft pull requests run on Linux only: Windows minutes count double.
+        os: ${{ fromJSON(github.event.pull_request.draft && '["ubuntu-latest"]' || '["ubuntu-latest", "windows-latest"]') }}
 
     steps:
       - uses: actions/checkout@v4
@@ -128,6 +139,7 @@ jobs:
   docker:
     name: Docker image builds and serves the app
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
