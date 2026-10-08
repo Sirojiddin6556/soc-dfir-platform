@@ -14,9 +14,10 @@
  *   PLAYWRIGHT_MODULE  import path of playwright if it is not resolvable normally
  *   CHROMIUM_PATH    Chromium executable to use instead of Playwright's own
  *   E2E_SCREENSHOTS  directory to save screenshots of every space
- *   E2E_REQUIRE_ALL_FEEDS=1  fail unless OSV, CISA KEV and FIRST EPSS all
- *                    download (CI has open internet; some sandboxes block
- *                    the KEV/EPSS hosts)
+ *   E2E_REQUIRE_ALL_FEEDS=1  fail unless every feed downloads (OSV or MSRC,
+ *                    CISA KEV, FIRST EPSS) and, on Windows, the independent
+ *                    check against the MSRC Security Update Guide API runs
+ *                    (CI has open internet; some sandboxes block these hosts)
  */
 
 import { spawn, spawnSync } from 'node:child_process';
@@ -131,6 +132,120 @@ function dpkgSources() {
   return map;
 }
 
+/** Values under HKLM\...\Windows NT\CurrentVersion, read with reg.exe. */
+function windowsCurrentVersion() {
+  const r = spawnSync('reg', ['query', 'HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion'], { encoding: 'utf8' });
+  if (r.error || r.status !== 0) return null;
+  const values = {};
+  for (const line of r.stdout.split(/\r?\n/)) {
+    const m = line.match(/^\s+(\S+)\s+(REG_SZ|REG_DWORD)\s+(.*)$/);
+    if (m) values[m[1]] = m[2] === 'REG_DWORD' ? Number.parseInt(m[3], 16) : m[3].trim();
+  }
+  return values;
+}
+
+/** Installed update ids as Get-HotFix lists them. */
+function windowsHotfixes() {
+  const r = spawnSync('powershell', ['-NoProfile', '-Command', 'Get-HotFix | ForEach-Object { $_.HotFixID }'], { encoding: 'utf8' });
+  if (r.error || r.status !== 0) return null;
+  return r.stdout.split(/\r?\n/).map((l) => l.trim().toUpperCase()).filter((l) => /^KB\d+$/.test(l));
+}
+
+/**
+ * Every record of the MSRC Security Update Guide API for one product
+ * revised since `since`: a source independent of the CVRF documents the
+ * engine imports.
+ */
+async function securityUpdateGuide(product, since) {
+  const filter = `product eq '${product.replace(/'/g, "''")}' and releaseDate gt ${since}`;
+  let url = `https://api.msrc.microsoft.com/sug/v2.0/en-US/affectedProduct?$filter=${encodeURIComponent(filter)}`;
+  const records = [];
+  for (let page = 0; url && page < 200; page++) {
+    const r = await fetch(url, { headers: { Accept: 'application/json' } });
+    if (!r.ok) throw new Error(`SUG HTTP ${r.status}`);
+    const body = await r.json();
+    records.push(...(body.value || []));
+    url = body['@odata.nextLink'] || null;
+  }
+  return records;
+}
+
+/**
+ * Independent Windows verdicts from SUG records: patched when an installed
+ * KB or a build at or past a regular fix of the same branch (hotpatches only
+ * at their exact build), unverifiable when every fix is for another branch.
+ */
+function sugVerdicts(records, documents, build, hotfixes) {
+  const host = build.split('.').map(Number);
+  const installed = new Set(hotfixes.map((k) => k.replace(/^KB/, '')));
+  const byCve = new Map();
+  for (const rec of records) {
+    if (!documents.includes(rec.releaseNumber)) continue;
+    if (!byCve.has(rec.cveNumber)) byCve.set(rec.cveNumber, []);
+    byCve.get(rec.cveNumber).push(...(rec.kbArticles || []));
+  }
+  const vulnerable = new Set();
+  const unverified = new Set();
+  let patched = 0;
+  for (const [cve, kbs] of byCve) {
+    if (kbs.some((kb) => installed.has(String(kb.articleName).trim()))) { patched++; continue; }
+    const fixes = kbs.map((kb) => ({
+      hotpatch: /hotpatch/i.test(kb.downloadName || '') || /hotpatch/i.test(kb.subType || ''),
+      build: String(kb.fixedBuildNumber || '').replace(/[^0-9.]/g, '').split('.').map(Number),
+    })).filter((f) => f.build.length === 4 && f.build.every(Number.isFinite)
+      && f.build[0] === host[0] && f.build[1] === host[1] && f.build[2] === host[2]);
+    if (!fixes.length) {
+      if (kbs.length) unverified.add(cve); else vulnerable.add(cve);
+      continue;
+    }
+    const ok = fixes.some((f) => (f.hotpatch ? host[3] === f.build[3] : host[3] >= f.build[3]));
+    if (ok) patched++; else vulnerable.add(cve);
+  }
+  return { vulnerable, unverified, patched, total: byCve.size };
+}
+
+async function checkWindowsScan(scan, requireAll) {
+  const reg = windowsCurrentVersion();
+  const hotfixes = windowsHotfixes();
+  check(Boolean(reg && hotfixes), 'registry and Get-HotFix are readable for the independent check');
+  if (!reg || !hotfixes) return;
+  const build = `10.0.${reg.CurrentBuild}.${reg.UBR}`;
+  console.log(`  registry: ${reg.ProductName} ${reg.DisplayVersion || ''} ${reg.InstallationType}, build ${build}, ${hotfixes.length} hotfixes`);
+  const win = scan.windows;
+  check(win.build === build, `engine build ${win.build} matches the registry (${build})`);
+  const year = (reg.ProductName.match(/Windows Server (\d{4}(?: R2)?)/) || [])[1];
+  if (year) {
+    const expected = `Windows Server ${year}${reg.InstallationType === 'Server Core' ? ' (Server Core installation)' : ''}`;
+    check(win.product === expected, `engine maps the host to the MSRC product "${expected}" (${win.product})`);
+  }
+  const engineKbs = new Set((win.installed_updates || []).map((k) => k.toUpperCase()));
+  check(hotfixes.every((k) => engineKbs.has(k)), `engine sees every installed update (${hotfixes.join(', ')})`);
+  check(scan.summary.patched > 0, `the host's updates close known CVEs (${scan.summary.patched} patched)`);
+
+  // A month before the oldest document, so records released early for it
+  // are included; the release number filters the rest out.
+  const oldest = win.documents[win.documents.length - 1];
+  const month = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'].indexOf(oldest.slice(5));
+  const since = new Date(Date.UTC(Number(oldest.slice(0, 4)), month - 1, 1)).toISOString().replace(/\.\d{3}Z$/, 'Z');
+  let records;
+  try {
+    records = await securityUpdateGuide(win.product, since);
+  } catch (e) {
+    check(!requireAll, `Security Update Guide API is reachable for the independent check (${e.message})`);
+    return;
+  }
+  const sug = sugVerdicts(records, win.documents, build, hotfixes);
+  const engineVulnerable = new Set(scan.findings.map((f) => f.id));
+  const missed = [...sug.vulnerable].filter((c) => !engineVulnerable.has(c));
+  const extra = [...engineVulnerable].filter((c) => !sug.vulnerable.has(c));
+  console.log(`  SUG: ${records.length} records, ${sug.total} CVEs in ${win.documents.length} documents; vulnerable ${sug.vulnerable.size}, patched ${sug.patched}, unverified ${sug.unverified.size}`);
+  check(sug.total > 0, `Security Update Guide lists CVEs for ${win.product}`);
+  check(missed.length === 0 && extra.length === 0,
+    `engine findings match the Security Update Guide (${engineVulnerable.size} vs ${sug.vulnerable.size})${missed.length ? `; missed ${missed.slice(0, 5).join(', ')}` : ''}${extra.length ? `; extra ${extra.slice(0, 5).join(', ')}` : ''}`);
+  check(scan.summary.patched === sug.patched,
+    `engine patched count matches the Security Update Guide (${scan.summary.patched} vs ${sug.patched})`);
+}
+
 async function checkVulnerabilityScan(page, base, shot) {
   const token = await page.evaluate(() => localStorage.getItem('soc_session_token'));
   const rpc = async (method, params = {}) => {
@@ -145,7 +260,13 @@ async function checkVulnerabilityScan(page, base, shot) {
   await page.waitForSelector('#vulnHostLine');
   const status = (await rpc('vulndb.status')).result;
   const host = status.host;
-  console.log(`  host: ${host.os}, ecosystem ${host.ecosystem}, packages ${host.packages}`);
+  const windows = host.platform === 'windows';
+  console.log(windows
+    ? `  host: ${host.os}, build ${host.build}, MSRC product ${host.product}, updates ${host.installed_updates} (${host.detail || 'supported'})`
+    : `  host: ${host.os}, ecosystem ${host.ecosystem}, packages ${host.packages}`);
+  if (process.platform === 'win32') {
+    check(windows && host.supported, `Windows host is recognised as an MSRC product (${host.product || host.detail})`);
+  }
 
   const before = (await rpc('scan.cve')).result;
   if (host.supported) {
@@ -165,7 +286,9 @@ async function checkVulnerabilityScan(page, base, shot) {
   for (const st of steps) console.log(`  ${st.ok ? 'ok  ' : 'FAIL'} ${st.feed}: ${st.message}${st.source ? ` (${st.source})` : ''}`);
   const step = (feed) => steps.find((st) => st.feed === feed);
   const requireAll = process.env.E2E_REQUIRE_ALL_FEEDS === '1';
-  if (host.supported) {
+  if (host.supported && windows) {
+    check(step('msrc')?.ok, `MSRC monthly security updates downloaded and imported (${step('msrc')?.message})`);
+  } else if (host.supported) {
     check(step(`osv:${host.ecosystem}`)?.ok, `OSV advisories for ${host.ecosystem} downloaded and imported`);
   }
   if (requireAll) {
@@ -180,7 +303,7 @@ async function checkVulnerabilityScan(page, base, shot) {
     await page.click('#vulnScanBtn');
     await page.waitForSelector('#vulnStatus');
     check((await page.getAttribute('#vulnStatus', 'data-status')) === 'UNSUPPORTED_PLATFORM',
-      'UI shows that package CVE matching is not available on this OS');
+      'UI shows that CVE matching is not available on this OS');
     return;
   }
 
@@ -191,15 +314,25 @@ async function checkVulnerabilityScan(page, base, shot) {
   check(uiStatus === scan.status, `UI scan status matches the engine (${uiStatus})`);
   check(['VULNERABILITIES_FOUND', 'NO_KNOWN_MATCHED_VULNERABILITIES'].includes(scan.status),
     `scan ran against a loaded database: ${scan.status_detail}`);
-  check(scan.packages_total === host.packages && scan.packages_total > 0,
-    `every installed package was checked (${scan.packages_total})`);
+  if (!windows) {
+    check(scan.packages_total === host.packages && scan.packages_total > 0,
+      `every installed package was checked (${scan.packages_total})`);
+  }
   console.log(`  findings: ${scan.summary.total} (critical ${scan.summary.critical}, high ${scan.summary.high}, kev ${scan.summary.kev}, no fix ${scan.summary.no_fix}), patched ${scan.summary.patched}`);
   for (const f of scan.findings.filter((x) => x.status === 'fix_available').slice(0, 10)) {
-    console.log(`    ${f.id} ${f.component} ${f.installed_version} -> ${f.fixed_version} [${f.severity}]${f.kev ? ' KEV' : ''}`);
+    console.log(`    ${f.id} ${f.component} ${f.installed_version} -> ${f.fixed_version} [${f.severity}]${f.kev ? ' KEV' : ''}${f.exploited ? ' exploited' : ''} ${(f.sources || []).join(' ')}`);
+  }
+
+  if (windows) {
+    await checkWindowsScan(scan, requireAll);
+    check((await page.textContent('#vulnHostLine')).includes(scan.windows.product), 'UI names the MSRC product of this host');
+    check(await page.isVisible('#vulnWindowsMeta'), 'UI says which MSRC months the build was checked against');
+    const uiExploited = Number(await page.textContent('#vulnExploited span'));
+    check(uiExploited === scan.summary.exploited, `UI exploited count (${uiExploited}) matches the engine`);
   }
 
   // Independent check with the distribution's own tools.
-  const sources = dpkgSources();
+  const sources = windows ? null : dpkgSources();
   if (sources) {
     const notInstalled = scan.findings.filter((f) => !sources.get(f.component)?.has(f.installed_version));
     check(notInstalled.length === 0,

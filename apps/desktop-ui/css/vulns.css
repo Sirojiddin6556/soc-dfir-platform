@@ -29,12 +29,14 @@
 .vuln-sev-medium { color: var(--accent-warning); border-color: var(--accent-warning); }
 .vuln-sev-low { color: var(--accent-info); border-color: var(--accent-info); }
 .vuln-kev { color: #fff; background: var(--accent-purple); border-color: var(--accent-purple); }
+.vuln-exploited { color: #fff; background: var(--accent-critical); border-color: var(--accent-critical); }
 .vuln-chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
 .vuln-chip { border: 1px solid var(--border-muted); border-radius: 6px; padding: 6px 10px; font-size: 11px; color: var(--text-secondary); background: var(--bg-canvas); }
 .vuln-chip span { display: block; font-size: 16px; font-weight: 700; color: var(--text-primary); font-family: var(--font-mono); }
 .vuln-chip.vuln-sev-critical span, .vuln-chip.vuln-sev-high span { color: inherit; }
 .vuln-chip.vuln-sev-critical, .vuln-chip.vuln-sev-high { color: inherit; }
 .vuln-kev-chip { border-color: var(--accent-purple); }
+.vuln-exploited-chip { border-color: var(--accent-critical); }
 .vuln-chip-ok { border-color: var(--accent-success); }
 .vuln-status { font-size: 13px; padding: 8px 12px; border-radius: 6px; border: 1px solid var(--border-muted); }
 .vuln-status-found { border-color: var(--accent-critical); color: var(--text-primary); }
