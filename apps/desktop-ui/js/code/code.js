@@ -125,6 +125,9 @@ export class CodeSpace {
       return;
     }
     savePath(path);
+    // A second click while the request is on its way would be refused.
+    const btn = this.container?.querySelector('#codeScanBtn');
+    if (btn) btn.disabled = true;
     try {
       this.status = await this.ipc.call('code.scan', {
         path,
@@ -228,7 +231,7 @@ export class CodeSpace {
 
     panel.innerHTML = `
       <div class="vuln-panel-title">РЕЗУЛЬТАТ</div>
-      <div id="codeStatus" class="vuln-status ${all.length ? 'vuln-status-found' : 'vuln-status-clean'}" data-count="${escapeAttr(String(all.length))}">
+      <div id="codeStatus" class="vuln-status ${all.length ? 'vuln-status-found' : 'vuln-status-clean'}" data-count="${escapeAttr(String(all.length))}" data-finished="${escapeAttr(s.finished_at || '')}">
         ${all.length ? `Найдено уязвимостей: ${escapeHtml(String(all.length))}` : 'Путей от входа пользователя до опасных вызовов не найдено'}
       </div>
       <div class="vuln-chips" id="codeSummary">

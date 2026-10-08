@@ -470,11 +470,15 @@ async function checkCodeScan(page, base, shot, allowIpcError) {
     const scanned = async (tests) => {
       if ((await page.isChecked('#codeTests')) !== tests) await page.click('#codeTests');
       await page.fill('#codePath', dir);
+      // The result of the previous run stays on the page until this one
+      // finishes: wait for a result with another finish time.
+      const previous = await page.evaluate(() => document.getElementById('codeStatus')?.dataset.finished ?? null);
       await page.click('#codeScanBtn');
-      await page.waitForFunction(() => {
+      await page.waitForFunction((prev) => {
         const btn = document.getElementById('codeScanBtn');
-        return btn && !btn.disabled && document.getElementById('codeStatus');
-      }, null, { timeout: 120000 });
+        const result = document.getElementById('codeStatus');
+        return btn && !btn.disabled && result && result.dataset.finished !== prev;
+      }, previous, { timeout: 120000 });
       const status = (await rpc('code.status')).result;
       check(!status.running && !status.error && status.include_tests === tests,
         `analysis of ${dir} finished${tests ? ' with tests' : ''} (${status.error || 'no error'})`);
