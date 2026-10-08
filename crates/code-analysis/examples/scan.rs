@@ -6,8 +6,7 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let root = std::path::Path::new(args.first().expect("directory"));
     let started = std::time::Instant::now();
-    let project = code_analysis::project::Project::from_dir(root).expect("load");
-    let report = code_analysis::analyze(&project);
+    let report = code_analysis::analyze_dir(root).expect("analyze");
     if args.iter().any(|a| a == "--json") {
         println!("{}", serde_json::to_string_pretty(&report).expect("json"));
         return;
@@ -24,11 +23,13 @@ fn main() {
         );
     }
     eprintln!(
-        "{} files, {} lines, {} findings, {} parse errors, {:.1?}",
+        "{} files, {} lines, {} findings, {} parse errors, {:.1?} (load {} ms, analysis {} ms)",
         report.files,
         report.lines,
         report.findings.len(),
         report.parse_errors.len(),
-        started.elapsed()
+        started.elapsed(),
+        report.load_ms,
+        report.analysis_ms
     );
 }

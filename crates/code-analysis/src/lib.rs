@@ -75,10 +75,37 @@ pub struct Report {
     pub languages: Vec<(String, usize)>,
     pub skipped: Vec<(String, String)>,
     pub parse_errors: Vec<String>,
+    /// Time spent reading and parsing the files, then analyzing them.
+    pub load_ms: u64,
+    pub analysis_ms: u64,
+}
+
+/// Stack for the analysis thread: the interpreter recurses through calls,
+/// imports and nested expressions.
+const STACK_BYTES: usize = 512 * 1024 * 1024;
+
+/// Loads and analyzes every supported file under `root`, on a thread with
+/// a stack large enough for deep projects.
+pub fn analyze_dir(root: &std::path::Path) -> std::io::Result<Report> {
+    let root = root.to_path_buf();
+    std::thread::Builder::new()
+        .name("code-analysis".into())
+        .stack_size(STACK_BYTES)
+        .spawn(move || {
+            let started = std::time::Instant::now();
+            let project = project::Project::from_dir(&root)?;
+            let load_ms = started.elapsed().as_millis() as u64;
+            let mut report = analyze(&project);
+            report.load_ms = load_ms;
+            Ok(report)
+        })?
+        .join()
+        .map_err(|_| std::io::Error::other("анализ кода завершился аварийно"))?
 }
 
 /// Analyzes every file of a project.
 pub fn analyze(project: &project::Project) -> Report {
+    let started = std::time::Instant::now();
     let python = models::python::Python;
     let mut interp = interp::Interp::new(project, &python);
     let mut languages: Vec<(String, usize)> = Vec::new();
@@ -111,6 +138,8 @@ pub fn analyze(project: &project::Project) -> Report {
             .filter(|m| m.parse_errors)
             .map(|m| m.path.clone())
             .collect(),
+        load_ms: 0,
+        analysis_ms: started.elapsed().as_millis() as u64,
     }
 }
 

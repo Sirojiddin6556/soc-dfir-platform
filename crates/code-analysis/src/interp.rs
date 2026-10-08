@@ -8,9 +8,9 @@
 
 use crate::ir::*;
 use crate::project::Project;
-use crate::rules::{Finding, Location, Rule};
+use crate::rules::{makes_secret, name_words, secret_name, Finding, Location, Rule, WEAK_RANDOM};
 use crate::value::*;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 const MAX_DEPTH: usize = 10;
@@ -228,7 +228,22 @@ pub struct Interp<'p> {
     pub findings: Vec<Finding>,
     seen: HashSet<(String, usize, u32, u32, usize, u32)>,
     steps: usize,
+    /// Nesting of expression evaluation, bounded to keep the stack safe.
+    depth: usize,
+    /// Modules whose top level is being run (imports inside imports).
+    loading: usize,
+    /// Times a limit cut the analysis short; a call whose analysis was cut
+    /// is not reused.
+    cutoffs: usize,
+    /// Results of calls with clean arguments, by callee and arguments: the
+    /// same helper called the same way behaves the same.
+    memo: HashMap<String, (Value, Option<Value>)>,
 }
+
+const MAX_MEMO: usize = 200_000;
+
+const MAX_EVAL_DEPTH: usize = 300;
+const MAX_IMPORT_DEPTH: usize = 12;
 
 impl<'p> Interp<'p> {
     pub fn new(project: &'p Project, model: &'p dyn Model) -> Self {
@@ -241,6 +256,10 @@ impl<'p> Interp<'p> {
             findings: Vec::new(),
             seen: HashSet::new(),
             steps: 0,
+            depth: 0,
+            loading: 0,
+            cutoffs: 0,
+            memo: HashMap::new(),
         }
     }
 
@@ -326,7 +345,23 @@ impl<'p> Interp<'p> {
             what: what.into(),
             module: self.module(),
             span: self.span(),
+            weak_random: false,
         })
+    }
+
+    /// A value from a non-cryptographic generator, made at `span`: reported
+    /// where it is used as a secret, harmless anywhere else.
+    pub fn weak_random(&self, what: &str, span: Span, args: &[ArgVal]) -> Value {
+        let t = Taint {
+            sources: vec![Source {
+                what: what.into(),
+                module: self.module(),
+                span,
+                weak_random: true,
+            }],
+            safe: ctx::ALL,
+        };
+        Value::Unknown(t.union(&args_taint(args)))
     }
 
     /// Reports `rule` when user data reaches `value` unsanitized. String
@@ -336,7 +371,12 @@ impl<'p> Interp<'p> {
         let Some(t) = reaching(value, rule.context) else {
             return false;
         };
-        let src = t.sources.first().cloned();
+        let want_random = rule.context & ctx::SECRET != 0;
+        let src = t
+            .sources
+            .iter()
+            .find(|s| s.weak_random == want_random)
+            .cloned();
         self.report(rule, span, what, src);
         true
     }
@@ -349,16 +389,26 @@ impl<'p> Interp<'p> {
     fn report(&mut self, rule: &'static Rule, span: Span, what: &str, src: Option<Source>) {
         let module = self.module();
         // One finding per sink and source: the same flow reached through
-        // several callers is reported once.
-        let src_module = src.as_ref().map(|s| s.module).unwrap_or(usize::MAX);
-        let key = (
-            rule.id.to_string(),
-            module,
-            span.line,
-            span.column,
-            src_module,
-            0,
-        );
+        // several callers is reported once. A predictable random value is
+        // reported once where it is made, however many secrets it fills.
+        let key = match &src {
+            Some(s) if s.weak_random => (
+                rule.id.to_string(),
+                s.module,
+                s.span.line,
+                s.span.column,
+                usize::MAX,
+                1,
+            ),
+            _ => (
+                rule.id.to_string(),
+                module,
+                span.line,
+                span.column,
+                src.as_ref().map(|s| s.module).unwrap_or(usize::MAX),
+                0,
+            ),
+        };
         if !self.seen.insert(key) {
             return;
         }
@@ -376,20 +426,30 @@ impl<'p> Interp<'p> {
             trace.push(loc(*m, *s, "вызов".into()));
         }
         trace.push(loc(module, span, format!("сток: {what}")));
-        let file = &self.project.modules[module];
+        let (at_module, at) = match &src {
+            Some(s) if s.weak_random => (s.module, s.span),
+            _ => (module, span),
+        };
+        let file = &self.project.modules[at_module];
         self.findings.push(Finding {
             rule: rule.id.to_string(),
             cwe: rule.cwe,
             severity: rule.severity,
             title: rule.title.to_string(),
             message: match &src {
+                Some(s) if s.weak_random => {
+                    format!(
+                        "{}: значение {} используется как {what}",
+                        rule.title, s.what
+                    )
+                }
                 Some(s) => format!("{}: данные из {} попадают в {what}", rule.title, s.what),
                 None => format!("{}: {what}", rule.title),
             },
             file: file.path.clone(),
-            line: span.line,
-            column: span.column,
-            snippet: file.line_text(span.line),
+            line: at.line,
+            column: at.column,
+            snippet: file.line_text(at.line),
             source: src.map(|s| loc(s.module, s.span, s.what.to_string())),
             trace,
         });
@@ -454,9 +514,17 @@ impl<'p> Interp<'p> {
     fn module_globals(&mut self, module: usize) -> Option<Rc<Env>> {
         match &self.globals[module] {
             Globals::Done(env) => return Some(env.clone()),
-            Globals::Running => return None,
+            Globals::Running => {
+                self.cutoffs += 1;
+                return None;
+            }
             Globals::Pending => {}
         }
+        if self.loading >= MAX_IMPORT_DEPTH {
+            self.cutoffs += 1;
+            return None;
+        }
+        self.loading += 1;
         self.globals[module] = Globals::Running;
         let saved_calls = std::mem::take(&mut self.calls);
         let saved_steps = self.steps;
@@ -468,6 +536,7 @@ impl<'p> Interp<'p> {
         self.steps = saved_steps;
         let env = Rc::new(frame.env.unwrap_or_default());
         self.globals[module] = Globals::Done(env.clone());
+        self.loading -= 1;
         Some(env)
     }
 
@@ -480,6 +549,7 @@ impl<'p> Interp<'p> {
             }
             self.steps += 1;
             if self.steps > MAX_STEPS {
+                self.cutoffs += 1;
                 return;
             }
             self.exec(s);
@@ -564,6 +634,10 @@ impl<'p> Interp<'p> {
             Stmt::Return(e, span) => {
                 self.frame().span = *span;
                 let v = e.as_ref().map(|e| self.eval(e)).unwrap_or(Value::None);
+                let func = self.frames.last().and_then(|f| f.func.clone());
+                if let Some(func) = func.filter(|f| makes_secret(&f.name)) {
+                    self.sink(&WEAK_RANDOM, &v, *span, &format!("{}()", func.name));
+                }
                 if let Some(route) = self.frames.last().and_then(|f| f.route.clone()) {
                     let model = self.model;
                     model.on_return(self, &route, &v, *span);
@@ -821,8 +895,16 @@ impl<'p> Interp<'p> {
 
     pub fn assign(&mut self, target: &Target, value: Value, span: Span) {
         match target {
-            Target::Name(n) => self.set_var(n, value),
+            Target::Name(n) => {
+                if secret_name(n) {
+                    self.sink(&WEAK_RANDOM, &value, span, n);
+                }
+                self.set_var(n, value)
+            }
             Target::Attr(obj, field) => {
+                if secret_name(field) {
+                    self.sink(&WEAK_RANDOM, &value, span, field);
+                }
                 let base = self.eval(obj);
                 if let Value::Obj(o) = &base {
                     let mut o = (**o).clone();
@@ -833,6 +915,15 @@ impl<'p> Interp<'p> {
             Target::Index(base_e, key_e) => {
                 let base = self.eval(base_e);
                 let key = self.eval(key_e);
+                let key_name = key.as_str().unwrap_or_default();
+                let store = match &**base_e {
+                    Expr::Name(n) | Expr::Attr(_, n) => n.as_str(),
+                    _ => "",
+                };
+                if secret_name(&key_name) || name_words(store).any(|w| w == "session") {
+                    let what = format!("{store}[{key_name:?}]");
+                    self.sink(&WEAK_RANDOM, &value, span, &what);
+                }
                 let model = self.model;
                 if let Some(nb) = model.store_index(self, &base, &key, &value, span) {
                     self.assign_expr(base_e, nb, span);
@@ -1041,6 +1132,17 @@ impl<'p> Interp<'p> {
     // ----- expressions -----
 
     pub fn eval(&mut self, e: &Expr) -> Value {
+        if self.depth >= MAX_EVAL_DEPTH {
+            self.cutoffs += 1;
+            return Value::clean();
+        }
+        self.depth += 1;
+        let v = self.eval_inner(e);
+        self.depth -= 1;
+        v
+    }
+
+    fn eval_inner(&mut self, e: &Expr) -> Value {
         self.steps += 1;
         match e {
             Expr::Lit(c) => const_value(c),
@@ -1077,7 +1179,7 @@ impl<'p> Interp<'p> {
             }
             Expr::Call { func, args, span } => self.eval_call(func, args, *span),
             Expr::New { class, args, span } => {
-                let argv = self.eval_args(args);
+                let argv = self.eval_args(args, *span);
                 match self.get_var(class) {
                     Some(c @ Value::Class(_)) => self.call_value(&c, &argv, *span),
                     Some(Value::Ref(p, t)) => {
@@ -1208,22 +1310,28 @@ impl<'p> Interp<'p> {
         self.eval(bound).as_int()
     }
 
-    fn eval_args(&mut self, args: &[Arg]) -> Vec<ArgVal> {
-        args.iter()
-            .map(|a| ArgVal {
+    fn eval_args(&mut self, args: &[Arg], span: Span) -> Vec<ArgVal> {
+        let mut out = Vec::with_capacity(args.len());
+        for a in args {
+            let value = self.eval(&a.value);
+            if let Some(name) = a.name.as_deref().filter(|n| secret_name(n)) {
+                self.sink(&WEAK_RANDOM, &value, span, name);
+            }
+            out.push(ArgVal {
                 name: a.name.as_deref().map(Rc::from),
-                value: self.eval(&a.value),
+                value,
                 spread: a.spread,
                 var: match &a.value {
                     Expr::Name(n) => Some(n.as_str().into()),
                     _ => None,
                 },
-            })
-            .collect()
+            });
+        }
+        out
     }
 
     fn eval_call(&mut self, func: &Expr, args: &[Arg], span: Span) -> Value {
-        let argv = self.eval_args(args);
+        let argv = self.eval_args(args, span);
         if let Expr::Attr(recv_e, name) = func {
             let recv = self.eval(recv_e);
             let (v, new_recv) = self.call_method(&recv, name, &argv, span);
@@ -1311,6 +1419,18 @@ impl<'p> Interp<'p> {
     }
 
     pub fn call_value(&mut self, f: &Value, args: &[ArgVal], span: Span) -> Value {
+        // A name can resolve to alternatives that include itself again.
+        if self.depth >= MAX_EVAL_DEPTH {
+            self.cutoffs += 1;
+            return Value::Unknown(f.taint().union(&args_taint(args)));
+        }
+        self.depth += 1;
+        let v = self.call_value_inner(f, args, span);
+        self.depth -= 1;
+        v
+    }
+
+    fn call_value_inner(&mut self, f: &Value, args: &[ArgVal], span: Span) -> Value {
         match f {
             Value::Func(fv) => {
                 let (v, _) = self.call_function(fv, args, span);
@@ -1456,10 +1576,71 @@ impl<'p> Interp<'p> {
                 .unwrap_or(false)
         });
         if recursive || self.frames.len() >= MAX_DEPTH || self.steps > MAX_STEPS {
+            self.cutoffs += 1;
             let t =
                 args_taint(args).union(&fv.bound.as_ref().map(|b| b.taint()).unwrap_or_default());
             return (Value::Unknown(t), fv.bound.clone());
         }
+        let key = self.memo_key(fv, args);
+        if let Some(hit) = key.as_ref().and_then(|k| self.memo.get(k)) {
+            return hit.clone();
+        }
+        let cutoffs = self.cutoffs;
+        let result = self.run_function(fv, args, span);
+        if let Some(k) = key {
+            if self.cutoffs == cutoffs {
+                if self.memo.len() >= MAX_MEMO {
+                    self.memo.clear();
+                }
+                self.memo.insert(k, result.clone());
+            }
+        }
+        result
+    }
+
+    /// Identifies a call with no user data in its callee, receiver or
+    /// arguments; None for calls whose result must be computed each time.
+    fn memo_key(&self, fv: &FuncVal, args: &[ArgVal]) -> Option<String> {
+        use std::fmt::Write;
+        if fv.closure.is_some() {
+            return None;
+        }
+        let mut key = String::new();
+        let route = self.current_route().map(|r| r.path.as_str()).unwrap_or("");
+        let _ = write!(
+            key,
+            "{:p}/{}/{}:{route}",
+            Rc::as_ptr(&fv.def),
+            fv.module,
+            route.len()
+        );
+        match &fv.bound {
+            Some(b) => {
+                key.push('<');
+                fingerprint(b, &mut key)?;
+                key.push('>');
+            }
+            None => key.push('-'),
+        }
+        for a in args {
+            let name = a.name.as_deref().unwrap_or("");
+            let _ = write!(
+                key,
+                ",{}{}:{name}",
+                if a.spread { "*" } else { "" },
+                name.len()
+            );
+            fingerprint(&a.value, &mut key)?;
+        }
+        Some(key)
+    }
+
+    fn run_function(
+        &mut self,
+        fv: &FuncVal,
+        args: &[ArgVal],
+        span: Span,
+    ) -> (Value, Option<Value>) {
         let caller_module = self.module();
         let mut env = Env::new();
         let params = &fv.def.params;
@@ -1763,6 +1944,109 @@ impl Frame {
 
 /// Taint that reaches a sink of `context`, checking string pieces in their
 /// quoting context.
+/// Describes `v` as a call argument so that equal descriptions behave the
+/// same; None when it holds user data or is too large to compare.
+fn fingerprint(v: &Value, out: &mut String) -> Option<()> {
+    use std::fmt::Write;
+    if out.len() > 4096 {
+        return None;
+    }
+    match v {
+        Value::Unknown(t) => {
+            if t.is_tainted() {
+                return None;
+            }
+            out.push('?');
+        }
+        Value::None => out.push('N'),
+        Value::Bool(b) => out.push(if *b { 'T' } else { 'F' }),
+        Value::Int(i) => {
+            let _ = write!(out, "i{i};");
+        }
+        Value::Float(f) => {
+            let _ = write!(out, "f{};", f.to_bits());
+        }
+        Value::Str(segs) => {
+            out.push('s');
+            for seg in segs.iter() {
+                match seg {
+                    Seg::Lit(t) => {
+                        let _ = write!(out, "{}:{t}", t.len());
+                    }
+                    Seg::Dyn(t) => {
+                        if t.is_tainted() {
+                            return None;
+                        }
+                        let _ = write!(out, "d{};", t.safe);
+                    }
+                }
+            }
+            out.push(';');
+        }
+        Value::List(items) => {
+            out.push('[');
+            for i in items.iter() {
+                fingerprint(i, out)?;
+            }
+            out.push(']');
+        }
+        Value::Dict(items) => {
+            out.push('{');
+            for (k, v) in items.iter() {
+                fingerprint(k, out)?;
+                fingerprint(v, out)?;
+            }
+            out.push('}');
+        }
+        Value::Ref(p, t) => {
+            if t.is_tainted() {
+                return None;
+            }
+            let _ = write!(out, "r{}:{p}", p.len());
+        }
+        Value::Obj(o) => {
+            if o.taint.is_tainted() {
+                return None;
+            }
+            let _ = write!(out, "o{}:{}", o.class.len(), o.class);
+            if let Some(d) = &o.def {
+                let _ = write!(out, "@{:p}/{}", Rc::as_ptr(&d.def), d.module);
+            }
+            out.push('(');
+            for (k, v) in &o.fields {
+                let _ = write!(out, "{}:{k}", k.len());
+                fingerprint(v, out)?;
+            }
+            out.push(')');
+        }
+        Value::Func(f) => {
+            if f.closure.is_some() {
+                return None;
+            }
+            let _ = write!(out, "F{:p}/{}", Rc::as_ptr(&f.def), f.module);
+            match &f.bound {
+                Some(b) => {
+                    out.push('<');
+                    fingerprint(b, out)?;
+                    out.push('>');
+                }
+                None => out.push('-'),
+            }
+        }
+        Value::Class(c) => {
+            let _ = write!(out, "C{:p}/{}", Rc::as_ptr(&c.def), c.module);
+        }
+        Value::OneOf(alts) => {
+            out.push('|');
+            for a in alts.iter() {
+                fingerprint(a, out)?;
+            }
+            out.push('|');
+        }
+    }
+    Some(())
+}
+
 pub fn reaching(value: &Value, context: u32) -> Option<Taint> {
     match value {
         Value::Str(segs) => {

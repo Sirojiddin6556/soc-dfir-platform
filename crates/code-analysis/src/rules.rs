@@ -188,8 +188,8 @@ rule!(
     "weak-random",
     330,
     Medium,
-    "Предсказуемый генератор случайных чисел",
-    0
+    "Секрет из предсказуемого генератора случайных чисел",
+    ctx::SECRET
 );
 rule!(
     WEAK_CIPHER,
@@ -247,3 +247,196 @@ rule!(
     "Неконтролируемая строка формата",
     ctx::CODE
 );
+
+/// Splits an identifier or key into lowercase words: `resetToken`,
+/// `RESET_TOKEN` and `reset-token` all give `reset`, `token`.
+pub fn name_words(name: &str) -> impl Iterator<Item = String> + '_ {
+    let mut words = Vec::new();
+    let mut cur = String::new();
+    let mut prev_lower = false;
+    for c in name.chars() {
+        if !c.is_ascii_alphabetic() {
+            if !cur.is_empty() {
+                words.push(std::mem::take(&mut cur));
+            }
+            prev_lower = false;
+            continue;
+        }
+        if c.is_ascii_uppercase() && prev_lower && !cur.is_empty() {
+            words.push(std::mem::take(&mut cur));
+        }
+        prev_lower = c.is_ascii_lowercase();
+        cur.push(c.to_ascii_lowercase());
+    }
+    if !cur.is_empty() {
+        words.push(cur);
+    }
+    words.into_iter()
+}
+
+/// Whether a variable, field, key or function with this name holds a value
+/// that must be unpredictable.
+pub fn secret_name(name: &str) -> bool {
+    thread_local! {
+        static KNOWN: std::cell::RefCell<std::collections::HashMap<Box<str>, bool>> =
+            Default::default();
+    }
+    if let Some(known) = KNOWN.with(|k| k.borrow().get(name).copied()) {
+        return known;
+    }
+    let answer = secret_name_uncached(name);
+    KNOWN.with(|k| {
+        let mut k = k.borrow_mut();
+        if k.len() > 100_000 {
+            k.clear();
+        }
+        k.insert(name.into(), answer);
+    });
+    answer
+}
+
+fn secret_name_uncached(name: &str) -> bool {
+    const WORDS: &[&str] = &[
+        "token",
+        "secret",
+        "password",
+        "passwd",
+        "pwd",
+        "pass",
+        "passphrase",
+        "nonce",
+        "salt",
+        "otp",
+        "totp",
+        "hotp",
+        "csrf",
+        "xsrf",
+        "sessionid",
+        "sessid",
+        "apikey",
+        "captcha",
+        "pin",
+        "iv",
+        "remember",
+    ];
+    // Words that make a secret only after these qualifiers: `api_key`,
+    // `reset_code`, `session_id`.
+    const PAIRS: &[(&str, &[&str])] = &[
+        (
+            "key",
+            &[
+                "api",
+                "secret",
+                "private",
+                "signing",
+                "encryption",
+                "access",
+                "session",
+                "auth",
+                "otp",
+                "hmac",
+            ],
+        ),
+        (
+            "code",
+            &[
+                "reset",
+                "verification",
+                "verify",
+                "confirm",
+                "confirmation",
+                "auth",
+                "activation",
+                "otp",
+                "sms",
+                "invite",
+                "recovery",
+                "login",
+            ],
+        ),
+        ("id", &["session", "sess"]),
+    ];
+    // Run-together lowercase names: `resettoken`, `apikey`, `rememberme`.
+    const INNER: &[&str] = &[
+        "token",
+        "secret",
+        "passw",
+        "nonce",
+        "csrf",
+        "xsrf",
+        "apikey",
+        "sessionid",
+        "remember",
+    ];
+    let words: Vec<String> = name_words(name).collect();
+    if words.iter().any(|w| WORDS.contains(&w.as_str())) {
+        return true;
+    }
+    for pair in words.windows(2) {
+        if PAIRS
+            .iter()
+            .any(|(last, firsts)| pair[1] == *last && firsts.contains(&pair[0].as_str()))
+        {
+            return true;
+        }
+    }
+    words
+        .iter()
+        .any(|w| w.len() > 5 && INNER.iter().any(|i| w.contains(i)))
+}
+
+/// Whether a function with this name makes a secret: `generate_token`,
+/// `new_otp`, `make_password`. A view named `password_reset` is not one.
+pub fn makes_secret(name: &str) -> bool {
+    const VERBS: &[&str] = &[
+        "gen", "generate", "make", "create", "new", "random", "rand", "get", "build", "issue",
+        "mint", "compute",
+    ];
+    secret_name(name) && {
+        let first = name_words(name).next().unwrap_or_default();
+        VERBS.contains(&first.as_str())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn secret_names() {
+        for yes in [
+            "token",
+            "resetToken",
+            "RESET_TOKEN",
+            "api_key",
+            "apikey",
+            "session_id",
+            "rememberMe00025",
+            "new_password",
+            "otp",
+            "verification_code",
+            "csrfmiddlewaretoken",
+        ] {
+            assert!(secret_name(yes), "{yes}");
+        }
+        for no in [
+            "seed",
+            "test_pk",
+            "key",
+            "code",
+            "id",
+            "author",
+            "options",
+            "filelist",
+            "passenger",
+            "sentence",
+            "spinner",
+        ] {
+            assert!(!secret_name(no), "{no}");
+        }
+        assert!(makes_secret("generate_token"));
+        assert!(makes_secret("newOtp"));
+        assert!(!makes_secret("otp"));
+        assert!(!makes_secret("password_reset"));
+    }
+}

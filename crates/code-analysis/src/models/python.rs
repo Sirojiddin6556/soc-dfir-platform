@@ -58,7 +58,6 @@ const DJANGO_REQUEST: &[&str] = &[
     "build_absolute_uri",
     "get_host",
     "content_type",
-    "session",
 ];
 
 /// Request attributes with client data across Django, DRF, aiohttp,
@@ -383,6 +382,14 @@ impl Model for Python {
             | "werkzeug.utils.secure_filename"
             | "ntpath.basename"
             | "posixpath.basename" => a0().sanitized(ctx::PATH),
+            // Join that refuses results outside the base directory.
+            "werkzeug.security.safe_join"
+            | "werkzeug.utils.safe_join"
+            | "flask.safe_join"
+            | "django.utils._os.safe_join" => {
+                concat(&args.iter().map(|a| a.value.clone()).collect::<Vec<_>>())
+                    .sanitized(ctx::PATH)
+            }
             "os.path.realpath" | "os.path.abspath" | "os.path.normpath" | "os.path.expanduser"
             | "os.path.dirname" => a0(),
             "os.getenv" | "os.environ.get" => Value::clean(),
@@ -703,8 +710,7 @@ impl Model for Python {
                 && RANDOM_FUNCS.contains(&short)
                 && p.matches('.').count() == 1 =>
             {
-                it.flag(&WEAK_RANDOM, span, p);
-                Value::clean()
+                it.weak_random(&format!("{p}()"), span, args)
             }
             _ if p.starts_with("secrets.") => Value::clean(),
 
@@ -894,6 +900,7 @@ impl Model for Python {
                 if !it.sink(&TRUST, key, span, "session[...]") {
                     it.sink(&TRUST, value, span, "session[...]");
                 }
+                it.sink(&WEAK_RANDOM, value, span, "session[...]");
                 Some(base.clone())
             }
             _ => None,
@@ -1850,6 +1857,9 @@ fn handler_method(
             } else {
                 it.sink(&HEADER, &a(1), span, name);
             }
+            if header == "set-cookie" {
+                it.sink(&WEAK_RANDOM, &a(1), span, "значение cookie");
+            }
             Some(Value::None)
         }
         (
@@ -2080,7 +2090,8 @@ fn obj_method(
         },
         "random.Random" => {
             if RANDOM_FUNCS.contains(&name) {
-                it.flag(&WEAK_RANDOM, span, &format!("random.Random().{name}"));
+                let what = format!("random.Random().{name}()");
+                return (it.weak_random(&what, span, args), None);
             }
             (Value::clean(), None)
         }
@@ -2196,10 +2207,15 @@ fn generic_method(it: &mut Interp, recv: &Value, name: &str, args: &[ArgVal], sp
                 name,
             );
         }
-        "run" => {
-            if kwarg(args, "debug").and_then(|v| v.truthy()) == Some(true) {
-                it.flag(&DEBUG_MODE, span, "run(debug=True)");
-            }
+        // An application whose object the analysis could not follow; test
+        // runners and task queues also take `debug=`.
+        "run"
+            if kwarg(args, "debug").and_then(|v| v.truthy()) == Some(true)
+                && ["flask", "werkzeug", "bottle", "quart", "sanic"]
+                    .iter()
+                    .any(|f| imports(it, it.module(), f)) =>
+        {
+            it.flag(&DEBUG_MODE, span, "run(debug=True)");
         }
         "render_template_string" | "from_string" => {
             it.sink(&SSTI, &a0, span, name);
@@ -2210,6 +2226,9 @@ fn generic_method(it: &mut Interp, recv: &Value, name: &str, args: &[ArgVal], sp
 }
 
 fn check_cookie(it: &mut Interp, args: &[ArgVal], span: Span) {
+    if let Some(value) = arg(args, 1, "value") {
+        it.sink(&WEAK_RANDOM, value, span, "значение cookie");
+    }
     let secure = kwarg(args, "secure").map(|v| v.truthy());
     // Flask's set_cookie(key, value, max_age, expires, path, domain, secure, ...)
     let secure = secure.or_else(|| {

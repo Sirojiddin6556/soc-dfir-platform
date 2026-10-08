@@ -312,3 +312,75 @@ def a():
         .collect();
     assert_eq!(lines, vec![11, 12], "{found:?}");
 }
+
+#[test]
+fn weak_random_matters_only_for_secrets() {
+    let src = "import random, secrets, string
+from flask import Flask, make_response, session
+app = Flask(__name__)
+
+def generate_token():
+    return ''.join(random.choices(string.ascii_letters, k=16))
+
+def pick_color():
+    return random.choice(['red', 'green'])
+
+@app.route('/a')
+def a():
+    session['remember_me'] = str(random.random())[2:]
+    otp = secrets.randbelow(10 ** 6)
+    sample = random.sample(range(100), 5)
+    r = make_response(pick_color() + str(sample) + str(otp))
+    r.set_cookie('sid', str(random.getrandbits(64)), secure=True)
+    return r
+";
+    let found = scan(&[("app.py", src)]);
+    let lines: Vec<u32> = found
+        .iter()
+        .filter(|f| f.0 == "weak-random")
+        .map(|f| f.1)
+        .collect();
+    // Reported where the predictable value is made, once each.
+    assert_eq!(lines, vec![6, 13, 17], "{found:?}");
+}
+
+#[test]
+fn framework_internals_are_not_findings() {
+    let static_view = "import posixpath
+from pathlib import Path
+from django.http import FileResponse
+from django.utils._os import safe_join
+
+def serve(request, path, document_root=None):
+    path = posixpath.normpath(path).lstrip('/')
+    fullpath = Path(safe_join(document_root, path))
+    return FileResponse(fullpath.open('rb'))
+
+def raw(request, path):
+    return FileResponse(open('/srv/' + request.GET['f'], 'rb'))
+";
+    let auth = "from importlib import import_module
+
+def load_backend(request):
+    path = request.session['_auth_user_backend']
+    return import_module(path)
+";
+    let tests = "import unittest
+def run(suite, result):
+    suite.run(result, debug=True)
+";
+    let found = scan(&[
+        ("views/static.py", static_view),
+        ("auth.py", auth),
+        ("tests/test_x.py", tests),
+    ]);
+    let got: Vec<(&str, u32, &str)> = found
+        .iter()
+        .map(|f| (f.2.as_str(), f.1, f.0.as_str()))
+        .collect();
+    assert_eq!(
+        got,
+        vec![("views/static.py", 12, "path-traversal")],
+        "{got:?}"
+    );
+}

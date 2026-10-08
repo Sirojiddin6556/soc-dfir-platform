@@ -25,6 +25,10 @@ pub mod ctx {
     pub const SESSION: u32 = 1 << 11;
     pub const TEMPLATE: u32 = 1 << 12;
     pub const LOG: u32 = 1 << 13;
+    /// Must be unpredictable: a token, password, nonce or session value.
+    /// Only values from weak random generators are checked against it,
+    /// and no conversion makes them safe for it.
+    pub const SECRET: u32 = 1 << 14;
     /// Holds no single quote: safe inside a single-quoted literal.
     pub const NO_SQUOTE: u32 = 1 << 20;
     /// Holds no double quote: safe inside a double-quoted literal.
@@ -37,12 +41,16 @@ const MAX_SOURCES: usize = 3;
 const MAX_ALTERNATIVES: usize = 8;
 const MAX_ITEMS: usize = 64;
 
-/// Where user-controlled data entered the program.
+/// Where user-controlled data entered the program, or where a predictable
+/// random value was made.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Source {
     pub what: Rc<str>,
     pub module: usize,
     pub span: Span,
+    /// A value from a non-cryptographic random generator rather than user
+    /// input: it matters only where a secret is expected.
+    pub weak_random: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -69,9 +77,11 @@ impl Taint {
         !self.sources.is_empty()
     }
 
-    /// Tainted and not made safe for `context`.
+    /// Tainted and not made safe for `context`. Weak random values count
+    /// only where a secret is expected, user data everywhere else.
     pub fn reaches(&self, context: u32) -> bool {
-        self.is_tainted() && self.safe & context == 0
+        let want_random = context & ctx::SECRET != 0;
+        self.safe & context == 0 && self.sources.iter().any(|s| s.weak_random == want_random)
     }
 
     pub fn union(&self, other: &Taint) -> Taint {
@@ -709,6 +719,7 @@ mod tests {
             what: "test".into(),
             module: 0,
             span: Span::default(),
+            weak_random: false,
         })
     }
 

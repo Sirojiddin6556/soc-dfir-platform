@@ -254,6 +254,10 @@ pub fn name_sanitizer(name: &str) -> u32 {
     if escapes && n.contains("ldap") {
         bits |= ctx::LDAP;
     }
+    // Joins that refuse paths leaving the base directory.
+    if n == "safe_join" || n.ends_with("_safe_join") || n == "secure_filename" {
+        bits |= ctx::PATH;
+    }
     bits
 }
 

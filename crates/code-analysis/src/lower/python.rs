@@ -6,7 +6,10 @@ use std::rc::Rc;
 use tree_sitter::Node;
 
 pub fn lower(root: Node, src: &str) -> Module {
-    let l = Lower { src };
+    let l = Lower {
+        src,
+        depth: std::cell::Cell::new(0),
+    };
     Module {
         body: l.block(root),
     }
@@ -14,7 +17,12 @@ pub fn lower(root: Node, src: &str) -> Module {
 
 struct Lower<'s> {
     src: &'s str,
+    depth: std::cell::Cell<u32>,
 }
+
+/// Deeper syntax is replaced by an opaque expression: generated code with
+/// thousands of nested operators would otherwise exhaust the stack.
+const MAX_DEPTH: u32 = 400;
 
 impl<'s> Lower<'s> {
     fn text(&self, node: Node) -> &'s str {
@@ -34,6 +42,15 @@ impl<'s> Lower<'s> {
     }
 
     fn stmt(&self, node: Node, out: &mut Vec<Stmt>) {
+        if self.depth.get() >= MAX_DEPTH {
+            return;
+        }
+        self.depth.set(self.depth.get() + 1);
+        self.stmt_inner(node, out);
+        self.depth.set(self.depth.get() - 1);
+    }
+
+    fn stmt_inner(&self, node: Node, out: &mut Vec<Stmt>) {
         let sp = span(node);
         match node.kind() {
             "expression_statement" => {
@@ -530,6 +547,16 @@ impl<'s> Lower<'s> {
     }
 
     fn expr(&self, node: Node) -> Expr {
+        if self.depth.get() >= MAX_DEPTH {
+            return Expr::Other(Vec::new());
+        }
+        self.depth.set(self.depth.get() + 1);
+        let e = self.expr_inner(node);
+        self.depth.set(self.depth.get() - 1);
+        e
+    }
+
+    fn expr_inner(&self, node: Node) -> Expr {
         match node.kind() {
             "identifier" => Expr::Name(self.text(node).to_string()),
             "attribute" => Expr::Attr(
