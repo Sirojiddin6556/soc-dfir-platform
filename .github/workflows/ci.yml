@@ -132,6 +132,68 @@ jobs:
           path: e2e-screenshots
           if-no-files-found: ignore
 
+  windows-app:
+    # A ready-to-run Windows build: download the artifact, unpack it and
+    # start desktop-app.exe. The interface files sit next to it, and the
+    # app keeps its data in a `data` folder there.
+    name: Windows app package
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-release-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-release-
+
+      - name: Build desktop-app
+        run: cargo build --release -p desktop-app
+
+      - name: Assemble the package
+        shell: pwsh
+        run: |
+          $dir = "package/soc-dfir-platform"
+          New-Item -ItemType Directory -Force "$dir/apps/desktop-ui" | Out-Null
+          Copy-Item target/release/desktop-app.exe $dir/
+          Copy-Item -Recurse apps/desktop-ui/index.html, apps/desktop-ui/css, apps/desktop-ui/js "$dir/apps/desktop-ui/"
+
+      - name: The packaged app starts and serves its interface
+        shell: pwsh
+        working-directory: package/soc-dfir-platform
+        run: |
+          $app = Start-Process -FilePath .\desktop-app.exe -PassThru
+          $ok = $false
+          foreach ($i in 1..60) {
+            Start-Sleep -Seconds 1
+            if ($app.HasExited) { break }
+            try {
+              $page = Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8080/
+              $rpc = Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8080/rpc -ContentType 'application/json' `
+                -Body '{"jsonrpc":"2.0","id":1,"method":"auth.status","params":{}}'
+              if ($page.Content -match 'code' -and $null -ne $rpc.result) { $ok = $true; break }
+            } catch { }
+          }
+          if (-not $app.HasExited) { Stop-Process -Id $app.Id -Force }
+          if (-not $ok) { throw "desktop-app.exe did not serve the interface (exited: $($app.HasExited))" }
+          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue data
+          Write-Host "desktop-app.exe serves the interface and answers the engine API"
+
+      - name: Upload the package
+        uses: actions/upload-artifact@v4
+        with:
+          name: soc-dfir-platform-windows
+          path: package
+          retention-days: 30
+
   docker:
     name: Docker image builds and serves the app
     runs-on: ubuntu-latest
