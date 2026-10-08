@@ -19,6 +19,8 @@ $ips = @(Get-NetIPAddress -AddressState Preferred -ErrorAction SilentlyContinue 
   Arch = if ($env:PROCESSOR_ARCHITEW6432) { [string]$env:PROCESSOR_ARCHITEW6432 } else { [string]$env:PROCESSOR_ARCHITECTURE }
   UBR = if ($cv -and $cv.UBR -ne $null) { [int]$cv.UBR } else { $null }
   DisplayVersion = if ($cv) { [string]$cv.DisplayVersion } else { '' }
+  InstallationType = if ($cv) { [string]$cv.InstallationType } else { '' }
+  ProductType = if ($os.ProductType) { [int]$os.ProductType } else { $null }
   KBs = $kbs
   IPs = $ips
 } | ConvertTo-Json -Compress -Depth 3
@@ -47,6 +49,10 @@ pub struct WindowsOsInfo {
     pub build: Option<u32>,
     pub ubr: Option<u32>,
     pub display_version: String,
+    /// "Client", "Server" or "Server Core".
+    pub installation_type: String,
+    /// 1 workstation, 2 domain controller, 3 server.
+    pub product_type: Option<u32>,
     pub os_architecture: String,
     pub architecture: String,
     pub kbs: Vec<String>,
@@ -111,6 +117,8 @@ pub fn parse_os_json(json: &str) -> Option<WindowsOsInfo> {
         build: get_u64(&v, "Build").map(|b| b as u32),
         ubr: get_u64(&v, "UBR").map(|b| b as u32),
         display_version: get_str(&v, "DisplayVersion").unwrap_or_default(),
+        installation_type: get_str(&v, "InstallationType").unwrap_or_default(),
+        product_type: get_u64(&v, "ProductType").map(|t| t as u32),
         os_architecture: get_str(&v, "OSArchitecture").unwrap_or_default(),
         architecture: map_processor_arch(&get_str(&v, "Arch").unwrap_or_default()),
         kbs: strings(v.get("KBs")),
@@ -195,7 +203,7 @@ pub fn collect_users() -> Result<(Vec<String>, Vec<UserAccount>), String> {
 mod tests {
     use super::*;
 
-    const OS_SAMPLE: &str = r#"{"Caption":"Microsoft Windows 11 Pro","Version":"10.0.22631","Build":22631,"OSArchitecture":"64-bit","Arch":"AMD64","UBR":4037,"DisplayVersion":"23H2","KBs":["KB5042099","KB5043080"],"IPs":["192.168.1.105","fe80::3c1a:9d2b:7e44:12af%12"]}"#;
+    const OS_SAMPLE: &str = r#"{"Caption":"Microsoft Windows 11 Pro","Version":"10.0.22631","Build":22631,"OSArchitecture":"64-bit","Arch":"AMD64","UBR":4037,"DisplayVersion":"23H2","InstallationType":"Client","ProductType":1,"KBs":["KB5042099","KB5043080"],"IPs":["192.168.1.105","fe80::3c1a:9d2b:7e44:12af%12"]}"#;
 
     #[test]
     fn parses_os_info() {
@@ -205,6 +213,8 @@ mod tests {
         assert_eq!(os.ubr, Some(4037));
         assert_eq!(os.kernel(), "10.0.22631.4037");
         assert_eq!(os.architecture, "x86_64");
+        assert_eq!(os.installation_type, "Client");
+        assert_eq!(os.product_type, Some(1));
         assert_eq!(os.kbs, vec!["KB5042099", "KB5043080"]);
         assert_eq!(os.ip_addresses[0], "192.168.1.105");
     }
@@ -217,6 +227,8 @@ mod tests {
         .unwrap();
         assert_eq!(os.kbs, vec!["KB5012170"]);
         assert_eq!(os.ubr, None);
+        assert_eq!(os.installation_type, "");
+        assert_eq!(os.product_type, None);
         assert_eq!(os.kernel(), "10.0.20348");
         assert_eq!(
             os.display_name(),
