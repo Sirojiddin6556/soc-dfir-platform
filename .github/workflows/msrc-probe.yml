@@ -1,5 +1,5 @@
-# TEMPORARY: inspects the real MSRC CVRF format and the Windows runner's
-# build facts while Windows CVE matching is developed. Removed before review.
+# TEMPORARY: copies real MSRC CVRF documents into the job log (the sandbox
+# this feature is developed in cannot reach MSRC). Removed before review.
 name: MSRC probe
 
 on:
@@ -10,69 +10,25 @@ jobs:
   cvrf:
     runs-on: ubuntu-latest
     steps:
-      - name: Inspect MSRC CVRF documents
+      - name: Security Update Guide API format
         shell: bash
         run: |
-          set -uo pipefail
-          H='Accept: application/json'
-          B=https://api.msrc.microsoft.com/cvrf/v3.0
-          curl -sS -H "$H" "$B/updates" | jq -c '.value | length, .[-6:]'
-          for id in 2024-Oct 2026-Sep; do
-            echo "=== $id"
-            curl -sS -H "$H" -H 'Accept-Encoding: gzip' -o /dev/null -w "gzip-bytes=%{size_download} code=%{http_code}\n" "$B/cvrf/$id"
-            curl -sS -H "$H" -o $id.json -w "plain-bytes=%{size_download} code=%{http_code} type=%{content_type}\n" -D - "$B/cvrf/$id" | grep -iE '^(etag|last-modified|content-encoding|content-type):|bytes' || true
-            jq -c 'keys' $id.json
-            jq -c '.DocumentTracking | {Identification, Status, Version, InitialReleaseDate, CurrentReleaseDate}' $id.json
-            jq -c '{vulns: (.Vulnerability|length), products: (.ProductTree.FullProductName|length)}' $id.json
-            echo "--- vuln keys"; jq -c '[.Vulnerability[] | keys] | add | unique' $id.json
-            echo "--- status types"; jq -c '[.Vulnerability[].ProductStatuses[]?.Type] | group_by(.) | map({t:.[0],n:length})' $id.json
-            echo "--- threat types"; jq -c '[.Vulnerability[].Threats[]?.Type] | group_by(.) | map({t:.[0],n:length})' $id.json
-            for t in 0 1 3; do echo "--- threat $t values"; jq -c "[.Vulnerability[].Threats[]? | select(.Type==$t) | .Description.Value] | group_by(.) | map({v:.[0],n:length}) | sort_by(-.n) | .[:25]" $id.json; done
-            echo "--- remediation types"; jq -c '[.Vulnerability[].Remediations[]? | {Type, SubType}] | group_by(.) | map({k:.[0],n:length})' $id.json
-            echo "--- remediation keys"; jq -c '[.Vulnerability[].Remediations[]? | keys] | add | unique' $id.json
-            echo "--- fixedbuild coverage on vendor fixes"; jq -c '[.Vulnerability[].Remediations[]? | select(.Type==2) | (.FixedBuild // "" | length > 0)] | group_by(.) | map({has:.[0],n:length})' $id.json
-            echo "--- fixedbuild samples"; jq -c '[.Vulnerability[].Remediations[]? | select(.FixedBuild != null and .FixedBuild != "") | .FixedBuild] | unique | .[:60]' $id.json
-            echo "--- note types"; jq -c '[.Vulnerability[].Notes[]? | {Title, Type}] | group_by(.Type) | map({t:.[0].Type, titles:([.[].Title]|unique|.[:8]), n:length})' $id.json
-            echo "--- cvss keys"; jq -c '[.Vulnerability[].CVSSScoreSets[]? | keys] | add | unique' $id.json
-            echo "--- product tree branches"; jq -c '.ProductTree | keys, (.Branch[0] | {Name, Type, items: [.Items[] | {Name, Type, n: (.Items|length)}]})' $id.json
-            echo "--- windows products"; jq -r '.ProductTree.FullProductName[] | select(.Value|test("Windows";"i")) | "\(.ProductID)\t\(.Value)"' $id.json
-            echo "--- sample vulnerability (Windows Server 2025 or 2022)"
-            jq -c '(.ProductTree.FullProductName | map(select(.Value|test("^Windows Server 202[25]$"))) | map(.ProductID)) as $ids
-              | [.Vulnerability[] | select([.ProductStatuses[]?.ProductID[]?] | any(. as $p | $ids | index($p)))][0]
-              | .Notes |= map(.Value |= .[0:200])' $id.json
-            echo "--- non-windows remediation sample"
-            jq -c '[.Vulnerability[] | select(.Remediations[]?.Type != 2)][0] | {CVE, Remediations, ProductStatuses}' $id.json | cut -c1-3000
+          S='https://api.msrc.microsoft.com/sug/v2.0/en-US/affectedProduct'
+          curl -sS -H 'Accept: application/json' "$S?%24filter=cveNumber%20eq%20%27CVE-2024-43572%27" | jq -c '.value[0]'
+          for f in "productId%20eq%2012436%20and%20releaseDate%20gt%202026-08-01T00%3A00%3A00Z" "productId%20eq%20%2712436%27" "product%20eq%20%27Windows%20Server%202025%27%20and%20releaseDate%20gt%202026-08-01T00%3A00%3A00Z"; do
+            echo "--- filter $f"
+            curl -sS -H 'Accept: application/json' -w '\nHTTP %{http_code}\n' "$S?%24filter=$f" | head -c 1500; echo
           done
-          echo "=== trimmed fixture 2024-Oct (gzip+base64)"
-          jq -c '
-            (.ProductTree.FullProductName | map(select(.Value|test("^(Windows Server 2025( \\(Server Core installation\\))?|Windows Server 2022|Windows 11 Version 24H2 for x64-based Systems|Windows 10 Version 22H2 for x64-based Systems|Windows 11 Version 23H2 for x64-based Systems)$")))) as $prods
-            | ($prods | map(.ProductID)) as $ids
-            | def keep: map(select(. as $p | $ids | index($p)));
-            {DocumentTitle, DocumentType, DocumentTracking: {Identification: .DocumentTracking.Identification, CurrentReleaseDate: .DocumentTracking.CurrentReleaseDate, InitialReleaseDate: .DocumentTracking.InitialReleaseDate},
-             ProductTree: {FullProductName: $prods},
-             Vulnerability: [.Vulnerability[]
-               | select([.ProductStatuses[]?.ProductID[]?] | any(. as $p | $ids | index($p)))
-               | {Title, CVE, Notes: [.Notes[]? | select(.Type==2 or .Type==7) | .Value |= .[0:160]],
-                  ProductStatuses: [.ProductStatuses[]? | .ProductID |= keep | select(.ProductID|length>0)],
-                  Threats: [.Threats[]? | .ProductID |= ((. // []) | keep) | select((.ProductID|length>0) or .Type==1)],
-                  CVSSScoreSets: [.CVSSScoreSets[]? | .ProductID |= keep | select(.ProductID|length>0)],
-                  Remediations: [.Remediations[]? | .ProductID |= ((. // []) | keep) | select(.ProductID|length>0) | del(.AffectedFiles)],
-                  RevisionHistory: (.RevisionHistory // [] | .[0:1])}]}' 2024-Oct.json > fixture.json
-          ls -la fixture.json; gzip -9c fixture.json | base64 -w0 > fixture.b64; wc -c fixture.b64
-          echo "FIXTURE-BEGIN"; fold -w 4000 fixture.b64; echo; echo "FIXTURE-END"
-      - name: Security Update Guide API sample
+      - name: Dump CVRF documents
         shell: bash
         run: |
-          curl -sS -H 'Accept: application/json' "https://api.msrc.microsoft.com/sug/v2.0/en-US/affectedProduct?%24filter=cveNumber%20eq%20%27CVE-2024-43572%27" | jq -c '.value[:3], (.value|length), (."@odata.nextLink" // "no-next")' | cut -c1-4000
-
-  host:
-    runs-on: windows-latest
-    steps:
-      - name: Windows build facts
-        shell: pwsh
-        run: |
-          Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' | Select-Object ProductName, EditionID, InstallationType, DisplayVersion, ReleaseId, CurrentBuild, CurrentBuildNumber, UBR, CurrentMajorVersionNumber, CurrentMinorVersionNumber, BuildLabEx, LCUVer | Format-List
-          "PROCESSOR_ARCHITECTURE=$env:PROCESSOR_ARCHITECTURE"
-          Get-CimInstance Win32_OperatingSystem | Select-Object Caption, Version, BuildNumber, OSArchitecture, ProductType, OperatingSystemSKU | Format-List
-          Get-HotFix | Sort-Object InstalledOn | Format-Table -AutoSize HotFixID, Description, InstalledOn
-          Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Update\TargetingInfo\Installed\*' -ErrorAction SilentlyContinue | Format-List
+          set -euo pipefail
+          B=https://api.msrc.microsoft.com/cvrf/v3.0
+          curl -sS -f -H 'Accept: application/json' "$B/updates" -o updates.json
+          echo "UPDATES-BEGIN"; jq -c '.value[] | {ID, InitialReleaseDate, CurrentReleaseDate, DocumentTitle}' updates.json; echo "UPDATES-END"
+          for id in 2026-Oct 2026-Sep 2026-Aug 2026-Jul 2025-Jan; do
+            curl -sS -f -H 'Accept: application/json' -o $id.json "$B/cvrf/$id"
+            xz -9e -T0 -c $id.json | base64 -w 4000 > $id.b64
+            echo "$id json=$(stat -c %s $id.json) sha256=$(sha256sum $id.json | cut -c1-64) b64=$(stat -c %s $id.b64)"
+            echo "DOC-BEGIN $id"; cat $id.b64; echo; echo "DOC-END $id"
+          done
