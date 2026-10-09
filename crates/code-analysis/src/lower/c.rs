@@ -38,6 +38,7 @@ pub fn lower(root: Node, src: &str) -> Module {
         arrays: RefCell::new(vec![HashMap::new()]),
         deep: RefCell::new(vec![HashSet::new()]),
         declared: RefCell::new(vec![HashMap::new()]),
+        blocks: RefCell::new(Vec::new()),
     };
     let mut body = Vec::new();
     l.top_level(root, &mut body);
@@ -120,7 +121,24 @@ struct Lower<'s> {
     deep: RefCell<Vec<HashSet<String>>>,
     /// Full declared types (`u_char *`, `char[10]`) in the same scopes.
     declared: RefCell<Vec<HashMap<String, String>>>,
+    /// Names the parameters and the open blocks of the function being
+    /// lowered declare, outermost first: a block declaring one again hides
+    /// the outer variable until it ends.
+    blocks: RefCell<Vec<Block>>,
 }
+
+/// Variables a block of a function declares (see `Lower::blocks`).
+#[derive(Default)]
+struct Block {
+    names: Vec<String>,
+    /// Those that hide a variable of an outer block, with the name each
+    /// has in the lowered code.
+    renamed: HashMap<String, String>,
+}
+
+/// What hides an outer variable's name: the name with this and the depth
+/// of the block appended, which findings leave out (`Interp::report`).
+pub const HIDDEN: char = '\u{1}';
 
 /// Names of the union types a file defines (`union U {...}`,
 /// `typedef union {...} U;`).
@@ -489,8 +507,13 @@ impl<'s> Lower<'s> {
         if let Some(b) = node.child_by_field_name("body") {
             self.aliases.borrow_mut().push(self.find_aliases(b));
             self.gotos.borrow_mut().push(HashMap::new());
+            let outer = self.blocks.replace(vec![Block {
+                names: params.iter().map(|p| p.name.clone()).collect(),
+                renamed: HashMap::new(),
+            }]);
             self.label_tails(b);
             self.block(b, &mut body);
+            self.blocks.replace(outer);
             self.gotos.borrow_mut().pop();
             self.aliases.borrow_mut().pop();
         }
@@ -673,6 +696,7 @@ impl<'s> Lower<'s> {
         if node.kind() == "compound_statement" {
             let start = out.len();
             let items = named_children(node);
+            self.blocks.borrow_mut().push(Block::default());
             let mut i = 0;
             while i < items.len() {
                 if let (Some(head), Some(body)) = (self.foreach_head(items[i]), items.get(i + 1)) {
@@ -683,6 +707,7 @@ impl<'s> Lower<'s> {
                 self.stmt(items[i], out);
                 i += 1;
             }
+            self.blocks.borrow_mut().pop();
             // C++ objects made in the block are destroyed where it ends.
             let made: Vec<String> = out[start..]
                 .iter()
@@ -710,6 +735,39 @@ impl<'s> Lower<'s> {
         } else {
             self.stmt(node, out);
         }
+    }
+
+    /// Notes the variables the declaration `node` declares in the
+    /// innermost open block. One an outer block or a parameter declares
+    /// too hides that variable until the block ends, under a name of its
+    /// own: `{ size_t i; for (i = 0; ...) }` inside `for (i = 0; i < 1;
+    /// i++)` leaves the outer `i` alone. Gives the names changed.
+    fn hide_outer(&self, node: Node) -> Vec<(String, String)> {
+        let mut changed = Vec::new();
+        for d in crate::lower::field_children(node, "declarator") {
+            if d.kind() == "function_declarator" {
+                continue;
+            }
+            let (name, _) = self.declarator_name(d);
+            if name.is_empty() {
+                continue;
+            }
+            let mut blocks = self.blocks.borrow_mut();
+            let depth = blocks.len();
+            let Some((here, outer)) = blocks.split_last_mut() else {
+                break;
+            };
+            if here.names.contains(&name) {
+                continue;
+            }
+            here.names.push(name.clone());
+            if outer.iter().any(|b| b.names.contains(&name)) {
+                let own = format!("{name}{HIDDEN}{depth}");
+                here.renamed.insert(name.clone(), own.clone());
+                changed.push((name, own));
+            }
+        }
+        changed
     }
 
     /// The macro call of a loop the preprocessor writes, which the parser
@@ -1054,6 +1112,34 @@ impl<'s> Lower<'s> {
     }
 
     fn declaration(&self, node: Node, out: &mut Vec<Stmt>) {
+        let from = out.len();
+        let changed = self.hide_outer(node);
+        self.declare(node, out);
+        if changed.is_empty() {
+            return;
+        }
+        let own = |n: &str| changed.iter().find(|(o, _)| o == n).map(|(_, r)| r.clone());
+        for s in &mut out[from..] {
+            match s {
+                Stmt::Declare { name, .. } => {
+                    if let Some(r) = own(name) {
+                        *name = r;
+                    }
+                }
+                // `__c_array(buf, n, size)` and `__c_slots(p, n)`.
+                Stmt::Expr(Expr::Call { args, .. }, _) => {
+                    if let Some(Expr::Name(n)) = args.first_mut().map(|a| &mut a.value) {
+                        if let Some(r) = own(n) {
+                            *n = r;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn declare(&self, node: Node, out: &mut Vec<Stmt>) {
         let type_node = node.child_by_field_name("type");
         let ty = type_node
             .map(|t| self.text(t).to_string())
@@ -1409,8 +1495,7 @@ impl<'s> Lower<'s> {
             "pointer_expression" => match node.child_by_field_name("argument") {
                 Some(a)
                     if a.kind() == "identifier"
-                        && (self.alias_of(self.text(a)) != self.text(a)
-                            || self.is_deep(self.text(a))) =>
+                        && (self.is_alias(self.text(a)) || self.is_deep(self.text(a))) =>
                 {
                     self.target(a)
                 }
@@ -1438,7 +1523,7 @@ impl<'s> Lower<'s> {
     /// Whether `node` is a pointer to something that is not a pointer, and
     /// not a fixed pointer to a variable (`p = &x`).
     fn single_pointer(&self, node: Node) -> bool {
-        if node.kind() == "identifier" && self.alias_of(self.text(node)) != self.text(node) {
+        if node.kind() == "identifier" && self.is_alias(self.text(node)) {
             return false;
         }
         self.pointer_type(node)
@@ -1557,11 +1642,17 @@ impl<'s> Lower<'s> {
                 declared.insert(name, full);
             }
         }
+        // The body's own variables, which hide nothing.
+        self.blocks.borrow_mut().push(Block {
+            names: declared.keys().cloned().collect(),
+            renamed: HashMap::new(),
+        });
         self.declared.borrow_mut().push(declared);
         self.deep.borrow_mut().push(deep);
         self.lower_tails(&items);
         self.deep.borrow_mut().pop();
         self.declared.borrow_mut().pop();
+        self.blocks.borrow_mut().pop();
     }
 
     fn lower_tails(&self, items: &[Node]) {
@@ -1584,8 +1675,33 @@ impl<'s> Lower<'s> {
         }
     }
 
-    /// The variable a reference or fixed pointer stands for (see `aliases`).
+    /// Whether `name` is a reference or fixed pointer standing for another
+    /// variable (see `aliases`).
+    fn is_alias(&self, name: &str) -> bool {
+        !self
+            .blocks
+            .borrow()
+            .iter()
+            .any(|b| b.renamed.contains_key(name))
+            && self
+                .aliases
+                .borrow()
+                .last()
+                .is_some_and(|a| a.contains_key(name))
+    }
+
+    /// The variable a reference or fixed pointer stands for (see
+    /// `aliases`), or that a name declared again in a block names there.
     fn alias_of(&self, name: &str) -> String {
+        if let Some(own) = self
+            .blocks
+            .borrow()
+            .iter()
+            .rev()
+            .find_map(|b| b.renamed.get(name))
+        {
+            return own.clone();
+        }
         let aliases = self.aliases.borrow();
         let mut n = name;
         for _ in 0..4 {

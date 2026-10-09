@@ -173,7 +173,7 @@ pub fn check_call(it: &mut Interp, func: &str, args: &[ArgVal]) -> Option<Vec<Ar
 
 /// Pointer arguments a library function reads or writes through, which
 /// must not be NULL.
-fn deref_args(func: &str) -> &'static [usize] {
+pub fn deref_args(func: &str) -> &'static [usize] {
     match func {
         "strcpy" | "wcscpy" | "strncpy" | "wcsncpy" | "strcat" | "wcscat" | "strncat"
         | "wcsncat" | "stpcpy" | "stpncpy" | "lstrcpyA" | "lstrcpyW" | "lstrcatA" | "lstrcatW"

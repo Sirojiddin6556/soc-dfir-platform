@@ -1,6 +1,7 @@
 //! Language models: what libraries and frameworks do with data.
 
 pub mod c;
+pub mod cfree;
 pub mod cmem;
 pub mod cnull;
 pub mod common;

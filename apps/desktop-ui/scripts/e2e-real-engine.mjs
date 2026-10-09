@@ -461,6 +461,39 @@ int main(void) {
     return admin->name[0] + copy[0] + checked[0];
 }
 `,
+  'cgi/session.c': `#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+struct session { char *user; int id; };
+
+static void end_session(struct session *s) {
+    free(s->user);
+    free(s);
+}
+
+int main(void) {
+    struct session *s = malloc(sizeof(struct session));
+    if (!s)
+        return 1;
+    s->user = strdup("guest");
+    s->id = 1;
+    end_session(s);
+    printf("%d\\n", s->id);
+    char *note = malloc(32);
+    if (!note)
+        return 1;
+    free(note);
+    free(note);
+    char *done = malloc(32);
+    if (!done)
+        return 1;
+    strcpy(done, "done");
+    puts(done);
+    free(done);
+    return 0;
+}
+`,
   'tests/test_views.py': `import os
 from flask import request
 
@@ -479,6 +512,8 @@ const CODE_EXPECTED = [
   'buffer-overflow cgi/name.c:14',
   'unchecked-null cgi/users.c:17',
   'null-dereference cgi/users.c:24',
+  'use-after-free cgi/session.c:19',
+  'double-free cgi/session.c:24',
 ];
 const CODE_EXPECTED_TEST = 'command-injection tests/test_views.py:6';
 
@@ -541,10 +576,10 @@ async function checkCodeScan(page, base, shot, allowIpcError) {
     console.log(`  engine: ${found.join(', ')}; files ${report.files}, ${report.load_ms + report.analysis_ms} ms`);
     check(JSON.stringify([...found].sort()) === JSON.stringify([...CODE_EXPECTED].sort()),
       `engine reports exactly the planted flaws, not the safe calls or the test (${found.length})`);
-    // A string that does not fit and a NULL pointer are flaws without any
-    // input.
+    // A string that does not fit, a NULL pointer and freed memory are
+    // flaws without any input.
     const sourced = (f) => f.source || (f.rule === 'buffer-overflow' && f.line === 14)
-      || f.rule === 'null-dereference' || f.rule === 'unchecked-null';
+      || ['null-dereference', 'unchecked-null', 'use-after-free', 'double-free'].includes(f.rule);
     check(report.findings.every((f) => f.trace.length > 0 && sourced(f) && f.snippet),
       'every finding has its source, data path and code line');
     check(report.test_files === 1, `the test file is counted as skipped (${report.test_files})`);
@@ -579,6 +614,15 @@ async function checkCodeScan(page, base, shot, allowIpcError) {
     const uncheckedDetail = await unchecked.locator('xpath=following-sibling::tr[1]').textContent();
     check((await unchecked.textContent()).includes('CWE-690') && uncheckedDetail.includes('malloc() в строке 16'),
       `a malloc result used before a check names the allocation (${uncheckedDetail.trim().split('\n')[0]})`);
+
+    const freedRow = page.locator('#codeTable tr.vuln-row[data-file="cgi/session.c"][data-line="19"]');
+    await freedRow.click();
+    const freedDetail = await freedRow.locator('xpath=following-sibling::tr[1]').textContent();
+    check((await freedRow.textContent()).includes('Использование памяти после освобождения')
+      && freedDetail.includes('освобождения в строке 9'),
+      `memory a helper freed and then read is a use after free naming the free (${freedDetail.trim().split('\n')[0]})`);
+    const twiceRow = page.locator('#codeTable tr.vuln-row[data-file="cgi/session.c"][data-line="24"]');
+    check((await twiceRow.textContent()).includes('CWE-415'), 'freeing memory twice is shown as a double free');
 
     await page.selectOption('#codeRule', 'command-injection');
     const shown = await page.locator('#codeTable tr.vuln-row').count();

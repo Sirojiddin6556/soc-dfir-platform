@@ -33,6 +33,8 @@ fn rule_for(cwe: &str) -> Option<&'static str> {
         "CWE126" | "CWE127" => "buffer-overread",
         "CWE476" => "null-dereference",
         "CWE690" => "unchecked-null",
+        "CWE415" => "double-free",
+        "CWE416" => "use-after-free",
         _ => return None,
     })
 }

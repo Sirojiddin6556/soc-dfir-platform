@@ -15,7 +15,7 @@
 
 use crate::interp::{args_taint, ArgVal, Fact, FactOn, Interp, Model};
 use crate::ir::{BinOp, Function, Param, Span};
-use crate::models::{cmem, cnull};
+use crate::models::{cfree, cmem, cnull};
 use crate::rules::*;
 use crate::value::*;
 
@@ -558,6 +558,7 @@ fn initialized(it: &mut Interp, ty: &str, value: Value) -> Value {
 fn function(it: &mut Interp, name: &str, args: &[ArgVal], span: Span) -> Value {
     let checked = cnull::check_call(it, name, args);
     let args = checked.as_deref().unwrap_or(args);
+    cfree::check_call(it, name, args, format_index(name).map(|(fi, _)| fi));
     let a0 = a(args, 0);
     cmem::check_call(it, name, args, span);
     // printf family: the format must be a fixed string.
@@ -796,9 +797,16 @@ fn function(it: &mut Interp, name: &str, args: &[ArgVal], span: Span) -> Value {
                     }
                 }
             }
+            if name == "__c_delete" {
+                cfree::release(it, args, span);
+            }
             Value::clean()
         }
-        "free" | "close" | "fclose" | "closesocket" => Value::clean(),
+        "free" | "freezero" => {
+            cfree::release(it, args, span);
+            Value::clean()
+        }
+        "close" | "fclose" | "closesocket" => Value::clean(),
 
         // ----- commands -----
         "system" | "_system" | "_wsystem" | "popen" | "_popen" | "_wpopen" | "wordexp" => {

@@ -283,6 +283,22 @@ rule!(
     0
 );
 rule!(
+    USE_AFTER_FREE,
+    "use-after-free",
+    416,
+    High,
+    "Использование памяти после освобождения",
+    0
+);
+rule!(
+    DOUBLE_FREE,
+    "double-free",
+    415,
+    High,
+    "Повторное освобождение памяти",
+    0
+);
+rule!(
     FORMAT_STRING,
     "format-string",
     134,

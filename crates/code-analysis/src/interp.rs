@@ -7,6 +7,7 @@
 //! cleans it (sanitizers) and where it must not arrive (sinks).
 
 use crate::ir::*;
+use crate::models::cfree::FreedArg;
 use crate::project::Project;
 use crate::rules::{makes_secret, name_words, secret_name, Finding, Location, Rule, WEAK_RANDOM};
 use crate::value::*;
@@ -38,6 +39,9 @@ pub struct ArgVal {
     /// C: the argument is NULL on every path to the call (see
     /// `Interp::null_source`).
     pub null_sure: bool,
+    /// C: the variable passed itself, also through a cast (`(void *) p`),
+    /// which `free` frees.
+    pub pointer: Option<Rc<str>>,
 }
 
 impl ArgVal {
@@ -50,6 +54,7 @@ impl ArgVal {
             place: None,
             addressed: false,
             null_sure: false,
+            pointer: None,
         }
     }
 }
@@ -276,6 +281,9 @@ struct Frame {
     null_at: HashMap<Rc<str>, usize>,
     /// Pointer parameters given `&x`: not NULL until assigned.
     addressed: HashSet<Rc<str>>,
+    /// Pointer parameters given memory already freed, with the call that
+    /// passed it first (see `cfree`).
+    freed_args: HashMap<Rc<str>, Rc<FreedArg>>,
 }
 
 enum Globals {
@@ -681,10 +689,16 @@ impl<'p> Interp<'p> {
     /// at which function a struct member holds, with arguments that may
     /// never meet that function.
     pub fn flag(&mut self, rule: &'static Rule, span: Span, what: &str) {
+        let module = self.module();
+        self.flag_at(rule, module, span, what);
+    }
+
+    /// Reports a finding at `span` of `module`, such as the call that
+    /// passed what a function it ran misuses.
+    pub fn flag_at(&mut self, rule: &'static Rule, module: usize, span: Span, what: &str) {
         if self.guessed > 0 {
             return;
         }
-        let module = self.module();
         self.report(rule, module, span, what, None);
     }
 
@@ -696,6 +710,14 @@ impl<'p> Interp<'p> {
         what: &str,
         src: Option<Source>,
     ) {
+        // `i` declared again in an inner block is `i` to the reader.
+        let shown;
+        let what = if what.contains(crate::lower::c::HIDDEN) {
+            shown = hide_block_depth(what);
+            shown.as_str()
+        } else {
+            what
+        };
         if trace_reports() {
             let stack: Vec<String> = self
                 .frames
@@ -967,6 +989,18 @@ impl<'p> Interp<'p> {
         self.frames
             .last()
             .is_some_and(|f| f.addressed.contains(name))
+    }
+
+    /// The call that passed the freed memory parameter `name` holds.
+    pub fn freed_arg(&self, name: &str) -> Option<Rc<FreedArg>> {
+        self.frames.last()?.freed_args.get(name).cloned()
+    }
+
+    /// Whether the code runs on a guess the analysis made: a branch taken
+    /// on what a field or element holds, or a call guessed through a
+    /// struct member.
+    pub fn on_guess(&self) -> bool {
+        self.guessed > 0 || self.frames.last().is_some_and(|f| f.on_memory > 0)
     }
 
     /// Whether `e`, which is NULL, is NULL for certain: the NULL constant, a
@@ -1801,6 +1835,9 @@ impl<'p> Interp<'p> {
         if !self.in_c() {
             return v;
         }
+        if let Some(v) = crate::models::cfree::used(self, Some(e), &v, None) {
+            return v;
+        }
         crate::models::cnull::deref(self, Some(e), v, None)
     }
 
@@ -2502,6 +2539,10 @@ impl<'p> Interp<'p> {
                     _ => false,
                 },
                 null_sure,
+                pointer: match uncast(&a.value) {
+                    Expr::Name(n) if c => Some(n.as_str().into()),
+                    _ => None,
+                },
             });
         }
         out
@@ -2526,19 +2567,38 @@ impl<'p> Interp<'p> {
         // Buffers and out-parameters a C function filled.
         for (i, value) in std::mem::take(&mut self.c_outs) {
             if let Some(place) = argv.get(i).and_then(|a| a.place.as_ref()) {
+                let value = if crate::models::cfree::maybe_freed(&value) {
+                    // What a function freed is the variable passed, not
+                    // the array or struct an element or field was passed
+                    // from: `hi_free(r->task[i])` (see `cfree`).
+                    let a = &argv[i];
+                    if a.pointer.is_none() && !(a.addressed && matches!(place, Expr::Name(_))) {
+                        continue;
+                    }
+                    // Freed by a call made on a guess: as far as the
+                    // analysis knows.
+                    if self.on_guess() {
+                        join(&value, &a.value)
+                    } else {
+                        value
+                    }
+                } else {
+                    value
+                };
                 self.assign_expr(place, value, span);
             }
         }
         // A function the analysis did not follow may set the pointer `&p`
-        // points to: `raxFind(rax, key, len, &found)`.
+        // points to: `raxFind(rax, key, len, &found)`, `xasprintf(&p, ...)`
+        // after `free(p)`.
         if !self.ran {
-            for a in argv
-                .iter()
-                .filter(|a| a.addressed && matches!(a.value, Value::None))
-            {
+            let unset =
+                |v: &Value| matches!(v, Value::None) || crate::models::cfree::maybe_freed(v);
+            for a in argv.iter().filter(|a| a.addressed && unset(&a.value)) {
                 if let Some(place) = &a.place {
-                    if matches!(self.eval(place), Value::None) {
-                        self.assign_expr(place, Value::clean(), span);
+                    let now = self.eval(place);
+                    if unset(&now) {
+                        self.assign_expr(place, Value::Unknown(now.taint()), span);
                     }
                 }
             }
@@ -3254,6 +3314,7 @@ impl<'p> Interp<'p> {
         let mut spread_taint: Option<Taint> = None;
         let mut sure_nulls: Vec<Rc<str>> = Vec::new();
         let mut addressed: HashSet<Rc<str>> = HashSet::new();
+        let mut freed_args: HashMap<Rc<str>, Rc<FreedArg>> = HashMap::new();
         let mut positional = args.iter().filter(|a| a.name.is_none());
         for p in &params[idx..] {
             if let Some(a) = args
@@ -3288,6 +3349,21 @@ impl<'p> Interp<'p> {
                     }
                     if a.addressed {
                         addressed.insert(Rc::from(p.name.as_str()));
+                    }
+                    if let Some(var) = a
+                        .pointer
+                        .as_ref()
+                        .filter(|_| crate::models::cfree::freed(&a.value).is_some())
+                    {
+                        let origin = self.freed_arg(var).unwrap_or_else(|| {
+                            Rc::new(FreedArg {
+                                module: caller_module,
+                                span,
+                                callee: fv.def.name.as_str().into(),
+                                var: var.clone(),
+                            })
+                        });
+                        freed_args.insert(Rc::from(p.name.as_str()), origin);
                     }
                 }
                 None => {
@@ -3329,6 +3405,7 @@ impl<'p> Interp<'p> {
         frame.span = span;
         frame.null_at = sure_nulls.into_iter().map(|n| (n, 0)).collect();
         frame.addressed = addressed;
+        frame.freed_args = freed_args;
         frame.outs = outs
             .iter()
             .map(|(_, n)| Out {
@@ -3372,10 +3449,15 @@ impl<'p> Interp<'p> {
         let positional: Vec<&ArgVal> = args.iter().filter(|a| a.name.is_none()).collect();
         let mut changed = Vec::new();
         for (((i, _), out), copy) in outs.iter().zip(frame.outs).zip(by_value) {
-            // NULL on the paths that changed the pointer, and what it was
-            // on the others.
+            // NULL or freed on the paths that changed the pointer, and
+            // what it was on the others.
             let v = match (out.last, out.entry) {
-                (Some(Value::None), Some(entry)) if out.kept => Some(join(&Value::None, &entry)),
+                (Some(v), Some(entry))
+                    if out.kept
+                        && (matches!(v, Value::None) || crate::models::cfree::maybe_freed(&v)) =>
+                {
+                    Some(join(&v, &entry))
+                }
                 (v, _) => v,
             };
             if let (Some(v), Some(a)) = (v, positional.get(*i)) {
@@ -4089,6 +4171,7 @@ impl Frame {
             on_memory: 0,
             null_at: HashMap::new(),
             addressed: HashSet::new(),
+            freed_args: HashMap::new(),
         }
     }
 }
@@ -4970,6 +5053,23 @@ fn same_pointer(v: &Value, orig: &Rc<Buf>) -> Value {
         }
         _ => v.clone(),
     }
+}
+
+/// `text` without the depths that set apart variables of inner blocks
+/// hiding outer ones of the same name (see `lower::c::HIDDEN`).
+fn hide_block_depth(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == crate::lower::c::HIDDEN {
+            while chars.peek().is_some_and(|d| d.is_ascii_digit()) {
+                chars.next();
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 /// `CODE_ANALYSIS_TRACE=1` prints the call stack of every report, for
