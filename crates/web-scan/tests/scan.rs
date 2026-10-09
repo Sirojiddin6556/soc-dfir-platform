@@ -97,6 +97,9 @@ fn respond(stream: &mut TcpStream, status: &str, headers: &[(&str, &str)], body:
 }
 
 fn handle(mut stream: TcpStream) {
+    // On Windows a socket from accept() inherits the listener's non-blocking
+    // flag; force blocking so the reads and writes below behave like Linux.
+    stream.set_nonblocking(false).ok();
     stream
         .set_read_timeout(Some(Duration::from_millis(500)))
         .ok();
