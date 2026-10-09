@@ -3,10 +3,13 @@
 //! reads a password, sets or clears the login cookie; and the protections
 //! the project has as a whole (CSRF tokens, limits on attempts, security
 //! headers). Rules about the application come from it: CSRF, changes on
-//! GET, logout on GET, logins without a limit on attempts, pages any site
-//! can frame, session tokens that never change; and, in any function,
-//! keys compared with `==`, passwords under a fast hash and request forms
-//! written field by field.
+//! GET, logout on GET, logins without a limit on attempts, public forms
+//! without a limit on requests, messages taken from the address, pages
+//! any site can frame, session tokens that never change; and, in any
+//! function, keys compared with `==`, passwords under a fast hash or a
+//! constant salt, request forms written field by field, numbers parsed
+//! from a request with no handler, empty handlers around checks and
+//! startup, database files relative to the working folder.
 //!
 //! The model reads syntax, not data flow: what an endpoint does is what
 //! its body and the helpers of its module it calls do.
@@ -14,10 +17,13 @@
 use crate::ir::*;
 use crate::project::{ModuleInfo, Project};
 use crate::rules::{
-    name_words, Rule, CSRF, LOGIN_NO_LIMIT, LOGOUT_GET, MASS_ASSIGNMENT, NO_FRAME_PROTECTION,
-    STATE_CHANGE_GET, STATIC_SESSION, STORED_SSTI, TIMING_COMPARE, WEAK_PASSWORD_HASH,
+    name_words, Rule, CONTENT_SPOOFING, CSRF, DB_IN_WORKDIR, FAIL_OPEN, LOGIN_NO_LIMIT, LOGOUT_GET,
+    MASS_ASSIGNMENT, NO_FRAME_PROTECTION, PREDICTABLE_SALT, PUBLIC_FORM_NO_LIMIT, STATE_CHANGE_GET,
+    STATIC_SESSION, STORED_SSTI, SWALLOWED_ERROR, TIMING_COMPARE, UNHANDLED_PARSE,
+    WEAK_PASSWORD_HASH,
 };
 use crate::Language;
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
 /// A finding of the model, in a module of the project.
@@ -103,11 +109,19 @@ pub fn check(project: &Project, include_tests: bool) -> Vec<Hit> {
     let helpers = HashHelpers::of(project, &scopes, &checked);
     let mut uses = Vec::new();
     for (i, m) in project.modules.iter().enumerate() {
-        if !checked(m) {
-            continue;
+        if checked(m) {
+            endpoints.extend(find_endpoints(i, m, &text));
         }
-        endpoints.extend(find_endpoints(i, m, &text));
-        function_checks(i, m, &scopes[i], &helpers, &mut uses, &mut hits);
+    }
+    let shared = Shared {
+        text: &text,
+        handlers: endpoints.iter().map(|e| e.body.as_ptr()).collect(),
+        db_paths: RefCell::new(HashSet::new()),
+    };
+    for (i, m) in project.modules.iter().enumerate() {
+        if checked(m) {
+            function_checks(i, m, &scopes[i], &shared, &helpers, &mut uses, &mut hits);
+        }
     }
     helpers.report(project, &uses, &mut hits);
     if endpoints.is_empty() {
@@ -120,6 +134,7 @@ pub fn check(project: &Project, include_tests: bool) -> Vec<Hit> {
         let scope = &scopes[e.module];
         let mut w = Walk {
             scope,
+            guards: &text.php_guards,
             f: Facts::default(),
         };
         if let Some(func) = e.func {
@@ -180,6 +195,33 @@ pub fn check(project: &Project, include_tests: bool) -> Vec<Hit> {
                 what: "выход выполняется GET-запросом: любая страница может разлогинить пользователя картинкой или ссылкой".into(),
             });
         }
+        // A form anyone can post that saves what it gets: a script can
+        // fill the database with it.
+        if unsafe_method
+            && f.form
+            && f.writes > 0
+            && !f.cookie_auth
+            && !f.guessed_auth
+            && !f.verifies
+            && !f.limit
+            && !text.rate_limit
+            && !login_everywhere(e, &text, &scopes)
+        {
+            hits.push(Hit {
+                rule: &PUBLIC_FORM_NO_LIMIT,
+                module: e.module,
+                line: at(f.lines.write),
+                what: "форма без входа записывает данные, а частота запросов не ограничена и капчи нет: скрипт может заваливать её спамом и раздувать базу данных".into(),
+            });
+        }
+        if let Some((line, name)) = spoofed(e, &scopes[e.module]) {
+            hits.push(Hit {
+                rule: &CONTENT_SPOOFING,
+                module: e.module,
+                line,
+                what: format!("текст сообщения «{name}» берётся из адреса страницы и показывается как надпись сайта: ссылкой вида ?{name}=… можно показать пользователю любое сообщение от имени сайта (например, «позвоните по номеру…»); показывайте сообщения по коду из своего списка"),
+            });
+        }
         if f.password && f.verifies && f.sets_session && !f.limit && !text.limit {
             hits.push(Hit {
                 rule: &LOGIN_NO_LIMIT,
@@ -230,6 +272,18 @@ pub fn check(project: &Project, include_tests: bool) -> Vec<Hit> {
 struct ProjectText {
     csrf: bool,
     limit: bool,
+    /// Limits the rate of any request or asks for a captcha, not only
+    /// on a login.
+    rate_limit: bool,
+    /// Every page asks for a login unless told otherwise: Django's
+    /// `LoginRequiredMiddleware`.
+    login_everywhere: bool,
+    /// A handler for bad numbers or any error answers the request
+    /// (`@app.errorhandler(ValueError)`, `@ExceptionHandler`).
+    errors_handled: bool,
+    /// PHP files that check a login, by file name: a page that
+    /// includes one is behind the login.
+    php_guards: HashSet<String>,
     frame_protection: bool,
     spring_security: bool,
     /// Logins live in the session whatever the endpoints do: Django,
@@ -244,6 +298,10 @@ impl ProjectText {
         let mut t = ProjectText {
             csrf: false,
             limit: false,
+            rate_limit: false,
+            login_everywhere: false,
+            errors_handled: false,
+            php_guards: HashSet::new(),
             frame_protection: false,
             spring_security: false,
             session_framework: false,
@@ -293,6 +351,32 @@ impl ProjectText {
             ]
             .iter()
             .any(|k| lower.contains(k));
+            t.rate_limit |= [
+                "flask_limiter",
+                "slowapi",
+                "django_ratelimit",
+                "ratelimit",
+                "rate_limit",
+                "ratelimiter",
+                "bucket4j",
+                "throttle",
+                "captcha",
+                "turnstile",
+            ]
+            .iter()
+            .any(|k| lower.contains(k));
+            t.login_everywhere |= s.contains("LoginRequiredMiddleware");
+            t.errors_handled |= [
+                "errorhandler(valueerror",
+                "errorhandler(exception",
+                "exception_handler(valueerror",
+                "exception_handler(exception",
+                "@exceptionhandler",
+                "@controlleradvice",
+                "@restcontrolleradvice",
+            ]
+            .iter()
+            .any(|k| lower.contains(k));
             t.frame_protection |= [
                 "x-frame-options",
                 "frame-ancestors",
@@ -319,6 +403,13 @@ impl ProjectText {
             t.csrf |= !csrf_disabled;
         }
         t.session_framework = django || (t.spring_security && !stateless);
+        for m in &project.modules {
+            if m.lang == Language::Php && php_guard(m.source()) {
+                if let Some(name) = m.path.rsplit('/').next() {
+                    t.php_guards.insert(name.to_string());
+                }
+            }
+        }
         for (i, m) in project.modules.iter().enumerate() {
             for s in &m.ir.body {
                 if let Stmt::Assign {
@@ -594,10 +685,12 @@ impl<'a> Scope<'a> {
             match s {
                 Stmt::Assign {
                     target: Target::Name(n),
-                    value: Expr::Lit(Const::Str(v)),
+                    value,
                     ..
                 } => {
-                    texts.insert(n.as_str(), v.as_str());
+                    if let Some(v) = literal_of(value) {
+                        texts.insert(n.as_str(), v);
+                    }
                 }
                 Stmt::FuncDef(f) => {
                     funcs.insert(f.name.as_str(), &**f);
@@ -605,6 +698,19 @@ impl<'a> Scope<'a> {
                 Stmt::ClassDef(c) => {
                     for f in &c.methods {
                         funcs.entry(f.name.as_str()).or_insert(&**f);
+                    }
+                    // `private static final byte[] SALT = "shifo".getBytes();`
+                    for field in &c.fields {
+                        if let Stmt::Declare {
+                            name,
+                            value: Some(value),
+                            ..
+                        } = field
+                        {
+                            if let Some(v) = literal_of(value) {
+                                texts.entry(name.as_str()).or_insert(v);
+                            }
+                        }
                     }
                 }
                 Stmt::Import { alias, path } => {
@@ -642,6 +748,24 @@ impl<'a> Scope<'a> {
 
     fn is_module(&self, name: &str) -> bool {
         self.imports.contains_key(name)
+    }
+}
+
+/// The text of a literal, encoded or not: `"shifo"`, `b"shifo"`,
+/// `"shifo".encode()`, `"shifo".getBytes()`, `bytes("shifo", "utf-8")`.
+fn literal_of(e: &Expr) -> Option<&str> {
+    match e {
+        Expr::Lit(Const::Str(s)) => Some(s),
+        Expr::Call { func, args, .. } => match &**func {
+            Expr::Attr(o, m) if matches!(m.as_str(), "encode" | "getBytes" | "toCharArray") => {
+                literal_of(o)
+            }
+            Expr::Name(n) if n == "bytes" || n == "bytearray" => {
+                args.first().and_then(|a| literal_of(&a.value))
+            }
+            _ => None,
+        },
+        _ => None,
     }
 }
 
@@ -795,6 +919,241 @@ fn writes(func: &Expr, args: &[Arg]) -> Option<Write> {
     yes.then_some(Write::Data)
 }
 
+/// A name for a message the page shows: `error`, `msg`, `notice`.
+fn message_name(name: &str) -> bool {
+    name_words(name.trim_start_matches('$')).any(|w| {
+        matches!(
+            w.as_str(),
+            "error"
+                | "err"
+                | "errors"
+                | "msg"
+                | "message"
+                | "messages"
+                | "notice"
+                | "alert"
+                | "flash"
+                | "info"
+                | "success"
+                | "warning"
+                | "warn"
+                | "notification"
+        )
+    })
+}
+
+/// A read of a message from the query string: `request.args.get("error")`,
+/// `request.GET["msg"]`, `$_GET['msg']`, `request.getParameter("error")`.
+fn query_message(e: &Expr) -> Option<&str> {
+    let query = |b: &Expr| match b {
+        Expr::Attr(r, n) => {
+            is_request(r) && matches!(n.as_str(), "args" | "GET" | "query_params" | "values")
+        }
+        Expr::Name(n) => n == "$_GET" || n == "$_REQUEST",
+        _ => false,
+    };
+    let key = match e {
+        Expr::Index(b, k) if query(b) => first_literal(k),
+        Expr::Call { func, args, .. } => match &**func {
+            Expr::Attr(b, n) if n == "get" && query(b) => {
+                args.first().and_then(|a| first_literal(&a.value))
+            }
+            _ if callee_name(func) == "getParameter" => {
+                args.first().and_then(|a| first_literal(&a.value))
+            }
+            _ => None,
+        },
+        _ => None,
+    }?;
+    message_name(key).then_some(key)
+}
+
+/// Where an endpoint shows a message taken from its address as its own
+/// text, and the message's name: a query parameter named `error` passed
+/// to a template, or printed escaped (unescaped it is XSS).
+fn spoofed(e: &Endpoint, scope: &Scope) -> Option<(u32, String)> {
+    let mut sources: HashMap<String, String> = HashMap::new();
+    let mut escaped: HashSet<String> = HashSet::new();
+    if let Some(f) = e.func {
+        let path: String = f
+            .decorators
+            .iter()
+            .filter_map(|d| match d {
+                Expr::Call { args, .. } => args.first().and_then(|a| first_literal(&a.value)),
+                _ => None,
+            })
+            .filter(|p| p.starts_with('/'))
+            .collect();
+        // A Django view has no route of its own: its parameters come
+        // from the URL pattern.
+        let routed = !path.is_empty();
+        for p in &f.params {
+            if !message_name(&p.name) {
+                continue;
+            }
+            let ty = p.ty.as_deref().unwrap_or("");
+            let query = match scope.lang {
+                // FastAPI: a plain parameter not in the path comes from the
+                // query string.
+                Language::Python => {
+                    routed
+                        && !path.contains(&format!("{{{}}}", p.name))
+                        && !path.contains(&format!("{}>", p.name))
+                        && (ty.is_empty() || ty.contains("str"))
+                        && p.default
+                            .as_ref()
+                            .is_none_or(|d| matches!(d, Expr::Lit(_)) || callee_name(d) == "Query")
+                }
+                Language::Java => ty.contains("RequestParam"),
+                _ => false,
+            };
+            if query {
+                sources.insert(p.name.clone(), p.name.clone());
+            }
+        }
+    }
+    visit_stmts(e.body, &mut |s| {
+        if let Stmt::Assign {
+            target: Target::Name(n),
+            value,
+            ..
+        }
+        | Stmt::Declare {
+            name: n,
+            value: Some(value),
+            ..
+        } = s
+        {
+            // `$msg = htmlspecialchars($_GET['msg'])` keeps the source.
+            let mut key = None;
+            each_expr(value, &mut |x| key = key.or(query_message(x)));
+            if let Some(k) = key {
+                sources.insert(n.clone(), k.to_string());
+                if escapes(value) {
+                    escaped.insert(n.clone());
+                }
+            }
+        }
+    });
+    let source = |x: &Expr| -> Option<String> {
+        match x {
+            Expr::Name(n) => sources.get(n).cloned(),
+            x => query_message(x).map(str::to_string),
+        }
+    };
+    let mut found = None;
+    visit_stmts(e.body, &mut |s| {
+        if found.is_some() {
+            return;
+        }
+        let Some(span) = stmt_span(s) else { return };
+        for x in own_exprs(s) {
+            each_expr(x, &mut |c| {
+                let Expr::Call { func, args, .. } = c else {
+                    return;
+                };
+                let name = callee_name(func);
+                let shown: Vec<&Expr> = match name {
+                    n if renders(n) && n != "get_template" => args
+                        .iter()
+                        .flat_map(|a| match &a.value {
+                            Expr::Dict(pairs) => pairs.iter().map(|(_, v)| v).collect(),
+                            v if a.name.is_some() => vec![v],
+                            _ => Vec::new(),
+                        })
+                        .collect(),
+                    "addAttribute" | "addObject" => {
+                        args.get(1).map(|a| &a.value).into_iter().collect()
+                    }
+                    // Escaped, or it is XSS.
+                    "echo" | "print" => {
+                        let mut v = Vec::new();
+                        for a in args {
+                            each_expr(&a.value, &mut |y| match y {
+                                Expr::Call { args, .. } if escapes(y) => {
+                                    v.extend(args.first().map(|a| &a.value));
+                                }
+                                Expr::Name(n) if escaped.contains(n) => v.push(y),
+                                _ => {}
+                            });
+                        }
+                        v
+                    }
+                    _ => return,
+                };
+                if found.is_none() {
+                    if let Some(k) = shown.into_iter().find_map(&source) {
+                        found = Some((span.line, k));
+                    }
+                }
+            });
+        }
+    });
+    found
+}
+
+/// Whether an expression is a call that escapes HTML.
+fn escapes(e: &Expr) -> bool {
+    matches!(e, Expr::Call { func, .. } if matches!(
+        callee_name(func),
+        "htmlspecialchars" | "htmlentities" | "esc_html" | "esc_attr"
+    ))
+}
+
+/// The last literal text of an expression: a string, or the end of one
+/// being built (`__DIR__ . '/auth.php'`).
+fn last_literal(e: &Expr) -> Option<&str> {
+    match e {
+        Expr::Lit(Const::Str(s)) => Some(s),
+        Expr::Concat(parts) => parts.last().and_then(last_literal),
+        Expr::Bin(BinOp::Add, _, r) => last_literal(r),
+        _ => None,
+    }
+}
+
+/// Whether a PHP file checks a login: reads the session or calls a
+/// check of the logged-in user.
+fn php_guard(src: &str) -> bool {
+    src.contains("$_SESSION")
+        || [
+            "is_user_logged_in",
+            "current_user_can",
+            "auth_redirect",
+            "check_admin_referer",
+        ]
+        .iter()
+        .any(|k| src.contains(k))
+}
+
+/// Whether the application asks for a login before any endpoint runs:
+/// Django's `LoginRequiredMiddleware`, Spring Security, a Flask
+/// `before_request` hook that reads the session.
+fn login_everywhere(e: &Endpoint, text: &ProjectText, scopes: &[Scope]) -> bool {
+    if text.login_everywhere {
+        return true;
+    }
+    let Some(func) = e.func else { return false };
+    let scope = &scopes[e.module];
+    if scope.lang == Language::Java {
+        // Spring Security guards controllers, not plain servlets.
+        return text.spring_security && !func.name.starts_with("do");
+    }
+    scope.funcs.values().any(|h| {
+        h.decorators
+            .iter()
+            .any(|d| matches!(callee_name(d), "before_request" | "before_app_request"))
+            && {
+                let mut w = Walk {
+                    scope,
+                    guards: &text.php_guards,
+                    f: Facts::default(),
+                };
+                w.body(&h.body, 1, false);
+                w.f.cookie_auth || w.f.guessed_auth
+            }
+    })
+}
+
 /// The first literal text of an expression: a string, or the start of
 /// one being built.
 fn first_literal(e: &Expr) -> Option<&str> {
@@ -809,6 +1168,8 @@ fn first_literal(e: &Expr) -> Option<&str> {
 /// Walks an endpoint's code and collects its facts.
 struct Walk<'s, 'a> {
     scope: &'s Scope<'a>,
+    /// PHP files that check a login, by name.
+    guards: &'s HashSet<String>,
     f: Facts,
 }
 
@@ -929,6 +1290,7 @@ impl<'a> Walk<'_, 'a> {
                     body: inner,
                     handlers,
                     finally,
+                    ..
                 } => {
                     self.body(inner, depth, post_only);
                     for h in handlers {
@@ -1009,6 +1371,7 @@ impl<'a> Walk<'_, 'a> {
     fn expr(&mut self, e: &'a Expr, depth: u8, post_only: bool) {
         let mut follow: Vec<&'a Function> = Vec::new();
         let scope = self.scope;
+        let guards = self.guards;
         let f = &mut self.f;
         each_expr(e, &mut |x| match x {
             Expr::Attr(base, name) => {
@@ -1095,6 +1458,17 @@ impl<'a> Walk<'_, 'a> {
                     f.page = true;
                 }
                 match name {
+                    // `require 'auth.php'`: the included file checks the login.
+                    "include" => {
+                        if args
+                            .first()
+                            .and_then(|a| last_literal(&a.value))
+                            .and_then(|p| p.rsplit(['/', '\\']).next())
+                            .is_some_and(|n| guards.contains(n))
+                        {
+                            f.cookie_auth = true;
+                        }
+                    }
                     "set_cookie" | "setcookie" | "set_signed_cookie" => {
                         let cookie = args.first().and_then(|a| first_literal(&a.value));
                         if cookie.is_some_and(auth_cookie) {
@@ -1422,8 +1796,8 @@ fn cookie_reads(project: &Project) -> HashSet<String> {
         if matches!(m.lang, Language::C | Language::Cpp) {
             continue;
         }
-        for (_, _, body) in scopes(m) {
-            visit_stmts(body, &mut |s| {
+        for code in scopes(m) {
+            visit_stmts(code.body, &mut |s| {
                 for e in own_exprs(s) {
                     each_expr(e, &mut |x| {
                         let key = match x {
@@ -1602,19 +1976,42 @@ fn constant(e: &Expr, scope: &Scope, depth: u8) -> bool {
     }
 }
 
-/// The functions of a module and its own top-level code: name,
-/// parameters, body.
-fn scopes(m: &ModuleInfo) -> Vec<(&str, &[Param], &[Stmt])> {
-    let mut out: Vec<(&str, &[Param], &[Stmt])> = vec![("", &[], &m.ir.body)];
+/// A function of a module, or code that runs outside any function (the
+/// module's top level, a class's field initializers), which has no name.
+struct Code<'a> {
+    name: &'a str,
+    params: &'a [Param],
+    body: &'a [Stmt],
+    decorators: &'a [Expr],
+}
+
+/// The functions of a module and its code outside them.
+fn scopes(m: &ModuleInfo) -> Vec<Code<'_>> {
+    let mut out = vec![Code {
+        name: "",
+        params: &[],
+        body: &m.ir.body,
+        decorators: &[],
+    }];
+    fn function(f: &Function) -> Code<'_> {
+        Code {
+            name: &f.name,
+            params: &f.params,
+            body: &f.body,
+            decorators: &f.decorators,
+        }
+    }
     for s in &m.ir.body {
         match s {
-            Stmt::FuncDef(f) => out.push((&f.name, &f.params, &f.body)),
+            Stmt::FuncDef(f) => out.push(function(f)),
             Stmt::ClassDef(c) => {
-                out.extend(
-                    c.methods
-                        .iter()
-                        .map(|f| (f.name.as_str(), f.params.as_slice(), f.body.as_slice())),
-                );
+                out.push(Code {
+                    name: "",
+                    params: &[],
+                    body: &c.fields,
+                    decorators: &[],
+                });
+                out.extend(c.methods.iter().map(|f| function(f)));
             }
             _ => {}
         }
@@ -1624,15 +2021,28 @@ fn scopes(m: &ModuleInfo) -> Vec<(&str, &[Param], &[Stmt])> {
 
 /// Checks in any function: keys compared with `==`, passwords under a
 /// fast hash, request forms written field by field.
+/// What the checks in functions share across the project.
+struct Shared<'p> {
+    text: &'p ProjectText,
+    /// The bodies of the endpoints, which answer requests.
+    handlers: HashSet<*const Stmt>,
+    /// Database files already reported, once per project.
+    db_paths: RefCell<HashSet<String>>,
+}
+
 fn function_checks(
     module: usize,
     m: &ModuleInfo,
     scope: &Scope,
+    shared: &Shared,
     helpers: &HashHelpers,
     uses: &mut Vec<HelperUse>,
     hits: &mut Vec<Hit>,
 ) {
-    for (name, params, body) in scopes(m) {
+    for code in scopes(m) {
+        let Code {
+            name, params, body, ..
+        } = code;
         let request = request_vars(params, body);
         let password_fn = name_words(name).any(|w| w == "password" || w == "passwd");
         // Hashing again in a loop stretches the hash (phpass, PBKDF2 by
@@ -1645,6 +2055,7 @@ fn function_checks(
             locals: &locals,
             password_fn,
             stretched,
+            db_paths: &shared.db_paths,
         };
         visit_stmts(body, &mut |s| {
             if let Some(span) = stmt_span(s) {
@@ -1652,7 +2063,428 @@ fn function_checks(
                 helpers.uses_in(module, s, span.line, scope, uses);
             }
         });
+        let startup = startup_code(&code);
+        let mut flow = Flow {
+            module,
+            cx: &cx,
+            scope,
+            // A bad number ends a request in an error page only where the
+            // code answers the request.
+            parse_handled: shared.text.errors_handled || !shared.handlers.contains(&body.as_ptr()),
+            startup,
+            hits,
+        };
+        flow.body(body, false);
     }
+}
+
+/// Code that runs when the application starts: a startup hook or a
+/// function named for setting up. A module's own code may be a script's
+/// (it counts only where it connects to a database).
+fn startup_code(code: &Code) -> bool {
+    if code.name.is_empty() {
+        return false;
+    }
+    code.decorators.iter().any(|d| match callee_name(d) {
+        "on_event" => matches!(d, Expr::Call { args, .. }
+            if args.first().and_then(|a| first_literal(&a.value)) == Some("startup")),
+        "before_first_request" | "before_serving" | "PostConstruct" => true,
+        _ => false,
+    }) || matches!(
+        code.name,
+        "startup"
+            | "on_startup"
+            | "lifespan"
+            | "init_db"
+            | "initdb"
+            | "init_database"
+            | "create_tables"
+            | "setup_db"
+            | "setup_database"
+            | "create_app"
+            | "contextInitialized"
+    )
+}
+
+/// Checks that depend on the statements around a call: numbers parsed
+/// from a request that no handler catches; errors of a check or of
+/// starting up that an empty handler swallows.
+struct Flow<'c, 'a> {
+    module: usize,
+    cx: &'c Checked<'a>,
+    scope: &'c Scope<'a>,
+    /// The project answers bad numbers itself (`@app.errorhandler(ValueError)`).
+    parse_handled: bool,
+    /// The code runs at startup.
+    startup: bool,
+    hits: &'c mut Vec<Hit>,
+}
+
+impl Flow<'_, '_> {
+    fn push(&mut self, rule: &'static Rule, line: u32, what: String) {
+        let module = self.module;
+        if !self
+            .hits
+            .iter()
+            .any(|h| h.module == module && h.line == line && h.rule.id == rule.id)
+        {
+            self.hits.push(Hit {
+                rule,
+                module,
+                line,
+                what,
+            });
+        }
+    }
+
+    /// `safe`: a handler around catches a bad number, or a test checked
+    /// the text is one.
+    fn body(&mut self, body: &[Stmt], safe: bool) {
+        for s in body {
+            match s {
+                Stmt::Try {
+                    body: inner,
+                    handlers,
+                    catches,
+                    finally,
+                } => {
+                    let lang = self.scope.lang;
+                    self.swallowed(inner, catches);
+                    let caught = catches.iter().any(|c| catches_bad_number(c, lang));
+                    self.body(inner, safe || caught);
+                    for h in handlers {
+                        self.body(h, safe);
+                    }
+                    self.body(finally, safe);
+                }
+                Stmt::If {
+                    test, then, other, ..
+                } => {
+                    self.parses(test, s, safe);
+                    let checked = safe || checks_number(test);
+                    self.body(then, checked);
+                    self.body(other, checked);
+                }
+                Stmt::Loop { body: inner, .. } => {
+                    for e in own_exprs(s) {
+                        self.parses(e, s, safe);
+                    }
+                    self.body(inner, safe);
+                }
+                Stmt::Switch { subject, cases, .. } => {
+                    self.parses(subject, s, safe);
+                    for c in cases {
+                        self.body(&c.body, safe);
+                    }
+                }
+                Stmt::FuncDef(_) | Stmt::ClassDef(_) => {}
+                _ => {
+                    for e in own_exprs(s) {
+                        self.parses(e, s, safe);
+                    }
+                }
+            }
+        }
+    }
+
+    /// `int(request.args["page"])`, `Integer.parseInt(request.getParameter("id"))`
+    /// with nothing to catch a value that is not a number: the request
+    /// ends in a 500 error.
+    fn parses(&mut self, e: &Expr, s: &Stmt, safe: bool) {
+        if safe || self.parse_handled {
+            return;
+        }
+        let Some(span) = stmt_span(s) else { return };
+        let mut found: Option<String> = None;
+        let request = self.cx.request;
+        let params = self.cx.params;
+        let lang = self.scope.lang;
+        each_expr(e, &mut |x| {
+            if found.is_some() {
+                return;
+            }
+            // `int(x) if x.isdigit() else 0`
+            if let Expr::Cond { test, .. } = x {
+                if checks_number(test) {
+                    found = Some(String::new());
+                }
+                return;
+            }
+            let Expr::Call { func, args, .. } = x else {
+                return;
+            };
+            let Some(arg) = args.first().map(|a| &a.value) else {
+                return;
+            };
+            let parse = match (lang, &**func) {
+                (Language::Python, Expr::Name(n)) if n == "int" || n == "float" => {
+                    Some(format!("{n}()"))
+                }
+                (Language::Java, Expr::Attr(o, m)) => {
+                    let class = receiver_name(o);
+                    let number = matches!(
+                        class,
+                        "Integer" | "Long" | "Short" | "Byte" | "Double" | "Float"
+                    );
+                    (number && (m.starts_with("parse") || m == "valueOf"))
+                        .then(|| format!("{class}.{m}()"))
+                }
+                _ => None,
+            };
+            let Some(parse) = parse else { return };
+            // A parameter the framework already made a number.
+            let typed = matches!(arg, Expr::Name(n) if params.iter().any(|p| &p.name == n
+            && p.ty.as_deref().is_some_and(|t| {
+                let t = t.to_ascii_lowercase();
+                t.contains("int") || t.contains("float") || t.contains("long")
+            })));
+            if !typed && from_request(arg, request) && args.len() == 1 {
+                found = Some(parse);
+            }
+        });
+        if let Some(parse) = found.filter(|p| !p.is_empty()) {
+            self.push(
+                &UNHANDLED_PARSE,
+                span.line,
+                format!(
+                    "{parse} разбирает число из запроса, а ошибку разбора ничто не перехватывает: строка вроде «abc» в этом поле обрывает запрос ошибкой 500 (а в режиме отладки показывает трассировку); проверьте значение или перехватите ошибку и ответьте 400"
+                ),
+            );
+        }
+    }
+
+    /// An empty handler of every error around a check whose failure it
+    /// hides, or around starting up.
+    fn swallowed(&mut self, body: &[Stmt], catches: &[Catch]) {
+        let lang = self.scope.lang;
+        let Some(catch) = catches.iter().find(|c| c.empty && catches_all(c, lang)) else {
+            return;
+        };
+        let mut check: Option<String> = None;
+        let mut setup = false;
+        let mut work = false;
+        visit_stmts(body, &mut |s| {
+            // A check whose result the code ignores signals by raising.
+            if let Stmt::Expr(Expr::Call { func, .. }, _) = s {
+                let name = callee_name(func);
+                if check.is_none() && security_check(name) {
+                    check = Some(name.to_string());
+                }
+            }
+            for e in own_exprs(s) {
+                each_expr(e, &mut |x| {
+                    let name = match x {
+                        Expr::Call { func, .. } => callee_name(func),
+                        Expr::New { class, .. } => {
+                            class.rsplit(['.', '\\']).next().unwrap_or(class)
+                        }
+                        _ => return,
+                    };
+                    setup |= db_setup(x);
+                    work |= !cleanup(&name.to_ascii_lowercase());
+                });
+            }
+        });
+        if let Some(name) = check {
+            self.push(
+                &FAIL_OPEN,
+                catch.span.line,
+                format!(
+                    "проверка {name}() сообщает об отказе исключением, а пустой обработчик его глушит: при подделанных данных или сбое проверка просто пропускается и код идёт дальше; при ошибке проверки отказывайте"
+                ),
+            );
+        } else if work && (setup || self.startup) {
+            self.push(
+                &SWALLOWED_ERROR,
+                catch.span.line,
+                "ошибка при запуске или подключении к базе данных глушится пустым обработчиком: приложение продолжит работу без базы или настроек, и о сбое никто не узнает; запишите ошибку в журнал или остановите запуск".into(),
+            );
+        }
+    }
+}
+
+/// Whether a handler catches a text that is not a number.
+fn catches_bad_number(c: &Catch, lang: Language) -> bool {
+    catches_all(c, lang)
+        || c.types.iter().any(|t| {
+            matches!(
+                t.as_str(),
+                "ValueError" | "NumberFormatException" | "IllegalArgumentException"
+            )
+        })
+}
+
+/// Whether a handler catches every error: a bare `except:`, `Exception`,
+/// `Throwable`.
+fn catches_all(c: &Catch, lang: Language) -> bool {
+    match lang {
+        Language::Python => {
+            c.types.is_empty()
+                || c.types
+                    .iter()
+                    .any(|t| t == "Exception" || t == "BaseException")
+        }
+        Language::Java => c
+            .types
+            .iter()
+            .any(|t| matches!(t.as_str(), "Exception" | "Throwable" | "RuntimeException")),
+        Language::Php => c
+            .types
+            .iter()
+            .any(|t| matches!(t.as_str(), "Exception" | "Throwable" | "Error")),
+        Language::C | Language::Cpp => false,
+    }
+}
+
+/// Whether a test checks that a text is a number: `x.isdigit()`,
+/// `re.fullmatch(r"\d+", x)`, `StringUtils.isNumeric(x)`.
+fn checks_number(test: &Expr) -> bool {
+    let mut found = false;
+    each_expr(test, &mut |x| {
+        if let Expr::Call { func, .. } = x {
+            let lower = callee_name(func).to_ascii_lowercase();
+            found |= matches!(
+                lower.as_str(),
+                "isdigit"
+                    | "isnumeric"
+                    | "isdecimal"
+                    | "fullmatch"
+                    | "match"
+                    | "matches"
+                    | "is_numeric"
+                    | "ctype_digit"
+                    | "isdigits"
+                    | "iscreatable"
+                    | "isparsable"
+            ) || lower.starts_with("isnumber")
+                || lower.starts_with("is_int")
+                || lower.starts_with("isint");
+        }
+    });
+    found
+}
+
+/// A check that answers by raising when it fails: `verify_signature`,
+/// `validate_token`, `check_permission`.
+fn security_check(name: &str) -> bool {
+    let words: Vec<String> = name_words(name).collect();
+    let has = |set: &[&str]| words.iter().any(|w| set.contains(&w.as_str()));
+    has(&[
+        "verify",
+        "validate",
+        "authenticate",
+        "authorize",
+        "authorise",
+    ]) || (has(&["check", "ensure", "require"])
+        && has(&[
+            "password",
+            "permission",
+            "permissions",
+            "perm",
+            "perms",
+            "token",
+            "signature",
+            "sig",
+            "csrf",
+            "auth",
+            "access",
+            "login",
+            "owner",
+            "role",
+            "admin",
+            "referer",
+            "nonce",
+            "hmac",
+            "captcha",
+        ]))
+}
+
+/// Calls that connect to a database or create its tables:
+/// `sqlite3.connect`, `mysqli_connect`, `DriverManager.getConnection`,
+/// `create_engine`, `new PDO`; not a socket's `connect`.
+fn db_setup(call: &Expr) -> bool {
+    let (name, recv) = match call {
+        Expr::Call { func, .. } => (
+            callee_name(func),
+            match &**func {
+                Expr::Attr(o, _) => receiver_name(o),
+                _ => "",
+            },
+        ),
+        Expr::New { class, .. } => (class.rsplit(['.', '\\']).next().unwrap_or(class), ""),
+        _ => return false,
+    };
+    let words: Vec<String> = name_words(name).collect();
+    let first = words.first().map(String::as_str);
+    match name {
+        "connect" => matches!(
+            recv,
+            "sqlite3"
+                | "aiosqlite"
+                | "psycopg2"
+                | "psycopg"
+                | "pymysql"
+                | "MySQLdb"
+                | "connector"
+                | "cx_Oracle"
+                | "oracledb"
+                | "pyodbc"
+                | "asyncpg"
+                | "pymssql"
+                | "mariadb"
+        ),
+        "mysqli_connect"
+        | "mysqli_real_connect"
+        | "mysql_connect"
+        | "pg_connect"
+        | "pg_pconnect"
+        | "sqlsrv_connect"
+        | "oci_connect"
+        | "odbc_connect"
+        | "create_engine"
+        | "create_all"
+        | "init_db"
+        | "initdb"
+        | "migrate"
+        | "PDO"
+        | "mysqli"
+        | "MongoClient"
+        | "SessionLocal"
+        | "sessionmaker" => true,
+        // `dataSource.getConnection()`; `url.openConnection()` is HTTP.
+        _ => {
+            words.last().map(String::as_str) == Some("connection")
+                && matches!(first, Some("get" | "create" | "new" | "establish"))
+        }
+    }
+}
+
+/// Calls that only tidy up, whose errors may be ignored.
+fn cleanup(lower: &str) -> bool {
+    matches!(
+        lower,
+        "close"
+            | "shutdown"
+            | "unlink"
+            | "remove"
+            | "rmtree"
+            | "delete"
+            | "release"
+            | "rollback"
+            | "disconnect"
+            | "quit"
+            | "terminate"
+            | "kill"
+            | "cancel"
+            | "stop"
+            | "flush"
+            | "dispose"
+            | "destroy"
+            | "cleanup"
+            | "join"
+            | "wait"
+            | "closequietly"
+    )
 }
 
 /// Whether a body hashes again in a loop, which stretches the hash
@@ -1685,7 +2517,8 @@ struct HashHelper {
     module_name: String,
     line: u32,
     /// The hash and the salt it adds, for the message.
-    how: String,
+    label: String,
+    how: Hashing,
 }
 
 /// A call of a hash helper with a password.
@@ -1711,42 +2544,47 @@ impl HashHelpers {
             if !checked(m) {
                 continue;
             }
-            for (name, params, body) in scopes(m) {
+            for Code {
+                name, params, body, ..
+            } in scopes(m)
+            {
                 // A MAC keyed with a password (CRAM-MD5) stores nothing.
                 let mac = name_words(name).any(|w| matches!(w.as_str(), "hmac" | "mac" | "sign"));
-                if name.is_empty() || params.is_empty() || mac || stretches(body, &module_scopes[i])
-                {
+                if name.is_empty() || params.is_empty() || mac {
                     continue;
                 }
-                let mut found: Option<(u32, String)> = None;
+                let scope = &module_scopes[i];
+                let stretched = stretches(body, scope);
+                let locals = single_assignments(body);
+                let mut found: Option<(u32, String, Hashing)> = None;
                 visit_stmts(body, &mut |s| {
                     let Some(span) = stmt_span(s) else { return };
                     for e in own_exprs(s) {
                         each_expr(e, &mut |x| {
-                            let Expr::Call { func, args, .. } = x else {
-                                return;
-                            };
                             if found.is_some() {
                                 return;
                             }
-                            if let Some((hashed, label)) = fast_hash(func, args, &module_scopes[i])
-                            {
-                                if mentions_param(hashed, params) {
-                                    found = Some((
-                                        span.line,
-                                        hash_how(&label, hashed, &module_scopes[i]),
-                                    ));
+                            if let Some((hashed, label, how)) = hash_call(x, scope, &locals) {
+                                if mentions_param(hashed, params)
+                                    && !(stretched && how == Hashing::Fast)
+                                {
+                                    let label = match how {
+                                        Hashing::Fast => hash_how(&label, hashed, scope),
+                                        Hashing::FixedSalt => label,
+                                    };
+                                    found = Some((span.line, label, how));
                                 }
                             }
                         });
                     }
                 });
-                if let Some((line, how)) = found {
+                if let Some((line, label, how)) = found {
                     list.push(HashHelper {
                         name: name.to_string(),
                         module: i,
                         module_name: m.name.clone(),
                         line,
+                        label,
                         how,
                     });
                 }
@@ -1869,20 +2707,34 @@ impl HashHelpers {
             let Some(u) = uses.iter().find(|u| u.helper == i) else {
                 continue;
             };
-            if hits.iter().any(|x| {
-                x.module == h.module && x.line == h.line && x.rule.id == WEAK_PASSWORD_HASH.id
-            }) {
+            let rule = match h.how {
+                Hashing::Fast => &WEAK_PASSWORD_HASH,
+                Hashing::FixedSalt => &PREDICTABLE_SALT,
+            };
+            if hits
+                .iter()
+                .any(|x| x.module == h.module && x.line == h.line && x.rule.id == rule.id)
+            {
                 continue;
             }
             let at = &project.modules[u.module].path;
+            let what = match h.how {
+                Hashing::Fast => format!(
+                    "{}() хеширует пароль (вызов в {at}:{}) быстрой функцией {}: перебор идёт миллиардами вариантов в секунду; используйте bcrypt, scrypt, Argon2 или PBKDF2",
+                    h.name, u.line, h.label
+                ),
+                Hashing::FixedSalt => format!(
+                    "{}() (вызов в {at}:{}): {}",
+                    h.name,
+                    u.line,
+                    salt_message(&h.label)
+                ),
+            };
             hits.push(Hit {
-                rule: &WEAK_PASSWORD_HASH,
+                rule,
                 module: h.module,
                 line: h.line,
-                what: format!(
-                    "{}() хеширует пароль (вызов в {at}:{}) быстрой функцией {}: перебор идёт миллиардами вариантов в секунду; используйте bcrypt, scrypt, Argon2 или PBKDF2",
-                    h.name, u.line, h.how
-                ),
+                what,
             });
         }
     }
@@ -1932,6 +2784,8 @@ struct Checked<'a> {
     password_fn: bool,
     /// Hashes in a loop, which stretches the hash.
     stretched: bool,
+    /// Database files already reported in the project.
+    db_paths: &'a RefCell<HashSet<String>>,
 }
 
 fn stmt_checks(
@@ -2042,25 +2896,157 @@ fn stmt_checks(
                         );
                     }
                 }
-                if let Some((hashed, func)) =
-                    fast_hash(callee, args, scope).filter(|_| !cx.stretched)
-                {
-                    let password = mentions_password(hashed)
-                        || (cx.password_fn && mentions_param(hashed, cx.params));
-                    if password {
-                        push(
-                            &WEAK_PASSWORD_HASH,
-                            format!(
-                                "пароль хешируется быстрой функцией {}: перебор идёт миллиардами вариантов в секунду; используйте bcrypt, scrypt, Argon2 или PBKDF2",
-                                hash_how(&func, hashed, scope)
-                            ),
-                        );
-                    }
-                }
             }
             _ => {}
         });
     }
+    // A database file wherever the server happens to start; Flask-SQLAlchemy
+    // puts a relative path in the app's instance folder instead.
+    let flask_sqlalchemy = match s {
+        Stmt::Assign {
+            target: Target::Index(_, k),
+            ..
+        } => first_literal(k) == Some("SQLALCHEMY_DATABASE_URI"),
+        Stmt::Assign {
+            target: Target::Name(n) | Target::Attr(_, n),
+            ..
+        } => n == "SQLALCHEMY_DATABASE_URI",
+        _ => false,
+    };
+    if !flask_sqlalchemy {
+        for e in own_exprs(s) {
+            each_expr(e, &mut |x| {
+                let Some(path) = workdir_db(x, scope, cx.locals) else {
+                    return;
+                };
+                if cx.db_paths.borrow_mut().insert(path.to_string()) {
+                    let what = if lang == Language::Php {
+                        format!("база SQLite «{path}» лежит в папке сайта: если веб-сервер отдаёт файлы .db и .sqlite, её можно скачать целиком по прямой ссылке; храните базу вне корня сайта")
+                    } else {
+                        format!("база данных «{path}» задана путём от текущей папки: файл появится там, откуда запущен сервер, обычно рядом с кодом; если эту папку раздаёт веб-сервер или её копируют в архив или git, базу можно скачать целиком; укажите абсолютный путь вне папки сайта")
+                    };
+                    push(&DB_IN_WORKDIR, what);
+                }
+            });
+        }
+    }
+    for e in own_exprs(s) {
+        each_expr(e, &mut |x| {
+            let Some((hashed, label, how)) = hash_call(x, scope, cx.locals) else {
+                return;
+            };
+            let password =
+                mentions_password(hashed) || (cx.password_fn && mentions_param(hashed, cx.params));
+            match how {
+                _ if !password => {}
+                Hashing::Fast if !cx.stretched => push(
+                    &WEAK_PASSWORD_HASH,
+                    format!(
+                        "пароль хешируется быстрой функцией {}: перебор идёт миллиардами вариантов в секунду; используйте bcrypt, scrypt, Argon2 или PBKDF2",
+                        hash_how(&label, hashed, scope)
+                    ),
+                ),
+                Hashing::Fast => {}
+                Hashing::FixedSalt => push(&PREDICTABLE_SALT, salt_message(&label)),
+            }
+        });
+    }
+}
+
+/// The path of a database file relative to the working directory that an
+/// expression names: `"sqlite:///./app.db"`, `sqlite3.connect("app.db")`,
+/// `"jdbc:sqlite:app.db"`, PHP `new PDO("sqlite:app.db")`, a Django
+/// database whose `NAME` is `"db.sqlite3"`.
+fn workdir_db<'e>(
+    e: &'e Expr,
+    scope: &'e Scope,
+    locals: &HashMap<&str, &'e Expr>,
+) -> Option<&'e str> {
+    let relative = |p: &str| {
+        !p.is_empty()
+            && !p.starts_with('/')
+            && !p.starts_with('\\')
+            && !p.starts_with('~')
+            && !p.starts_with(":memory:")
+            && !p.starts_with("file:")
+            && !p.contains(['{', '%', '$', '?'])
+            && p.as_bytes().get(1) != Some(&b':')
+    };
+    let php = scope.lang == Language::Php;
+    match e {
+        Expr::Lit(Const::Str(s)) => {
+            let path = if let Some((scheme, rest)) = s.split_once(":///") {
+                // `sqlite:///./app.db`, `sqlite+aiosqlite:///app.db`
+                (scheme == "sqlite" || scheme.starts_with("sqlite+")).then_some(rest)?
+            } else if let Some(rest) = s.strip_prefix("jdbc:sqlite:") {
+                rest
+            } else if let Some(rest) = s.strip_prefix("jdbc:h2:") {
+                if ["mem:", "tcp:", "ssl:", "zip:"]
+                    .iter()
+                    .any(|p| rest.starts_with(p))
+                {
+                    return None;
+                }
+                rest.strip_prefix("file:").unwrap_or(rest)
+            } else if php {
+                let rest = s.strip_prefix("sqlite:")?;
+                // A file above the page's folder is outside the site.
+                if rest.starts_with("..") {
+                    return None;
+                }
+                rest
+            } else {
+                return None;
+            };
+            relative(path).then_some(path)
+        }
+        // `sqlite3.connect("app.db")`, PHP `new SQLite3("app.db")`
+        Expr::Call { func, args, .. } if scope.lang == Language::Python => {
+            let sqlite = match &**func {
+                Expr::Attr(o, n) => {
+                    n == "connect"
+                        && matches!(&**o, Expr::Name(r) if r == "sqlite3" || r == "aiosqlite")
+                }
+                Expr::Name(n) => {
+                    callee_name(func) == "connect"
+                        && scope.imported_from(n, &["sqlite3", "aiosqlite"])
+                }
+                _ => false,
+            };
+            if !sqlite {
+                return None;
+            }
+            let path = constant_text(&args.first()?.value, scope, locals)?;
+            relative(path).then_some(path)
+        }
+        Expr::New { class, args, .. } if php && class.trim_start_matches('\\') == "SQLite3" => {
+            let path = constant_text(&args.first()?.value, scope, locals)?;
+            (relative(path) && !path.starts_with("..")).then_some(path)
+        }
+        // Django: `{"ENGINE": "django.db.backends.sqlite3", "NAME": "db.sqlite3"}`
+        Expr::Dict(pairs) if scope.lang == Language::Python => {
+            let value = |key: &str| {
+                pairs
+                    .iter()
+                    .find(|(k, _)| first_literal(k) == Some(key))
+                    .map(|(_, v)| v)
+            };
+            let engine = value("ENGINE").and_then(first_literal)?;
+            if !engine.ends_with("sqlite3") {
+                return None;
+            }
+            let path = constant_text(value("NAME")?, scope, locals)?;
+            relative(path).then_some(path)
+        }
+        _ => None,
+    }
+}
+
+/// The finding for a slow hash under a constant salt.
+fn salt_message(label: &str) -> String {
+    format!(
+        "пароль хешируется {label}: у всех паролей одна соль, поэтому одинаковые пароли дают одинаковые хеши, а подбор идёт сразу по всей базе; генерируйте случайную соль для каждого пароля (os.urandom(16), bcrypt.gensalt(), SecureRandom)"
+    )
 }
 
 /// The text a call compiles as a template, and how to name the call:
@@ -2364,6 +3350,216 @@ fn key_secret(e: &Expr, locals: &HashMap<&str, &Expr>, scope: &Scope, depth: u8)
 
 /// The data a call hashes and the call's name, when it is a fast
 /// general-purpose hash.
+/// How a call hashes what it is given.
+#[derive(Clone, Copy, PartialEq)]
+enum Hashing {
+    /// A fast hash: billions of guesses a second.
+    Fast,
+    /// A slow function whose salt is the same for every password.
+    FixedSalt,
+}
+
+/// A call that hashes `input`, how it names the hash, and how it hashes:
+/// a fast hash (`hashlib.sha256(x)`, a hash object's `h.update(x)`, an
+/// HMAC under a constant key), or a slow one whose salt never changes
+/// (`pbkdf2_hmac("sha256", x, b"salt", n)`, `bcrypt.hashpw(x, b"$2b$...")`,
+/// `new PBEKeySpec(x, SALT, n, len)`).
+fn hash_call<'e>(
+    call: &'e Expr,
+    scope: &Scope,
+    locals: &HashMap<&str, &'e Expr>,
+) -> Option<(&'e Expr, String, Hashing)> {
+    let (callee, args) = match call {
+        Expr::Call { func, args, .. } => (&**func, args.as_slice()),
+        Expr::New { class, args, .. } => {
+            let class = class.rsplit(['.', '\\']).next().unwrap_or(class);
+            if class == "PBEKeySpec" && scope.lang == Language::Java {
+                let salt = constant_text(&args.get(1)?.value, scope, locals)?;
+                return Some((
+                    &args.first()?.value,
+                    format!("PBEKeySpec с постоянной солью «{salt}»"),
+                    Hashing::FixedSalt,
+                ));
+            }
+            return None;
+        }
+        _ => return None,
+    };
+    if let Some((input, label)) = fast_hash(callee, args, scope) {
+        return Some((input, label, Hashing::Fast));
+    }
+    let name = callee_name(callee);
+    let recv = match callee {
+        Expr::Attr(o, _) => match &**o {
+            Expr::Name(r) => scope
+                .imports
+                .get(r.as_str())
+                .map(|p| p.rsplit('.').next().unwrap_or(p))
+                .unwrap_or(r),
+            _ => "",
+        },
+        Expr::Name(n) => match scope.imports.get(n.as_str()) {
+            // `from hashlib import pbkdf2_hmac`
+            Some(p) => p.rsplit('.').nth(1).unwrap_or(""),
+            None => "",
+        },
+        _ => "",
+    };
+    let nth = |i: usize| args.get(i).filter(|a| a.name.is_none()).map(|a| &a.value);
+    let kw = |k: &str| {
+        args.iter()
+            .find(|a| a.name.as_deref() == Some(k))
+            .map(|a| &a.value)
+    };
+    // A slow hash of `input` with a constant `salt`.
+    let slow = |input: Option<&'e Expr>, salt: Option<&'e Expr>, label: String| {
+        let salt = constant_text(salt?, scope, locals)?;
+        Some((
+            input?,
+            format!("{label} с постоянной солью «{salt}»"),
+            Hashing::FixedSalt,
+        ))
+    };
+    let label = |n: &str| match recv {
+        "" => format!("{n}()"),
+        r => format!("{r}.{n}()"),
+    };
+    match scope.lang {
+        Language::Python => {
+            match (recv, name) {
+                // `h = hashlib.sha256(); h.update(p)`
+                (_, "update") => {
+                    let Expr::Attr(o, _) = callee else {
+                        return None;
+                    };
+                    let Expr::Name(v) = &**o else { return None };
+                    let Expr::Call { func, args: a, .. } = locals.get(v.as_str())? else {
+                        return None;
+                    };
+                    let label = hash_object(func, a, scope)?;
+                    Some((nth(0)?, label, Hashing::Fast))
+                }
+                // An HMAC whose key is a constant is a salted fast hash.
+                ("hmac", "new" | "digest") => {
+                    let key = nth(0).or_else(|| kw("key"))?;
+                    let k = constant_text(key, scope, locals)?;
+                    let msg = nth(1).or_else(|| kw("msg"))?;
+                    Some((
+                        msg,
+                        format!("HMAC с постоянным ключом «{k}»"),
+                        Hashing::Fast,
+                    ))
+                }
+                ("hashlib", "pbkdf2_hmac") => slow(
+                    nth(1).or_else(|| kw("password")),
+                    nth(2).or_else(|| kw("salt")),
+                    label(name),
+                ),
+                ("hashlib", "scrypt") => {
+                    slow(nth(0).or_else(|| kw("password")), kw("salt"), label(name))
+                }
+                ("bcrypt" | "crypt", "hashpw" | "crypt") => slow(nth(0), nth(1), label(name)),
+                // `kdf = PBKDF2HMAC(..., salt=SALT, ...); kdf.derive(p)`
+                (_, "derive") => {
+                    let Expr::Attr(o, _) = callee else {
+                        return None;
+                    };
+                    let Expr::Name(v) = &**o else { return None };
+                    let Expr::Call { func, args: a, .. } = locals.get(v.as_str())? else {
+                        return None;
+                    };
+                    let kdf = callee_name(func);
+                    if !matches!(kdf, "PBKDF2HMAC" | "Scrypt") {
+                        return None;
+                    }
+                    let salt = a.iter().find(|x| x.name.as_deref() == Some("salt"))?;
+                    slow(nth(0), Some(&salt.value), format!("{kdf}()"))
+                }
+                _ => None,
+            }
+        }
+        Language::Php => match name.to_ascii_lowercase().as_str() {
+            "hash_hmac" => {
+                let k = constant_text(nth(2)?, scope, locals)?;
+                Some((
+                    nth(1)?,
+                    format!("hash_hmac() с постоянным ключом «{k}»"),
+                    Hashing::Fast,
+                ))
+            }
+            "hash_pbkdf2" => slow(nth(1), nth(2), "hash_pbkdf2()".into()),
+            "crypt" => slow(nth(0), nth(1), "crypt()".into()),
+            // `password_hash($p, PASSWORD_BCRYPT, ['salt' => '...'])`
+            "password_hash" => {
+                let Expr::Dict(pairs) = nth(2)? else {
+                    return None;
+                };
+                let salt = pairs
+                    .iter()
+                    .find(|(k, _)| first_literal(k) == Some("salt"))
+                    .map(|(_, v)| v);
+                slow(nth(0), salt, "password_hash()".into())
+            }
+            _ => None,
+        },
+        Language::Java if recv == "BCrypt" && name == "hashpw" => {
+            slow(nth(0), nth(1), "BCrypt.hashpw()".into())
+        }
+        _ => None,
+    }
+}
+
+/// The fast hash whose object a call makes: `hashlib.sha256()`,
+/// `hashlib.new("md5")`.
+fn hash_object(func: &Expr, args: &[Arg], scope: &Scope) -> Option<String> {
+    let mut probe = args.to_vec();
+    probe.resize(
+        2,
+        Arg {
+            name: None,
+            value: Expr::Name(String::new()),
+            spread: false,
+        },
+    );
+    fast_hash(func, &probe, scope).map(|(_, label)| label)
+}
+
+/// The text of a value that never changes: a literal, encoded or not, a
+/// constant of the module or class, a local assigned one once.
+fn constant_text<'e>(
+    e: &'e Expr,
+    scope: &'e Scope,
+    locals: &HashMap<&str, &'e Expr>,
+) -> Option<&'e str> {
+    if let Some(s) = literal_of(e) {
+        return Some(s);
+    }
+    let name = match e {
+        Expr::Name(n) => n.as_str(),
+        // `SALT.encode()`, `self.SALT`
+        Expr::Call { func, .. } => match &**func {
+            Expr::Attr(o, m) if matches!(m.as_str(), "encode" | "getBytes" | "toCharArray") => {
+                return constant_text(o, scope, locals)
+            }
+            _ => return None,
+        },
+        // `self.SALT`, `Pw.SALT` in Java
+        Expr::Attr(o, n)
+            if matches!(&**o, Expr::Name(s) if s == "self" || s == "this"
+                || s.starts_with(|c: char| c.is_ascii_uppercase())) =>
+        {
+            n.as_str()
+        }
+        _ => return None,
+    };
+    let name = name.rsplit('.').next().unwrap_or(name);
+    scope
+        .texts
+        .get(name)
+        .copied()
+        .or_else(|| locals.get(name).and_then(|v| literal_of(v)))
+}
+
 fn fast_hash<'e>(callee: &'e Expr, args: &'e [Arg], scope: &Scope) -> Option<(&'e Expr, String)> {
     let name = callee_name(callee);
     let lower = name.to_ascii_lowercase();
@@ -2846,6 +4042,7 @@ fn visit_stmts<'a>(body: &'a [Stmt], f: &mut dyn FnMut(&'a Stmt)) {
                 body,
                 handlers,
                 finally,
+                ..
             } => {
                 visit_stmts(body, f);
                 for h in handlers {

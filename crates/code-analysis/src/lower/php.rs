@@ -12,7 +12,7 @@
 //! walks `__php_pairs($a)`, `include` and `require` call `include`, and
 //! output (`echo`, `print`, backticks) calls `echo` or `shell_exec`.
 
-use super::{children, named_children, span, test_span, text};
+use super::{children, last_name, named_children, span, test_span, text};
 use crate::ir::*;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -342,11 +342,25 @@ impl<'s> Lower<'s> {
                     .map(|b| self.block(b))
                     .unwrap_or_default();
                 let mut handlers = Vec::new();
+                let mut catches = Vec::new();
                 let mut finally = Vec::new();
                 for c in named_children(node) {
                     match c.kind() {
                         "catch_clause" => {
                             let mut h = Vec::new();
+                            let mut types = Vec::new();
+                            if let Some(t) = c.child_by_field_name("type") {
+                                for n in named_children(t) {
+                                    types.push(last_name(self.text(n)));
+                                }
+                            }
+                            catches.push(Catch {
+                                types,
+                                empty: c
+                                    .child_by_field_name("body")
+                                    .is_some_and(|b| named_children(b).is_empty()),
+                                span: span(c),
+                            });
                             if let Some(n) = c.child_by_field_name("name") {
                                 h.push(Stmt::Assign {
                                     target: Target::Name(self.var_name(n)),
@@ -370,6 +384,7 @@ impl<'s> Lower<'s> {
                 out.push(Stmt::Try {
                     body,
                     handlers,
+                    catches,
                     finally,
                 });
             }

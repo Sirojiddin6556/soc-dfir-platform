@@ -1,6 +1,6 @@
 //! Python front end (tree-sitter-python).
 
-use super::{children, field_children, named_children, span, test_span, text};
+use super::{children, field_children, last_name, named_children, span, test_span, text};
 use crate::ir::*;
 use std::rc::Rc;
 use tree_sitter::Node;
@@ -119,14 +119,45 @@ impl<'s> Lower<'s> {
             "try_statement" => {
                 let mut body = self.opt_block(node.child_by_field_name("body"));
                 let mut handlers = Vec::new();
+                let mut catches = Vec::new();
                 let mut finally = Vec::new();
                 for child in named_children(node) {
                     match child.kind() {
                         "except_clause" | "except_group_clause" => {
                             let mut h = Vec::new();
+                            let mut catch = Catch {
+                                types: Vec::new(),
+                                empty: false,
+                                span: span(child),
+                            };
+                            if let Some(v) = child.child_by_field_name("value") {
+                                let ty = if v.kind() == "as_pattern" {
+                                    named_children(v).first().copied()
+                                } else {
+                                    Some(v)
+                                };
+                                if let Some(ty) = ty {
+                                    let names = if ty.kind() == "tuple" {
+                                        named_children(ty)
+                                    } else {
+                                        vec![ty]
+                                    };
+                                    catch.types =
+                                        names.iter().map(|n| last_name(self.text(*n))).collect();
+                                }
+                            }
                             for part in named_children(child) {
                                 match part.kind() {
-                                    "block" => h.extend(self.block(part)),
+                                    "block" => {
+                                        catch.empty = named_children(part).iter().all(|s| {
+                                            s.kind() == "pass_statement"
+                                                || (s.kind() == "expression_statement"
+                                                    && named_children(*s)
+                                                        .iter()
+                                                        .all(|e| e.kind() == "ellipsis"))
+                                        });
+                                        h.extend(self.block(part))
+                                    }
                                     "as_pattern" => {
                                         if let Some(alias) = part.child_by_field_name("alias") {
                                             h.push(Stmt::Assign {
@@ -141,6 +172,7 @@ impl<'s> Lower<'s> {
                                 }
                             }
                             handlers.push(h);
+                            catches.push(catch);
                         }
                         "else_clause" => {
                             body.extend(self.opt_block(child.child_by_field_name("body")))
@@ -158,6 +190,7 @@ impl<'s> Lower<'s> {
                 out.push(Stmt::Try {
                     body,
                     handlers,
+                    catches,
                     finally,
                 });
             }

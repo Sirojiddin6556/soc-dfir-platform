@@ -139,12 +139,14 @@ fn stmt(s: &Stmt, ind: usize, out: &mut String) {
         Stmt::Try {
             body,
             handlers,
+            catches,
             finally,
         } => {
             line(ind, "try:", out);
             block(body, ind + 1, out);
-            for h in handlers {
-                line(ind, "except:", out);
+            for (h, c) in handlers.iter().zip(catches) {
+                let empty = if c.empty { "  # empty" } else { "" };
+                line(ind, &format!("except {}:{empty}", c.types.join(", ")), out);
                 block(h, ind + 1, out);
             }
             if !finally.is_empty() {

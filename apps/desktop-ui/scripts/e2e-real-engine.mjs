@@ -405,6 +405,17 @@ def footer():
     row = Setting.query.filter_by(key='footer').first()
     return jinja2.Template(row.value).render()
 `,
+  'app/contact.py': `from flask import request, redirect
+from app.views import app
+
+
+@app.route('/contact', methods=['POST'])
+def contact():
+    db.session.add(Message(request.form['text']))
+    db.session.commit()
+    page = int(request.args.get('page', 1))
+    return redirect('/?page=' + str(page))
+`,
   'web/item.php': `<?php
 $db = mysqli_connect('localhost', 'shop', 'secret', 'shop');
 $id = $_GET['id'];
@@ -576,6 +587,8 @@ const CODE_EXPECTED = [
   'csrf app/admin.py:14',
   'stored-template-injection app/admin.py:26',
   'no-frame-protection app/views.py:5',
+  'public-form-no-limit app/contact.py:5',
+  'unhandled-parse-error app/contact.py:9',
 ];
 const CODE_EXPECTED_TEST = 'command-injection tests/test_views.py:6';
 
@@ -642,7 +655,8 @@ async function checkCodeScan(page, base, shot, allowIpcError) {
     // flaws without any input.
     const sourced = (f) => f.source || (f.rule === 'buffer-overflow' && f.line === 14)
       || ['null-dereference', 'unchecked-null', 'use-after-free', 'double-free', 'hardcoded-secret', 'env-secret',
-        'login-no-limit', 'weak-password-hash', 'csrf', 'no-frame-protection', 'stored-template-injection'].includes(f.rule);
+        'login-no-limit', 'weak-password-hash', 'csrf', 'no-frame-protection', 'stored-template-injection',
+        'public-form-no-limit', 'unhandled-parse-error'].includes(f.rule);
     check(report.findings.every((f) => f.trace.length > 0 && sourced(f) && f.snippet),
       'every finding has its source, data path and code line');
     check(report.test_files === 1, `the test file is counted as skipped (${report.test_files})`);
@@ -712,6 +726,10 @@ async function checkCodeScan(page, base, shot, allowIpcError) {
     const tplDetail = await tplRow.locator('xpath=following-sibling::tr[1]').textContent();
     check((await tplRow.textContent()).includes('CWE-1336') && tplDetail.includes('из сохранённых данных'),
       `a template compiled from a database value is shown (${tplDetail.trim().split('\n')[0]})`);
+    const formRow = page.locator('#codeTable tr.vuln-row[data-file="app/contact.py"][data-line="5"]');
+    check((await formRow.textContent()).includes('CWE-770'), 'a public form that saves without a limit is shown');
+    const parseRow = page.locator('#codeTable tr.vuln-row[data-file="app/contact.py"][data-line="9"]');
+    check((await parseRow.textContent()).includes('CWE-248'), 'a number parsed from a request without a handler is shown');
     const other = await page.textContent('#codeOtherFiles');
     check(other.includes('.env 1') && other.includes('шаблоны 1'),
       `files no language reads are still checked and counted (${other.trim()})`);

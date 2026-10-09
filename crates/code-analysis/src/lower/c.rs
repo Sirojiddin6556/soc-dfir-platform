@@ -194,6 +194,7 @@ fn stmt_size(s: &Stmt) -> usize {
             body,
             handlers,
             finally,
+            ..
         } => body
             .iter()
             .chain(handlers.iter().flatten())
@@ -1103,14 +1104,21 @@ impl<'s> Lower<'s> {
             "try_statement" => {
                 let body = self.stmts(node.child_by_field_name("body"));
                 let mut handlers = Vec::new();
+                let mut catches = Vec::new();
                 for c in named_children(node) {
                     if c.kind() == "catch_clause" {
                         handlers.push(self.stmts(c.child_by_field_name("body")));
+                        catches.push(Catch {
+                            types: Vec::new(),
+                            empty: false,
+                            span: span(c),
+                        });
                     }
                 }
                 out.push(Stmt::Try {
                     body,
                     handlers,
+                    catches,
                     finally: Vec::new(),
                 });
             }

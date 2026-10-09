@@ -177,6 +177,8 @@ pub enum Stmt {
     Try {
         body: Vec<Stmt>,
         handlers: Vec<Vec<Stmt>>,
+        /// What each handler catches, in the order of `handlers`.
+        catches: Vec<Catch>,
         finally: Vec<Stmt>,
     },
     Return(Option<Expr>, Span),
@@ -192,6 +194,18 @@ pub enum Stmt {
     ClassDef(Rc<Class>),
     /// PHP `include $x` and similar statements that act on an expression.
     Raw(Expr, Span),
+}
+
+/// An `except` or `catch` clause as written.
+#[derive(Debug, Clone)]
+pub struct Catch {
+    /// The exception types it names, last name only (`ValueError`,
+    /// `NumberFormatException`); none for a bare `except:` or C++
+    /// `catch (...)`.
+    pub types: Vec<String>,
+    /// Its body does nothing: `pass`, `...`, `{}` or comments only.
+    pub empty: bool,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone)]

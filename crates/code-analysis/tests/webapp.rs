@@ -15,6 +15,13 @@ const RULES: &[&str] = &[
     "mass-assignment",
     "stored-template-injection",
     "weak-hash",
+    "predictable-salt",
+    "public-form-no-limit",
+    "content-spoofing",
+    "unhandled-parse-error",
+    "fail-open",
+    "swallowed-startup-error",
+    "db-file-in-workdir",
 ];
 
 /// Findings of the model's rules as `rule file:line`, sorted.
@@ -103,11 +110,13 @@ fn clinic_site_shows_its_session_csrf_and_password_flaws() {
     assert_eq!(
         scan(&[("main.py", CLINIC)]),
         vec![
+            "content-spoofing main.py:30",
             "csrf main.py:49",
             "login-no-limit main.py:33",
             "logout-get main.py:43",
             "mass-assignment main.py:55",
             "no-frame-protection main.py:9",
+            "public-form-no-limit main.py:20",
             "static-session-token main.py:40",
             "timing-unsafe-compare main.py:18",
             "weak-password-hash main.py:37",
@@ -171,6 +180,7 @@ def delete(id):
             "login-no-limit app.py:13",
             "logout-get app.py:24",
             "no-frame-protection app.py:3",
+            "public-form-no-limit app.py:5",
         ]
     );
 }
@@ -226,7 +236,11 @@ def register():
     db.session.commit()
     return jsonify(ok=True)
 "#;
-    assert_eq!(scan(&[("app.py", src)]), Vec::<String>::new());
+    // The public form needs no CSRF token, but a limit on requests.
+    assert_eq!(
+        scan(&[("app.py", src)]),
+        vec!["public-form-no-limit app.py:13"]
+    );
 }
 
 #[test]
@@ -738,4 +752,293 @@ if ($action === 'enable') {
 update_option('db_upgraded', false);
 "#;
     assert_eq!(scan(&[("themes.php", src)]), Vec::<String>::new());
+}
+
+#[test]
+fn a_constant_salt_is_reported_for_slow_hashes_too() {
+    let models = r#"import hashlib, hmac, os
+SALT = "shifo".encode()
+ADMIN_PASS = os.getenv("ADMIN_PASS", "")
+
+def make_hash(p):
+    return hashlib.pbkdf2_hmac("sha256", p.encode(), SALT, 100000).hex()
+
+def legacy_hash(pw):
+    h = hashlib.sha256()
+    h.update(("shifo" + pw).encode())
+    return h.hexdigest()
+
+def keyed(password):
+    return hmac.new(b"shifo", password.encode(), hashlib.sha256).hexdigest()
+
+ADMIN_HASH = make_hash(ADMIN_PASS)
+
+def fresh(password):
+    salt = os.urandom(16)
+    return salt + hashlib.pbkdf2_hmac("sha256", password.encode(), salt, 600000)
+"#;
+    let main = r#"from models import legacy_hash
+def login(user, password):
+    return user.password_hash == legacy_hash(password)
+"#;
+    let java = r#"import javax.crypto.spec.PBEKeySpec;
+class Passwords {
+    private static final byte[] SALT = "shifo".getBytes();
+    byte[] hash(char[] password) throws Exception {
+        PBEKeySpec spec = new PBEKeySpec(password, SALT, 65536, 128);
+        return null;
+    }
+}
+"#;
+    let php = r#"<?php
+$h = hash_pbkdf2("sha256", $_POST['password'], "shifo", 100000);
+$ok = crypt($_POST['password'], $row['hash']) === $row['hash'];
+"#;
+    assert_eq!(
+        scan(&[
+            ("models.py", models),
+            ("main.py", main),
+            ("Passwords.java", java),
+            ("login.php", php),
+        ]),
+        vec![
+            "predictable-salt Passwords.java:5",
+            "predictable-salt login.php:2",
+            "predictable-salt models.py:6",
+            "weak-hash login.php:3",
+            "weak-password-hash models.py:10",
+            "weak-password-hash models.py:14",
+        ]
+    );
+}
+
+#[test]
+fn public_forms_need_a_limit_unless_a_login_or_limiter_guards_them() {
+    let open = r#"from flask import Flask, request, redirect
+app = Flask(__name__)
+
+@app.route("/contact", methods=["POST"])
+def contact():
+    db.session.add(Message(request.form["text"]))
+    db.session.commit()
+    return redirect("/")
+"#;
+    assert_eq!(
+        scan(&[("app.py", open)]),
+        vec!["public-form-no-limit app.py:4"]
+    );
+    let guarded = r#"from flask import Flask, request, redirect, session
+app = Flask(__name__)
+
+@app.before_request
+def require_login():
+    if "user" not in session and request.endpoint != "login":
+        return redirect("/login")
+
+@app.route("/note", methods=["POST"])
+def note():
+    db.session.add(Note(request.form["text"]))
+    db.session.commit()
+    return redirect("/")
+"#;
+    assert_eq!(scan(&[("app.py", guarded)]), Vec::<String>::new());
+    let captcha = r#"from flask import Flask, request, redirect
+from flask_wtf import RecaptchaField
+app = Flask(__name__)
+
+@app.route("/contact", methods=["POST"])
+def contact():
+    db.session.add(Message(request.form["text"]))
+    db.session.commit()
+    return redirect("/")
+"#;
+    assert_eq!(scan(&[("app.py", captcha)]), Vec::<String>::new());
+    // A PHP page behind the login that an included file checks: no
+    // spam, but a form another site can post.
+    let auth = "<?php session_start(); if (!isset($_SESSION['user'])) { header('Location: login.php'); exit; }\n";
+    let page = "<?php\nrequire_once __DIR__ . '/auth.php';\nmysqli_query($db, \"INSERT INTO notes VALUES ('\" . mysqli_real_escape_string($db, $_POST['t']) . \"')\");\n";
+    let public = "<?php\nmysqli_query($db, \"INSERT INTO guestbook VALUES ('\" . mysqli_real_escape_string($db, $_POST['t']) . \"')\");\n";
+    assert_eq!(
+        scan(&[
+            ("auth.php", auth),
+            ("notes.php", page),
+            ("guestbook.php", public)
+        ]),
+        vec!["csrf notes.php:3", "public-form-no-limit guestbook.php:2"]
+    );
+}
+
+#[test]
+fn numbers_parsed_from_a_request_need_a_handler_or_a_check() {
+    let src = r#"from flask import Flask, request
+app = Flask(__name__)
+
+@app.route("/items")
+def items():
+    page = int(request.args.get("page", 1))
+    size = request.args.get("size", 10, type=int)
+    raw = request.args.get("id", "")
+    item = int(raw) if raw.isdigit() else 0
+    try:
+        limit = int(request.args["limit"])
+    except ValueError:
+        limit = 10
+    return render_template("items.html", page=page)
+"#;
+    assert_eq!(
+        scan(&[("app.py", src)]),
+        vec![
+            "no-frame-protection app.py:2",
+            "unhandled-parse-error app.py:6"
+        ]
+    );
+    let java = r#"import javax.servlet.http.*;
+public class ItemServlet extends HttpServlet {
+    protected void doGet(HttpServletRequest request, HttpServletResponse response) {
+        int id = Integer.parseInt(request.getParameter("id"));
+        try {
+            int page = Integer.parseInt(request.getParameter("page"));
+        } catch (NumberFormatException e) {
+            response.setStatus(400);
+        }
+    }
+}
+"#;
+    assert_eq!(
+        scan(&[("ItemServlet.java", java)]),
+        vec!["unhandled-parse-error ItemServlet.java:4"]
+    );
+    // A handler for bad values answers every endpoint.
+    let handled =
+        format!("{src}\n@app.errorhandler(ValueError)\ndef bad(e):\n    return \"bad\", 400\n");
+    assert_eq!(
+        scan(&[("app.py", &handled)]),
+        vec!["no-frame-protection app.py:2"]
+    );
+}
+
+#[test]
+fn empty_handlers_around_checks_and_startup_hide_failures() {
+    let src = r#"import jwt
+from fastapi import FastAPI
+from db import SessionLocal, engine, Base
+app = FastAPI()
+
+@app.on_event("startup")
+def startup():
+    try:
+        db = SessionLocal()
+        db.close()
+    except Exception:
+        pass
+
+def handle(token, payload, sig):
+    try:
+        verify_signature(payload, sig)
+    except:
+        pass
+    try:
+        ok = check_token(token)
+    except Exception:
+        ok = False
+    try:
+        cleanup_file.close()
+    except Exception:
+        pass
+    try:
+        Base.metadata.create_all(bind=engine)
+    except Exception as e:
+        log.error(e)
+    try:
+        validate_token(token)
+    except jwt.ExpiredSignatureError:
+        pass
+"#;
+    assert_eq!(
+        scan(&[("main.py", src)]),
+        vec!["fail-open main.py:17", "swallowed-startup-error main.py:11",]
+    );
+    let java = r#"import java.sql.*;
+class Db {
+    Connection open() {
+        try {
+            return DriverManager.getConnection(System.getenv("DB_URL"));
+        } catch (Exception e) {
+        }
+        return null;
+    }
+}
+"#;
+    assert_eq!(
+        scan(&[("Db.java", java)]),
+        vec!["swallowed-startup-error Db.java:6"]
+    );
+}
+
+#[test]
+fn database_files_relative_to_the_working_folder() {
+    let py = r#"import sqlite3
+from sqlalchemy import create_engine
+DATABASE_URL = "sqlite:///./shifotech.db"
+engine = create_engine(DATABASE_URL)
+other = create_engine("sqlite:////var/lib/app/app.db")
+mem = create_engine("sqlite:///:memory:")
+conn = sqlite3.connect("users.db")
+app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///site.db"
+"#;
+    let settings = r#"from pathlib import Path
+BASE_DIR = Path(__file__).resolve().parent.parent
+DATABASES = {"default": {"ENGINE": "django.db.backends.sqlite3", "NAME": BASE_DIR / "db.sqlite3"}}
+OTHER = {"default": {"ENGINE": "django.db.backends.sqlite3", "NAME": "db.sqlite3"}}
+"#;
+    let java = r#"class Db {
+    static final String URL = "jdbc:sqlite:app.db";
+    static final String MEM = "jdbc:h2:mem:test";
+}
+"#;
+    let php = "<?php\n$db = new PDO('sqlite:data/site.db');\n$safe = new PDO('sqlite:../private/site.db');\n$mem = new SQLite3(':memory:');\n";
+    assert_eq!(
+        scan(&[
+            ("app.py", py),
+            ("settings.py", settings),
+            ("Db.java", java),
+            ("index.php", php),
+        ]),
+        vec![
+            "db-file-in-workdir Db.java:2",
+            "db-file-in-workdir app.py:3",
+            "db-file-in-workdir app.py:7",
+            "db-file-in-workdir index.php:2",
+            "db-file-in-workdir settings.py:4",
+        ]
+    );
+}
+
+#[test]
+fn messages_from_the_address_shown_as_the_sites_own() {
+    let src = r#"from flask import Flask, request, render_template
+app = Flask(__name__)
+
+@app.route("/login")
+def login():
+    msg = request.args.get("msg", "")
+    return render_template("login.html", message=msg)
+
+@app.route("/search")
+def search():
+    return render_template("search.html", q=request.args.get("q", ""))
+"#;
+    assert_eq!(
+        scan(&[("app.py", src)]),
+        vec!["content-spoofing app.py:7", "no-frame-protection app.py:2"]
+    );
+    let php =
+        "<?php\n$note = htmlspecialchars($_GET['notice']);\necho \"<p>\" . $note . \"</p>\";\n";
+    assert_eq!(
+        scan(&[("page.php", php)]),
+        vec![
+            "content-spoofing page.php:3",
+            "no-frame-protection page.php:3"
+        ]
+    );
 }

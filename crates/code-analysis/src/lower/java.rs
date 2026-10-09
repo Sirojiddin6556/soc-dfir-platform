@@ -8,7 +8,7 @@
 //! `this.field` or `Class.field`, a call to a method of the class becomes
 //! `this.method(...)` or `Class.method(...)`.
 
-use super::{children, named_children, span, test_span, text};
+use super::{children, last_name, named_children, span, test_span, text};
 use crate::ir::*;
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
@@ -827,12 +827,26 @@ impl<'s> Lower<'s> {
                 body.extend(self.block_of(node.child_by_field_name("body")));
                 self.scopes.borrow_mut().pop();
                 let mut handlers = Vec::new();
+                let mut catches = Vec::new();
                 let mut finally = Vec::new();
                 for c in named_children(node) {
                     match c.kind() {
                         "catch_clause" => {
                             self.scopes.borrow_mut().push(HashMap::new());
                             let mut h = Vec::new();
+                            let body = c.child_by_field_name("body");
+                            catches.push(Catch {
+                                types: named_children(c)
+                                    .iter()
+                                    .filter(|p| p.kind() == "catch_formal_parameter")
+                                    .flat_map(|p| named_children(*p))
+                                    .filter(|t| t.kind() == "catch_type")
+                                    .flat_map(|t| named_children(t))
+                                    .map(|t| last_name(self.text(t)))
+                                    .collect(),
+                                empty: body.is_some_and(|b| named_children(b).is_empty()),
+                                span: span(c),
+                            });
                             for p in named_children(c) {
                                 if p.kind() == "catch_formal_parameter" {
                                     if let Some(n) = p.child_by_field_name("name") {
@@ -861,6 +875,7 @@ impl<'s> Lower<'s> {
                 out.push(Stmt::Try {
                     body,
                     handlers,
+                    catches,
                     finally,
                 });
             }
