@@ -3,6 +3,7 @@
 //! Static analysis of source code for security defects.
 
 pub mod cmembers;
+pub mod deps;
 pub mod files;
 pub mod interp;
 pub mod ir;
@@ -97,6 +98,12 @@ pub struct Report {
     /// Time spent reading and parsing the files, then analyzing them.
     pub load_ms: u64,
     pub analysis_ms: u64,
+    /// Third-party packages named by manifests, lock files, bundled
+    /// libraries and CDN links (see `deps`).
+    pub dependencies: Vec<deps::Dependency>,
+    /// Third-party Python modules the code imports, which a dependency
+    /// list should name.
+    pub imports: Vec<deps::ImportedModule>,
 }
 
 /// Stack for the analysis thread: the interpreter recurses through calls,
@@ -131,6 +138,7 @@ pub fn analyze_dir_with(root: &std::path::Path, options: Options) -> std::io::Re
             let load_ms = started.elapsed().as_millis() as u64;
             let mut report = analyze_with(&project, options);
             report.load_ms = load_ms;
+            report.dependencies = deps::collect(&root);
             Ok(report)
         })?
         .join()
@@ -227,6 +235,8 @@ pub fn analyze_with(project: &project::Project, options: Options) -> Report {
         },
         load_ms: 0,
         analysis_ms: started.elapsed().as_millis() as u64,
+        dependencies: Vec::new(),
+        imports: deps::python_imports(project, options.include_tests),
     }
 }
 
