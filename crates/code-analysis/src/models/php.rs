@@ -1532,6 +1532,7 @@ pub const WORDPRESS: &[&str] = &[
     "do_action",
     "wp_redirect",
     "wp_safe_redirect",
+    "wp_validate_redirect",
     "wp_remote_get",
     "wp_remote_post",
     "wp_remote_head",
@@ -1674,6 +1675,8 @@ fn wordpress(it: &mut Interp, name: &str, args: &[ArgVal], span: Span) -> Option
         }
         // Checked against the allowed hosts.
         "wp_safe_redirect" => Value::Bool(true),
+        // The URL when its host is allowed, the fallback otherwise.
+        "wp_validate_redirect" => join(&a0.sanitized(ctx::URL), &a(args, 1)),
         "wp_remote_get" | "wp_remote_post" | "wp_remote_head" | "wp_remote_request"
         | "download_url" => {
             it.sink(&SSRF, &a0, span, name);
@@ -2205,46 +2208,14 @@ fn header(it: &mut Interp, h: &Value, span: Span) {
     }
 }
 
-/// A redirect to `url`: open when the user picks where it leads. Text
-/// before the user's part that already fixes the site (a path, or a
-/// scheme and host) makes it safe.
+/// A redirect to `url`; the interpreter leaves out the alternatives
+/// whose site is already fixed (`common::site_fixed`).
 fn redirect(it: &mut Interp, url: &Value, span: Span, what: &str) {
     for alt in url.alternatives() {
-        if !host_fixed(&alt) {
-            it.sink(&REDIRECT, &alt, span, what);
+        if it.sink(&REDIRECT, &as_text(&alt), span, what) {
             return;
         }
     }
-}
-
-/// Whether the literal start of a URL already fixes its site.
-fn host_fixed(url: &Value) -> bool {
-    let segs = as_text(url).to_segs();
-    let prefix = match segs.first() {
-        Some(Seg::Lit(t)) => t.trim_start(),
-        _ => return false,
-    };
-    if segs.len() == 1 {
-        return true;
-    }
-    if prefix.is_empty() {
-        return false;
-    }
-    if let Some(rest) = prefix.strip_prefix('/') {
-        // `//host` and `/\host` are other sites.
-        return !rest.is_empty() && !rest.starts_with('/') && !rest.starts_with('\\');
-    }
-    let lower = prefix.to_ascii_lowercase();
-    if let Some(i) = lower.find("://") {
-        let after = &lower[i + 3..];
-        return after.contains(['/', '?', '#']);
-    }
-    // A relative URL: a character that cannot be part of a scheme before
-    // any `:` keeps it relative.
-    prefix
-        .chars()
-        .any(|c| !(c.is_ascii_alphanumeric() || c == '+' || c == '-' || c == '.'))
-        && !prefix.contains(':')
 }
 
 fn cookie(it: &mut Interp, args: &[ArgVal], span: Span) {

@@ -4,6 +4,38 @@ use crate::interp::{arg, args_taint, ArgVal, Fact, FactOn};
 use crate::value::*;
 use std::rc::Rc;
 
+/// Whether the literal start of a redirect target already fixes its site:
+/// a path (`/admin/` + x), or a scheme and host followed by a path. A
+/// target the user picks whole, or `"/" + x` (`//other.site`), does not.
+pub fn site_fixed(url: &Value) -> bool {
+    let segs = url.to_segs();
+    let prefix = match segs.first() {
+        Some(Seg::Lit(t)) => t.trim_start(),
+        _ => return false,
+    };
+    if segs.len() == 1 {
+        return true;
+    }
+    if prefix.is_empty() {
+        return false;
+    }
+    if let Some(rest) = prefix.strip_prefix('/') {
+        // `//host` and `/\host` are other sites.
+        return !rest.is_empty() && !rest.starts_with('/') && !rest.starts_with('\\');
+    }
+    let lower = prefix.to_ascii_lowercase();
+    if let Some(i) = lower.find("://") {
+        let after = &lower[i + 3..];
+        return after.contains(['/', '?', '#']);
+    }
+    // A relative URL: a character that cannot be part of a scheme before
+    // any `:` keeps it relative.
+    prefix
+        .chars()
+        .any(|c| !(c.is_ascii_alphanumeric() || c == '+' || c == '-' || c == '.'))
+        && !prefix.contains(':')
+}
+
 pub fn literal(segs: &[Seg]) -> Option<String> {
     Value::Str(Rc::new(segs.to_vec())).as_str()
 }

@@ -3,13 +3,16 @@
 //! Static analysis of source code for security defects.
 
 pub mod cmembers;
+pub mod files;
 pub mod interp;
 pub mod ir;
 pub mod lower;
 pub mod models;
 pub mod project;
 pub mod rules;
+pub mod secrets;
 pub mod value;
+pub mod webapp;
 
 use serde::Serialize;
 
@@ -78,7 +81,12 @@ impl Language {
 #[derive(Debug, Clone, Serialize)]
 pub struct Report {
     pub findings: Vec<rules::Finding>,
+    /// Files analyzed by a language front end.
     pub files: usize,
+    /// Other files checked as text (secrets, templates), per kind.
+    pub other_files: Vec<(String, usize)>,
+    /// Files not checked at all, per reason: media, archives, bundles.
+    pub unchecked_files: Vec<(String, usize)>,
     pub lines: usize,
     /// Files per language that were analyzed.
     pub languages: Vec<(String, usize)>,
@@ -167,6 +175,16 @@ pub fn analyze_with(project: &project::Project, options: Options) -> Report {
         }
     }
     let mut findings = std::mem::take(&mut interp.findings);
+    findings.extend(text_findings(project, options));
+    findings.extend(webapp_findings(project, options));
+    // A password under MD5 is one finding: the password rule says more.
+    let password_hashes: std::collections::HashSet<(String, u32)> = findings
+        .iter()
+        .filter(|f| f.rule == "weak-password-hash")
+        .map(|f| (f.file.clone(), f.line))
+        .collect();
+    findings
+        .retain(|f| f.rule != "weak-hash" || !password_hashes.contains(&(f.file.clone(), f.line)));
     findings.sort_by(|a, b| {
         b.severity
             .cmp(&a.severity)
@@ -174,8 +192,24 @@ pub fn analyze_with(project: &project::Project, options: Options) -> Report {
             .then_with(|| a.line.cmp(&b.line))
             .then_with(|| a.rule.cmp(&b.rule))
     });
+    let mut other_files: Vec<(String, usize)> = Vec::new();
+    for t in &project.texts {
+        if !options.include_tests && t.is_test {
+            continue;
+        }
+        match other_files.iter_mut().find(|(k, _)| k == t.kind.label()) {
+            Some(slot) => slot.1 += 1,
+            None => other_files.push((t.kind.label().to_string(), 1)),
+        }
+    }
     Report {
         findings,
+        other_files,
+        unchecked_files: project
+            .unchecked
+            .iter()
+            .map(|(k, n)| (k.clone(), *n))
+            .collect(),
         files: project.modules.len(),
         lines: project.modules.iter().map(|m| m.line_count()).sum(),
         languages,
@@ -194,6 +228,113 @@ pub fn analyze_with(project: &project::Project, options: Options) -> Report {
         load_ms: 0,
         analysis_ms: started.elapsed().as_millis() as u64,
     }
+}
+
+/// Findings of the web application model: CSRF, changes on GET, logins
+/// without a limit on attempts and the like.
+fn webapp_findings(project: &project::Project, options: Options) -> Vec<rules::Finding> {
+    webapp::check(project, options.include_tests)
+        .into_iter()
+        .map(|h| {
+            let m = &project.modules[h.module];
+            let snippet = m.line_text(h.line);
+            let column = m
+                .source()
+                .lines()
+                .nth(h.line.saturating_sub(1) as usize)
+                .map(|l| (l.len() - l.trim_start().len()) as u32 + 1)
+                .unwrap_or(1);
+            let at = rules::Location {
+                file: m.path.clone(),
+                line: h.line,
+                column,
+                note: format!("сток: {}", h.what),
+            };
+            rules::Finding {
+                rule: h.rule.id.to_string(),
+                cwe: h.rule.cwe,
+                severity: h.rule.severity,
+                title: h.rule.title.to_string(),
+                message: format!("{}: {}", h.rule.title, h.what),
+                file: m.path.clone(),
+                line: h.line,
+                column,
+                snippet,
+                source: None,
+                trace: vec![at],
+                other_sources: Vec::new(),
+            }
+        })
+        .collect()
+}
+
+/// Findings of the checks that read files as text: secrets in code of
+/// every language and in the files no front end reads.
+fn text_findings(project: &project::Project, options: Options) -> Vec<rules::Finding> {
+    let mut out = Vec::new();
+    let code = project
+        .modules
+        .iter()
+        .filter(|m| options.include_tests || !m.is_test)
+        .map(|m| (m.path.as_str(), m.source(), secrets::Origin::Code));
+    let texts = project
+        .texts
+        .iter()
+        .filter(|t| options.include_tests || !t.is_test)
+        .map(|t| {
+            (
+                t.path.as_str(),
+                t.text.as_str(),
+                secrets::Origin::Text(t.kind),
+            )
+        });
+    for (path, text, origin) in code.chain(texts) {
+        let cx = secrets::Context {
+            origin,
+            sample: files::is_sample_path(path),
+            ignored: files::ignored_by_git(&project.gitignores, path),
+            lines: files::line_settings(path),
+        };
+        let hits = secrets::scan(text, cx);
+        if hits.is_empty() {
+            continue;
+        }
+        let lines: Vec<&str> = text.lines().collect();
+        for h in &hits {
+            let line = lines.get(h.line as usize - 1).copied().unwrap_or("");
+            let hides: Vec<(usize, usize)> = hits
+                .iter()
+                .filter(|o| o.line == h.line)
+                .map(|o| o.hide)
+                .collect();
+            let shown = secrets::masked_line(line, &hides);
+            let mut snippet = shown.trim().to_string();
+            if snippet.chars().count() > 240 {
+                snippet = format!("{}…", snippet.chars().take(240).collect::<String>());
+            }
+            let at = rules::Location {
+                file: path.to_string(),
+                line: h.line,
+                column: h.column,
+                note: format!("сток: {}", h.what),
+            };
+            out.push(rules::Finding {
+                rule: h.rule.id.to_string(),
+                cwe: h.rule.cwe,
+                severity: h.rule.severity,
+                title: h.rule.title.to_string(),
+                message: format!("{}: {}", h.rule.title, h.what),
+                file: path.to_string(),
+                line: h.line,
+                column: h.column,
+                snippet,
+                source: None,
+                trace: vec![at],
+                other_sources: Vec::new(),
+            });
+        }
+    }
+    out
 }
 
 #[cfg(test)]

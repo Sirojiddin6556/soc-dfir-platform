@@ -419,3 +419,37 @@ def b():
         .collect();
     assert_eq!(sqli, vec![9, 13, 23], "{found:?}");
 }
+
+#[test]
+fn redirect_within_the_site_or_to_an_allowed_key_is_not_open() {
+    let src = "from fastapi import FastAPI, HTTPException
+from fastapi.responses import RedirectResponse
+app = FastAPI()
+CONTENT = {'news': 1, 'doctors': 2}
+
+@app.post('/admin/{kind}/save')
+async def save(kind: str):
+    return RedirectResponse(f'/admin/{kind}', status_code=302)
+
+@app.post('/go')
+async def go(next: str):
+    return RedirectResponse(next)
+
+@app.post('/root')
+async def root(next: str):
+    return RedirectResponse('/' + next)
+
+@app.post('/known')
+async def known(kind: str):
+    if kind not in CONTENT:
+        raise HTTPException(404)
+    return RedirectResponse(kind)
+";
+    let found = scan(&[("app.py", src)]);
+    let lines: Vec<u32> = found
+        .iter()
+        .filter(|f| f.0 == "open-redirect")
+        .map(|f| f.1)
+        .collect();
+    assert_eq!(lines, vec![12, 16], "{found:?}");
+}
