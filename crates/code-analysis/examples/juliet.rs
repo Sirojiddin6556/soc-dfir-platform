@@ -35,6 +35,8 @@ fn rule_for(cwe: &str) -> Option<&'static str> {
         "CWE690" => "unchecked-null",
         "CWE415" => "double-free",
         "CWE416" => "use-after-free",
+        "CWE190" => "integer-overflow",
+        "CWE191" => "integer-underflow",
         _ => return None,
     })
 }

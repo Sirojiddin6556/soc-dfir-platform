@@ -833,7 +833,30 @@ impl<'s> Lower<'s> {
         let mut mine = Vec::new();
         self.stmt_inner(node, &mut mine);
         let hoisted = self.hoisted.replace(saved);
-        let post = self.post.replace(saved_post);
+        let mut post = self.post.replace(saved_post);
+        // `while (n--)`: the last test steps an unsigned `n` past 0, which
+        // the loop never uses.
+        if matches!(
+            node.kind(),
+            "while_statement" | "for_statement" | "do_statement"
+        ) {
+            for s in &mut post {
+                if let Stmt::Assign {
+                    target: Target::Name(n),
+                    value,
+                    ..
+                } = s
+                {
+                    let down = matches!(value, Expr::Bin(BinOp::Sub, l, r)
+                        if matches!(&**l, Expr::Name(x) if x == n)
+                            && matches!(&**r, Expr::Lit(Const::Int(1))));
+                    if down {
+                        let v = std::mem::replace(value, Expr::Other(Vec::new()));
+                        *value = Expr::Cast(STEP.to_string(), Box::new(v));
+                    }
+                }
+            }
+        }
         out.extend(hoisted);
         // A condition's update is run before the statement: its body
         // must see the new value.
@@ -1866,7 +1889,11 @@ impl<'s> Lower<'s> {
             "number_literal" => {
                 let t = self.text(node).replace('\'', "");
                 if let Some(i) = super::cpre::parse_int(&t) {
-                    Expr::Lit(Const::Int(i))
+                    let lit = Expr::Lit(Const::Int(i));
+                    match literal_type(&t) {
+                        Some(ty) => Expr::Cast(ty.to_string(), Box::new(lit)),
+                        None => lit,
+                    }
                 } else {
                     let f = t.trim_end_matches(['f', 'F', 'l', 'L']);
                     match f.parse::<f64>() {
@@ -2622,6 +2649,30 @@ pub(crate) fn small_int_range(ty: &str) -> Option<(i64, i64)> {
     })
 }
 
+/// The type a suffix gives an integer literal: `unsigned int` for `1U`,
+/// `long long` for `1LL`.
+fn literal_type(t: &str) -> Option<&'static str> {
+    let suffix: String = t
+        .chars()
+        .rev()
+        .take_while(|c| matches!(c, 'u' | 'U' | 'l' | 'L'))
+        .collect::<String>()
+        .to_ascii_lowercase();
+    let unsigned = suffix.contains('u');
+    Some(match (unsigned, suffix.matches('l').count()) {
+        (false, 0) => return None,
+        (true, 0) => "unsigned int",
+        (false, 1) => "long",
+        (true, 1) => "unsigned long",
+        (false, _) => "long long",
+        (true, _) => "unsigned long long",
+    })
+}
+
+/// The type of the cast that marks the decrement in `while (n--)`, which
+/// runs when the test fails too and there wraps an unsigned `n` by design.
+pub const STEP: &str = "\u{1}step";
+
 /// 32-bit unsigned types: `(unsigned int) ~0` is 4294967295, not -1.
 pub(crate) fn is_unsigned32(ty: &str) -> bool {
     matches!(
@@ -2680,7 +2731,7 @@ pub(crate) fn is_int_type(ty: &str) -> bool {
 }
 
 /// `const unsigned  char` as `unsigned char`.
-fn plain_type(ty: &str) -> String {
+pub(crate) fn plain_type(ty: &str) -> String {
     ty.split_whitespace()
         .filter(|w| !matches!(*w, "const" | "volatile" | "static" | "register" | "extern"))
         .collect::<Vec<_>>()

@@ -60,6 +60,25 @@ fn received(n: &Value) -> Value {
     }
 }
 
+/// The limits of integer types from `<limits.h>` and `<stdint.h>` that an
+/// `i64` holds.
+fn limit(name: &str) -> Option<i64> {
+    Some(match name {
+        "CHAR_MAX" | "SCHAR_MAX" | "INT8_MAX" => i8::MAX.into(),
+        "CHAR_MIN" | "SCHAR_MIN" | "INT8_MIN" => i8::MIN.into(),
+        "UCHAR_MAX" | "UINT8_MAX" => u8::MAX.into(),
+        "SHRT_MAX" | "INT16_MAX" => i16::MAX.into(),
+        "SHRT_MIN" | "INT16_MIN" => i16::MIN.into(),
+        "USHRT_MAX" | "UINT16_MAX" => u16::MAX.into(),
+        "INT_MAX" | "INT32_MAX" => i32::MAX.into(),
+        "INT_MIN" | "INT32_MIN" => i32::MIN.into(),
+        "UINT_MAX" | "UINT32_MAX" => u32::MAX.into(),
+        "LONG_MAX" | "LLONG_MAX" | "INT64_MAX" | "SSIZE_MAX" | "INTMAX_MAX" => i64::MAX,
+        "LONG_MIN" | "LLONG_MIN" | "INT64_MIN" | "INTMAX_MIN" => i64::MIN,
+        _ => return None,
+    })
+}
+
 fn number(t: Taint) -> Value {
     Value::Unknown(t.with_safe(NUMERIC | ctx::NUMBER))
 }
@@ -277,7 +296,10 @@ impl Model for C {
     }
 
     fn builtin(&self, _it: &mut Interp, name: &str) -> Value {
-        Value::Ref(name.into(), Taint::clean())
+        match limit(name) {
+            Some(k) => Value::Int(k),
+            None => Value::Ref(name.into(), Taint::clean()),
+        }
     }
 
     fn entry_param(
@@ -310,6 +332,12 @@ impl Model for C {
             if let Value::Int(k) = value {
                 if (-(1 << 32)..0).contains(&k) && crate::lower::c::is_unsigned32(ty) {
                     return Value::Int(k + (1 << 32));
+                }
+            }
+            // `(long)sqrt(x)` drops the fraction.
+            if let Value::Float(f) = value {
+                if crate::lower::c::is_int_type(ty) && f.is_finite() && f.abs() < 9.0e18 {
+                    return Value::Int(f.trunc() as i64);
                 }
             }
         }
@@ -609,7 +637,7 @@ fn function(it: &mut Interp, name: &str, args: &[ArgVal], span: Span) -> Value {
             } else {
                 Value::Unknown(it.source(&format!("{name}()")))
             };
-            store_len(it, args, 1, v, (0, UNBOUNDED), span);
+            store_len(it, args, 1, v.sanitized(ctx::RAW), (0, UNBOUNDED), span);
             received(&a(args, 2))
         }
         "fgets" | "fgetws" | "gets" | "_getws" | "gets_s" => {
@@ -628,7 +656,7 @@ fn function(it: &mut Interp, name: &str, args: &[ArgVal], span: Span) -> Value {
         }
         "fread" => {
             let v = read_from(it, &a(args, 3), name);
-            store_len(it, args, 0, v, (0, UNBOUNDED), span);
+            store_len(it, args, 0, v.sanitized(ctx::RAW), (0, UNBOUNDED), span);
             match a(args, 2).as_int() {
                 Some(n) if n >= 0 => Value::range(0, n, Taint::clean()),
                 _ => number(Taint::clean()),
@@ -737,10 +765,32 @@ fn function(it: &mut Interp, name: &str, args: &[ArgVal], span: Span) -> Value {
         | "strspn" | "strcspn" | "wcsspn" | "wcscspn" | "isdigit" | "isalpha" | "isalnum"
         | "isspace" | "isupper" | "islower" | "iswdigit" | "toupper" | "tolower" | "towupper"
         | "towlower" => Value::clean(),
-        "atoi" | "atol" | "atoll" | "atof" | "strtol" | "strtoul" | "strtoll" | "strtoull"
-        | "strtod" | "strtof" | "wcstol" | "wcstoul" | "_wtoi" | "_wtol" | "abs" | "labs" => {
-            number(a0.taint())
+        // `(long)sqrt((double)INT_MAX)`, the limit of a checked square.
+        "sqrt" | "sqrtl" | "sqrtf" if a0.as_int().is_some() || matches!(a0, Value::Float(_)) => {
+            let x = match a0 {
+                Value::Float(f) => f,
+                other => other.as_int().unwrap_or(0) as f64,
+            };
+            if x >= 0.0 {
+                Value::Float(x.sqrt())
+            } else {
+                Value::clean()
+            }
         }
+        "abs" | "labs" | "llabs" | "imaxabs" => match a0.bounds() {
+            Some((lo, hi)) if lo > i64::MIN => {
+                let (a, b) = (lo.abs(), hi.abs());
+                let t = a0.taint().with_safe(NUMERIC | ctx::NUMBER);
+                if lo >= 0 || hi <= 0 {
+                    Value::range(a.min(b), a.max(b), t)
+                } else {
+                    Value::range(0, a.max(b), t)
+                }
+            }
+            _ => number(a0.taint()),
+        },
+        "atoi" | "atol" | "atoll" | "atof" | "strtol" | "strtoul" | "strtoll" | "strtoull"
+        | "strtod" | "strtof" | "wcstol" | "wcstoul" | "_wtoi" | "_wtol" => number(a0.taint()),
         "memset" | "wmemset" | "bzero" | "explicit_bzero" | "SecureZeroMemory" => {
             if !matches!(a0, Value::Obj(_)) {
                 let len = if name.ends_with("memset") {
@@ -901,8 +951,19 @@ fn function(it: &mut Interp, name: &str, args: &[ArgVal], span: Span) -> Value {
                 .unwrap_or_else(Value::clean)
         }
         "alignof" | "offsetof" | "time" | "rand" | "random" | "getpid" => Value::clean(),
-        // Anything else: its result depends on its arguments.
-        _ => Value::Unknown(args_taint(args)),
+        // A number in network or another byte order: one the user sent.
+        "ntohs" | "htons" | "be16toh" | "le16toh" | "htobe16" | "htole16" | "bswap_16"
+        | "__builtin_bswap16" => Value::range(0, 0xffff, a0.taint().without_safe(ctx::COMPUTED)),
+        "ntohl" | "htonl" | "be32toh" | "le32toh" | "htobe32" | "htole32" | "bswap_32"
+        | "__builtin_bswap32" => {
+            Value::range(0, 0xffff_ffff, a0.taint().without_safe(ctx::COMPUTED))
+        }
+        "be64toh" | "le64toh" | "htobe64" | "htole64" | "bswap_64" | "__builtin_bswap64" => {
+            number(a0.taint().without_safe(ctx::COMPUTED))
+        }
+        // Anything else: its result depends on its arguments, and is not a
+        // number the user gave (see `cint`).
+        _ => Value::Unknown(args_taint(args).with_safe(ctx::COMPUTED)),
     }
 }
 

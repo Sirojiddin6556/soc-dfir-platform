@@ -494,6 +494,22 @@ int main(void) {
     return 0;
 }
 `,
+  'cgi/upload.c': `#include <stdio.h>
+#include <stdlib.h>
+
+int main(void) {
+    const char *q = getenv("HTTP_X_ITEMS");
+    if (!q)
+        return 1;
+    int n = atoi(q);
+    int total = n + 16;
+    if (n < 0 || n > 4096)
+        return 1;
+    int checked = n + 16;
+    printf("%d %d\\n", total, checked);
+    return 0;
+}
+`,
   'tests/test_views.py': `import os
 from flask import request
 
@@ -514,6 +530,7 @@ const CODE_EXPECTED = [
   'null-dereference cgi/users.c:24',
   'use-after-free cgi/session.c:19',
   'double-free cgi/session.c:24',
+  'integer-overflow cgi/upload.c:9',
 ];
 const CODE_EXPECTED_TEST = 'command-injection tests/test_views.py:6';
 
@@ -623,6 +640,12 @@ async function checkCodeScan(page, base, shot, allowIpcError) {
       `memory a helper freed and then read is a use after free naming the free (${freedDetail.trim().split('\n')[0]})`);
     const twiceRow = page.locator('#codeTable tr.vuln-row[data-file="cgi/session.c"][data-line="24"]');
     check((await twiceRow.textContent()).includes('CWE-415'), 'freeing memory twice is shown as a double free');
+    const sumRow = page.locator('#codeTable tr.vuln-row[data-file="cgi/upload.c"][data-line="9"]');
+    await sumRow.click();
+    const sumDetail = await sumRow.locator('xpath=following-sibling::tr[1]').textContent();
+    check((await sumRow.textContent()).includes('CWE-190') && (await sumRow.textContent()).includes('getenv()')
+      && sumDetail.includes('максимум int'),
+      `a header number added to without a check is an integer overflow (${sumDetail.trim().split('\n')[0]})`);
 
     await page.selectOption('#codeRule', 'command-injection');
     const shown = await page.locator('#codeTable tr.vuln-row').count();
