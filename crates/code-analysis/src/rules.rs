@@ -299,6 +299,22 @@ rule!(
     0
 );
 rule!(
+    INT_OVERFLOW,
+    "integer-overflow",
+    190,
+    Medium,
+    "Целочисленное переполнение",
+    0
+);
+rule!(
+    INT_UNDERFLOW,
+    "integer-underflow",
+    191,
+    Medium,
+    "Целочисленное переполнение снизу",
+    0
+);
+rule!(
     FORMAT_STRING,
     "format-string",
     134,

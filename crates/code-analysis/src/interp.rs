@@ -284,6 +284,9 @@ struct Frame {
     /// Pointer parameters given memory already freed, with the call that
     /// passed it first (see `cfree`).
     freed_args: HashMap<Rc<str>, Rc<FreedArg>>,
+    /// C: the declared types of the function's parameters and of the
+    /// locals declared so far.
+    c_types: HashMap<Rc<str>, Rc<str>>,
 }
 
 enum Globals {
@@ -347,6 +350,8 @@ pub struct Interp<'p> {
     /// C and C++ global variables as the entry being analyzed has set them,
     /// by name: one program-wide store, as `extern` declarations share it.
     c_globals: HashMap<Rc<str>, Value>,
+    /// The declared types of C globals.
+    c_global_types: HashMap<Rc<str>, Rc<str>>,
     /// Pointer and reference parameters a C function changed, by argument
     /// position, for the caller to write back (see `run_function`).
     c_outs: Vec<(usize, Value)>,
@@ -454,6 +459,7 @@ impl<'p> Interp<'p> {
             php_scopes: HashMap::new(),
             c_defs: None,
             c_globals: HashMap::new(),
+            c_global_types: HashMap::new(),
             c_outs: Vec::new(),
             ran: false,
             c_members: None,
@@ -991,6 +997,76 @@ impl<'p> Interp<'p> {
             .is_some_and(|f| f.addressed.contains(name))
     }
 
+    /// The declared type of the C variable `name`: a parameter or local of
+    /// the running function, or a global.
+    pub fn c_type(&self, name: &str) -> Option<Rc<str>> {
+        let f = self.frames.last()?;
+        if let Some(t) = f
+            .c_types
+            .get(name)
+            .or_else(|| self.c_global_types.get(name))
+        {
+            return Some(t.clone());
+        }
+        // A field of `this` in a C++ method.
+        let Some(Value::Obj(o)) = f.env.as_ref()?.get(f.self_name.as_ref()?.as_ref()) else {
+            return None;
+        };
+        o.def.as_ref()?.def.fields.iter().find_map(|s| match s {
+            Stmt::Declare { name: n, ty, .. } if n == name => Some(ty.as_str().into()),
+            _ => None,
+        })
+    }
+
+    /// The declared type of `obj.field` or `obj->field` in C, from the
+    /// struct the object was made from or its variable is declared as.
+    pub fn c_field_type(&self, obj: &Expr, field: &str) -> Option<Rc<str>> {
+        let name = match obj {
+            Expr::Name(n) => n.as_str(),
+            Expr::Un(UnOp::Deref, x) | Expr::Index(x, _) => match &**x {
+                Expr::Name(n) => n.as_str(),
+                _ => return None,
+            },
+            _ => return None,
+        };
+        let declared = |c: &ClassVal| {
+            c.def.fields.iter().find_map(|s| match s {
+                Stmt::Declare { name: n, ty, .. } if n == field => Some(Rc::from(ty.as_str())),
+                _ => None,
+            })
+        };
+        let f = self.frames.last()?;
+        let value = f
+            .env
+            .as_ref()
+            .and_then(|e| e.get(name))
+            .or_else(|| self.c_globals.get(name));
+        if let Some(v) = value {
+            for alt in v.alternatives() {
+                if let Value::Obj(o) = alt {
+                    if let Some(t) = o.def.as_deref().and_then(declared) {
+                        return Some(t);
+                    }
+                }
+            }
+        }
+        // `struct image *p`: the struct named in the declaration.
+        let ty = self.c_type(name)?;
+        let base = ty
+            .replace(['*', '&'], " ")
+            .split_whitespace()
+            .rfind(|w| !matches!(*w, "struct" | "union" | "const" | "volatile"))?
+            .to_string();
+        self.c_defs
+            .as_ref()?
+            .get(&base)?
+            .iter()
+            .find_map(|d| match d {
+                CDef::Class(c) => declared(c),
+                _ => None,
+            })
+    }
+
     /// The call that passed the freed memory parameter `name` holds.
     pub fn freed_arg(&self, name: &str) -> Option<Rc<FreedArg>> {
         self.frames.last()?.freed_args.get(name).cloned()
@@ -1082,7 +1158,10 @@ impl<'p> Interp<'p> {
                 span,
             } => {
                 self.frame().span = *span;
-                let v = self.eval(value);
+                let v = match target {
+                    Target::Name(n) if self.in_c() => self.eval_stored(n, value),
+                    _ => self.eval(value),
+                };
                 let unsure = match target {
                     Target::Name(n) if self.in_c() && matches!(v, Value::None) => {
                         (!self.null_source(value)).then(|| n.clone())
@@ -1101,10 +1180,23 @@ impl<'p> Interp<'p> {
                 span,
             } => {
                 self.frame().span = *span;
-                let v = value
-                    .as_ref()
-                    .map(|e| self.eval(e))
-                    .unwrap_or_else(Value::clean);
+                if self.in_c() {
+                    let t: Rc<str> = ty.as_str().into();
+                    if self.frame_ref().func.is_some() {
+                        self.frame().c_types.insert(name.as_str().into(), t);
+                    } else {
+                        self.c_global_types.insert(name.as_str().into(), t);
+                    }
+                }
+                let v = match value {
+                    Some(Expr::Bin(op @ (BinOp::Add | BinOp::Sub | BinOp::Mul), l, r))
+                        if self.in_c() =>
+                    {
+                        self.eval_arith(*op, l, r, Some((name, ty)))
+                    }
+                    Some(e) => self.eval(e),
+                    None => Value::clean(),
+                };
                 let model = self.model();
                 let v = model.coerce(self, ty, v);
                 if secret_name(name) {
@@ -1435,7 +1527,8 @@ impl<'p> Interp<'p> {
         }
         let start = self.get_var(var)?.bounds()?;
         let limit = self.eval(bound);
-        let taint = limit.taint();
+        // A count the loop makes, not a number the user gave (see `cint`).
+        let taint = limit.taint().with_safe(ctx::COMPUTED);
         let (blo, bhi) = match &limit {
             Value::Unknown(_) => (i64::MIN, i64::MAX),
             other => other.bounds()?,
@@ -1520,7 +1613,8 @@ impl<'p> Interp<'p> {
                     }
                     Some(true) => first_true |= pass == 0,
                     None => {
-                        exits = join_env(exits, self.frame().env.clone());
+                        let env = self.frame().env.clone();
+                        exits = join_env(exits, self.exit_env(env, t));
                         guessed = true;
                     }
                 }
@@ -1589,11 +1683,14 @@ impl<'p> Interp<'p> {
             // `while cond:` exits when the condition fails.
             self.at(span);
             if self.eval_in(state.clone(), t).truthy() != Some(true) {
+                let state = self.exit_env(state, t);
                 out = join_env(out, state);
             } else if !settled && !matches!(t, Expr::Lit(_)) {
                 // `for ($i = 0; $i < 50; $i++)`: two passes saw only the
                 // first values of `$i`, the loop ends with later ones.
-                out = join_env(out, state.map(|s| widen_changed(s, entry.as_ref())));
+                let state = state.map(|s| widen_changed(s, entry.as_ref()));
+                let state = self.exit_env(state, t);
+                out = join_env(out, state);
             }
         }
         self.frame().env = out;
@@ -1605,6 +1702,31 @@ impl<'p> Interp<'p> {
         }
         let after = std::mem::take(&mut self.c_globals);
         self.c_globals = join_globals(globals_before, after);
+    }
+
+    /// `env` where a C loop ends because its test failed:
+    /// `while (v >= 100) v /= 100;` leaves `v` below 100.
+    fn exit_env(&mut self, env: Option<Env>, test: &Expr) -> Option<Env> {
+        let Expr::Bin(BinOp::Lt | BinOp::LtE | BinOp::Gt | BinOp::GtE, l, r) = test else {
+            return env;
+        };
+        if !self.in_c() || env.is_none() {
+            return env;
+        }
+        let saved = std::mem::replace(&mut self.frame().env, env);
+        // Only locals: fields and globals are not kept per path, the body
+        // would see the narrowed value too.
+        let plain = |it: &Self, e: &Expr| match e {
+            Expr::Lit(_) => true,
+            Expr::Name(n) => it.is_local(n),
+            Expr::Un(UnOp::Neg, inner) => matches!(**inner, Expr::Lit(_)),
+            _ => false,
+        };
+        if !plain(self, l) || !plain(self, r) {
+            return std::mem::replace(&mut self.frame().env, saved);
+        }
+        self.refine(test, false);
+        std::mem::replace(&mut self.frame().env, saved)
     }
 
     /// Findings in a test point at it; IR built without a span keeps the
@@ -1663,6 +1785,20 @@ impl<'p> Interp<'p> {
                 Some(true) => join_env(remaining.take(), carried.take()),
                 None => join_env(remaining.clone(), carried.take()),
             };
+            // Values a case handles do not reach the cases after it:
+            // `case STOP_FILLING: return sz;` leaves `sz` a size below.
+            if matched.is_none() {
+                for p in &case.patterns {
+                    if !matches!(self.eval_in(remaining.clone(), p), Value::Int(_)) {
+                        continue;
+                    }
+                    self.frame().env = remaining.take();
+                    let test =
+                        Expr::Bin(BinOp::NotEq, Box::new(subject.clone()), Box::new(p.clone()));
+                    self.refine(&test, true);
+                    remaining = self.frame().env.take();
+                }
+            }
             if entry.is_none() {
                 continue;
             }
@@ -1896,7 +2032,23 @@ impl<'p> Interp<'p> {
             };
             let mut bits = model.facts_safety(&facts, &cur);
             let mut narrowed = None;
-            let numeric = narrow_numbers(&cur, &facts, self.in_c());
+            // An unsigned C variable is at least 0: `if (len)` makes it 1.
+            let unsigned = self.in_c()
+                && self
+                    .c_type(&var)
+                    .and_then(|t| crate::models::cint::int_type(&t))
+                    .is_some_and(|t| !t.signed);
+            // `if (n < 0)` of an unsigned `n` never holds.
+            if unsigned
+                && (cur.bounds().is_some() || matches!(cur, Value::Unknown(_)))
+                && facts
+                    .iter()
+                    .any(|f| matches!(f, Fact::Bounds(_, hi) if *hi < 0))
+            {
+                self.frame().env = None;
+                return;
+            }
+            let numeric = narrow_numbers(&cur, &facts, self.in_c(), unsigned);
             for f in &facts {
                 match f {
                     Fact::Safe(b) => bits |= b,
@@ -2088,19 +2240,19 @@ impl<'p> Interp<'p> {
                 };
                 let lv = self.eval(l);
                 let rv = self.eval(r);
-                if let Some((c, d)) = rv.bounds() {
+                if let Some((op, (c, d))) = int_bound(op, &rv) {
                     if let Some(b) = below(op, c, d) {
                         self.fact_on(l, b, out);
                     }
                 }
-                if let Some((a, b)) = lv.bounds() {
-                    let mirrored = match op {
-                        BinOp::Lt => BinOp::Gt,
-                        BinOp::LtE => BinOp::GtE,
-                        BinOp::Gt => BinOp::Lt,
-                        _ => BinOp::LtE,
-                    };
-                    if let Some(f) = below(mirrored, a, b) {
+                let mirrored = match op {
+                    BinOp::Lt => BinOp::Gt,
+                    BinOp::LtE => BinOp::GtE,
+                    BinOp::Gt => BinOp::Lt,
+                    _ => BinOp::LtE,
+                };
+                if let Some((op, (a, b))) = int_bound(mirrored, &lv) {
+                    if let Some(f) = below(op, a, b) {
                         self.fact_on(r, f, out);
                     }
                 }
@@ -2158,6 +2310,30 @@ impl<'p> Interp<'p> {
     /// Attaches a fact to the variable an expression reads, looking through
     /// conversions like `str(p)` and attribute checks like `url.netloc`.
     fn fact_on(&mut self, e: &Expr, fact: Fact, out: &mut Vec<(Rc<str>, Fact)>) {
+        if self.in_c() {
+            match e {
+                // `abs(x) < k`: `x` lies between -k and k.
+                Expr::Call { func, args, .. }
+                    if args.len() == 1
+                        && matches!(&**func, Expr::Name(n)
+                            if matches!(n.as_str(), "abs" | "labs" | "llabs" | "imaxabs")) =>
+                {
+                    if let Fact::Bounds(lo, hi) = fact {
+                        if lo <= 0 && (0..i64::MAX).contains(&hi) {
+                            self.fact_on(&args[0].value, Fact::Bounds(-hi, hi), out);
+                        }
+                    }
+                    return;
+                }
+                // `(long)x`: a cast to a 64-bit integer keeps what `x` is.
+                Expr::Cast(ty, x)
+                    if crate::models::cint::int_type(ty).is_some_and(|t| t.bits == 64) =>
+                {
+                    return self.fact_on(x, fact, out);
+                }
+                _ => {}
+            }
+        }
         match underef(e) {
             Expr::Name(n) => out.push((n.as_str().into(), fact)),
             Expr::Index(..) => {
@@ -2405,10 +2581,29 @@ impl<'p> Interp<'p> {
             {
                 Value::clean()
             }
+            Expr::Bin(op @ (BinOp::Add | BinOp::Sub | BinOp::Mul), l, r) if self.in_c() => {
+                self.eval_arith(*op, l, r, None)
+            }
             Expr::Bin(op, l, r) => {
                 let lv = self.eval(l);
                 let rv = self.eval(r);
-                self.binop(*op, &lv, &rv)
+                let v = self.binop(*op, &lv, &rv);
+                // A number made from the user's: see `cint`.
+                let computed = matches!(
+                    op,
+                    BinOp::Div
+                        | BinOp::Mod
+                        | BinOp::Shl
+                        | BinOp::Shr
+                        | BinOp::BitAnd
+                        | BinOp::BitOr
+                        | BinOp::BitXor
+                );
+                if computed && self.in_c() && v.is_tainted() {
+                    v.sanitized(ctx::COMPUTED)
+                } else {
+                    v
+                }
             }
             Expr::Un(UnOp::Deref, inner) => {
                 let v = self.eval(inner);
@@ -2468,8 +2663,19 @@ impl<'p> Interp<'p> {
                 }
                 Value::Dict(Rc::new(out))
             }
+            Expr::Cast(ty, inner) if ty == crate::lower::c::STEP => self.eval_step(inner),
             Expr::Cast(ty, inner) => {
                 let v = self.eval(inner);
+                // `(time_t)t32` of a number read from input is still a
+                // 32-bit number.
+                if let (Value::Unknown(t), true) = (&v, self.in_c()) {
+                    use crate::models::cint::{int_type, type_of};
+                    if let (Some(from), Some(to)) = (type_of(self, inner), int_type(ty)) {
+                        if t.is_tainted() && from.bits < to.bits && from.bits < 64 {
+                            return Value::range(from.min() as i64, from.max() as i64, t.clone());
+                        }
+                    }
+                }
                 let model = self.model();
                 model.coerce(self, ty, v)
             }
@@ -3162,6 +3368,12 @@ impl<'p> Interp<'p> {
             self.cutoffs += 1;
             let t =
                 args_taint(args).union(&fv.bound.as_ref().map(|b| b.taint()).unwrap_or_default());
+            // Not a number the user gave (see `cint`).
+            let t = if self.in_c() {
+                t.with_safe(ctx::COMPUTED)
+            } else {
+                t
+            };
             return (Value::Unknown(t), fv.bound.clone());
         }
         if self.quiet && self.frames.len() >= QUIET_DEPTH && !self.c_globals_tainted {
@@ -3406,6 +3618,15 @@ impl<'p> Interp<'p> {
         frame.null_at = sure_nulls.into_iter().map(|n| (n, 0)).collect();
         frame.addressed = addressed;
         frame.freed_args = freed_args;
+        if matches!(
+            self.project.modules[fv.module].lang,
+            crate::Language::C | crate::Language::Cpp
+        ) {
+            frame.c_types = params
+                .iter()
+                .filter_map(|p| Some((p.name.as_str().into(), p.ty.as_deref()?.into())))
+                .collect();
+        }
         frame.outs = outs
             .iter()
             .map(|(_, n)| Out {
@@ -3509,9 +3730,8 @@ impl<'p> Interp<'p> {
                     }
                 }
                 let model = self.model();
-                model
-                    .attr(self, base, name)
-                    .unwrap_or_else(|| Value::Unknown(o.taint.clone()))
+                let t = self.unknown_field_taint(o.taint.clone());
+                model.attr(self, base, name).unwrap_or(Value::Unknown(t))
             }
             Value::Ref(path, t) => self.ref_attr(path, t, name),
             // `p->field` where `p` points into an array of structs.
@@ -3538,10 +3758,27 @@ impl<'p> Interp<'p> {
             }
             other => {
                 let model = self.model();
-                model
-                    .attr(self, other, name)
-                    .unwrap_or_else(|| Value::Unknown(other.taint()))
+                // `hdr.len` of a struct read as it came is a number the
+                // user gave; what it points to is not data the user sent.
+                let t = other.taint();
+                let t = if t.safe & ctx::RAW != 0 {
+                    t.without_safe(ctx::RAW)
+                } else {
+                    self.unknown_field_taint(t)
+                };
+                model.attr(self, other, name).unwrap_or(Value::Unknown(t))
             }
+        }
+    }
+
+    /// The taint of a field the analysis knows nothing of, read from an
+    /// object holding user data: in C a length or count as likely as a
+    /// number the user gave, so not counted as one (see `cint`).
+    fn unknown_field_taint(&self, t: Taint) -> Taint {
+        if self.in_c() {
+            t.with_safe(ctx::COMPUTED)
+        } else {
+            t
         }
     }
 
@@ -4129,6 +4366,57 @@ impl<'p> Interp<'p> {
         }
     }
 
+    /// A C sum, difference or product, checked for overflow of its type or
+    /// of the variable `into` (name, declared type) it is stored in.
+    fn eval_arith(&mut self, op: BinOp, l: &Expr, r: &Expr, into: Option<(&str, &str)>) -> Value {
+        let lv = self.eval(l);
+        let rv = self.eval(r);
+        let v = self.binop(op, &lv, &rv);
+        crate::models::cint::arith(self, op, l, r, &lv, &rv, v, into)
+    }
+
+    /// The value assigned to the C variable `name`: `c = c + 1`, `c++` and
+    /// `c += 1` of a `char c` are checked against `char`.
+    fn eval_stored(&mut self, name: &str, value: &Expr) -> Value {
+        match value {
+            Expr::Cast(ty, inner) if ty == crate::lower::c::STEP => self.eval_step(inner),
+            // `c = a + b;` of a `char c`, which the front end casts.
+            Expr::Cast(ty, inner) if crate::lower::c::small_int_range(ty).is_some() => {
+                match &**inner {
+                    Expr::Bin(op @ (BinOp::Add | BinOp::Sub | BinOp::Mul), l, r) => {
+                        let v = self.eval_arith(*op, l, r, Some((name, ty)));
+                        let model = self.model();
+                        model.coerce(self, ty, v)
+                    }
+                    _ => self.eval(value),
+                }
+            }
+            Expr::Bin(op @ (BinOp::Add | BinOp::Sub | BinOp::Mul), l, r) => {
+                match self.c_type(name) {
+                    Some(ty) => self.eval_arith(*op, l, r, Some((name, &ty))),
+                    None => self.eval(value),
+                }
+            }
+            _ => self.eval(value),
+        }
+    }
+
+    /// The decrement in `while (n--)` (see `STEP`), not checked for
+    /// overflow.
+    fn eval_step(&mut self, e: &Expr) -> Value {
+        let Expr::Bin(op, l, r) = e else {
+            return self.eval(e);
+        };
+        let lv = self.eval(l);
+        let rv = self.eval(r);
+        let v = self.binop(*op, &lv, &rv);
+        if v.is_tainted() {
+            v.sanitized(ctx::COMPUTED)
+        } else {
+            v
+        }
+    }
+
     pub fn binop(&mut self, op: BinOp, l: &Value, r: &Value) -> Value {
         if let Value::OneOf(alts) = l {
             let vals: Vec<Value> = alts.iter().map(|a| self.binop(op, a, r)).collect();
@@ -4172,6 +4460,7 @@ impl Frame {
             null_at: HashMap::new(),
             addressed: HashSet::new(),
             freed_args: HashMap::new(),
+            c_types: HashMap::new(),
         }
     }
 }
@@ -5025,6 +5314,30 @@ fn single_step(body: &[Stmt], var: &str) -> Option<i64> {
 }
 
 /// The bounds `x OP v` puts on `x`, for `v` in `lo..=hi`.
+/// What an integer compared by `op` with `v` is compared with: `v`'s
+/// bounds, or for a fraction the integer that gives the same test
+/// (`n <= 46340.9` is `n <= 46340`).
+fn int_bound(op: BinOp, v: &Value) -> Option<(BinOp, (i64, i64))> {
+    if let Some(b) = v.bounds() {
+        return Some((op, b));
+    }
+    let Value::Float(f) = v else {
+        return None;
+    };
+    if !f.is_finite() || f.abs() >= 9.0e18 {
+        return None;
+    }
+    let (op, k) = if f.fract() == 0.0 {
+        (op, *f)
+    } else {
+        match op {
+            BinOp::Lt | BinOp::LtE => (BinOp::LtE, f.floor()),
+            _ => (BinOp::GtE, f.ceil()),
+        }
+    };
+    Some((op, (k as i64, k as i64)))
+}
+
 fn below(op: BinOp, lo: i64, hi: i64) -> Option<Fact> {
     Some(match op {
         BinOp::Lt if hi != i64::MIN => {
@@ -5086,7 +5399,7 @@ fn is_c_exit(e: &Expr) -> bool {
 }
 
 /// `c` is C, where a pointer known not to be 0 is not NULL.
-fn narrow_numbers(cur: &Value, facts: &[Fact], c: bool) -> Option<Value> {
+fn narrow_numbers(cur: &Value, facts: &[Fact], c: bool, unsigned: bool) -> Option<Value> {
     if !facts
         .iter()
         .any(|f| matches!(f, Fact::Bounds(..) | Fact::Not(_)))
@@ -5097,7 +5410,7 @@ fn narrow_numbers(cur: &Value, facts: &[Fact], c: bool) -> Option<Value> {
         let (mut lo, mut hi, t) = match v {
             Value::Int(_) => return Some(v.clone()),
             Value::Range(a, b, t, _) => (*a, *b, t.clone()),
-            Value::Unknown(t) => (i64::MIN, i64::MAX, t.clone()),
+            Value::Unknown(t) => (if unsigned { 0 } else { i64::MIN }, i64::MAX, t.clone()),
             // Checked for NULL.
             Value::Buf(b)
                 if b.nullable.is_some() && facts.iter().any(|f| matches!(f, Fact::Not(0))) =>
@@ -5135,6 +5448,10 @@ fn narrow_numbers(cur: &Value, facts: &[Fact], c: bool) -> Option<Value> {
                     _ => {}
                 }
             }
+        }
+        // Nothing learnt about an unsigned variable but that.
+        if unsigned && matches!(v, Value::Unknown(_)) && lo == 0 && hi == i64::MAX {
+            return Some(v.clone());
         }
         // A path no value takes.
         (lo <= hi).then(|| Value::range(lo, hi, t))

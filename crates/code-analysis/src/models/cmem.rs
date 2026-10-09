@@ -161,7 +161,9 @@ pub fn str_len_sure(v: &Value) -> bool {
 /// `strlen(s)`: a constant or a range when the string's length is known,
 /// a number carrying the string's taint otherwise.
 pub fn strlen(v: &Value) -> Value {
-    let t = v.taint().with_safe(ctx::ALL & !ctx::SESSION | ctx::NUMBER);
+    let t = v
+        .taint()
+        .with_safe(ctx::ALL & !ctx::SESSION | ctx::NUMBER | ctx::COMPUTED);
     match str_len(v) {
         (0, UNBOUNDED) => Value::Unknown(t),
         (lo, hi) if str_len_sure(v) => Value::range_reached(lo, hi, t),

@@ -51,6 +51,13 @@ pub mod ctx {
     /// The canonical form of a path (`realpath()`): a prefix check of it
     /// keeps the path it came from inside a directory.
     pub const CANONICAL: u32 = 1 << 25;
+    /// A number the program computed or measured (a sum, a string's
+    /// length) rather than one the user gave: integer overflow is reported
+    /// where the user's number first enters arithmetic.
+    pub const COMPUTED: u32 = 1 << 26;
+    /// Bytes as an input call stored them (`read(fd, &hdr, sizeof hdr)`):
+    /// the fields of such a struct are numbers the user gave.
+    pub const RAW: u32 = 1 << 27;
     /// A number or a value restricted to a known safe alphabet.
     pub const ALL: u32 = 0x3FFF | ORIGIN | NO_SQUOTE | NO_DQUOTE;
 }

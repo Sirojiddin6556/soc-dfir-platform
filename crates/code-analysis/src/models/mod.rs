@@ -2,6 +2,7 @@
 
 pub mod c;
 pub mod cfree;
+pub mod cint;
 pub mod cmem;
 pub mod cnull;
 pub mod common;
