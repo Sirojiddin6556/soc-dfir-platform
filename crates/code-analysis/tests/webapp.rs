@@ -13,6 +13,7 @@ const RULES: &[&str] = &[
     "timing-unsafe-compare",
     "weak-password-hash",
     "mass-assignment",
+    "stored-template-injection",
     "weak-hash",
 ];
 
@@ -510,4 +511,231 @@ function crypt_private($password, $salt, $count) {
         !found.iter().any(|f| f.starts_with("weak-password-hash")),
         "{found:?}"
     );
+}
+
+#[test]
+fn a_hash_helper_in_another_module_is_found_through_its_callers() {
+    let models = r#"import os
+from hashlib import sha256
+
+SALT = "clinic"
+
+def make_hash(s):
+    return sha256((SALT + s).encode()).hexdigest()
+
+def etag(body):
+    return sha256(body).hexdigest()
+
+def seed(db, Admin):
+    db.add(Admin(username="admin", password_hash=make_hash(os.getenv("ADMIN", "x"))))
+"#;
+    let main = r#"from models import make_hash, etag
+
+def login(admin, password, page):
+    if admin.password_hash != make_hash(password):
+        return None
+    return etag(page)
+"#;
+    assert_eq!(
+        scan(&[("models.py", models), ("main.py", main)]),
+        vec!["weak-password-hash models.py:7"]
+    );
+    let project = Project::from_sources(vec![
+        ("models.py".to_string(), models.to_string()),
+        ("main.py".to_string(), main.to_string()),
+    ]);
+    let found = code_analysis::analyze(&project).findings;
+    let f = found
+        .iter()
+        .find(|f| f.rule == "weak-password-hash")
+        .unwrap();
+    assert!(f.message.contains("make_hash()"), "{}", f.message);
+    assert!(f.message.contains("«clinic»"), "{}", f.message);
+}
+
+#[test]
+fn every_loop_over_form_fields_is_mass_assignment_unless_fields_are_checked() {
+    let src = r#"from fastapi import FastAPI, Request
+from models import SessionLocal, Setting, Admin
+app = FastAPI()
+ALLOWED = {"site_name", "phone"}
+
+@app.post("/settings")
+async def settings(request: Request):
+    form = await request.form()
+    db = SessionLocal()
+    for k in form.keys():
+        db.merge(Setting(k, form[k]))
+    db.commit()
+
+@app.post("/kv")
+async def kv(request: Request):
+    data = dict(await request.form())
+    db = SessionLocal()
+    for key in data:
+        s = db.query(Setting).filter(Setting.key == key).first()
+        if s:
+            s.value = data[key]
+    db.commit()
+
+@app.post("/profile")
+async def profile(request: Request):
+    form = await request.form()
+    admin = SessionLocal().query(Admin).first()
+    for k, v in form.items():
+        if k in ("csrf_token", "submit"):
+            continue
+        if hasattr(admin, k):
+            setattr(admin, k, v)
+
+@app.post("/safe")
+async def safe(request: Request):
+    form = await request.form()
+    db = SessionLocal()
+    for k, v in form.items():
+        if k not in ALLOWED:
+            continue
+        s = db.query(Setting).filter(Setting.key == k).first()
+        s.value = v
+    db.commit()
+
+@app.post("/tags")
+async def tags(request: Request):
+    body = await request.json()
+    db = SessionLocal()
+    for name in body["tags"]:
+        db.add(Setting(name, "tag"))
+    db.commit()
+"#;
+    let found: Vec<String> = scan(&[("main.py", src)])
+        .into_iter()
+        .filter(|f| f.starts_with("mass-assignment"))
+        .collect();
+    assert_eq!(
+        found,
+        vec![
+            "mass-assignment main.py:10",
+            "mass-assignment main.py:18",
+            "mass-assignment main.py:28",
+        ]
+    );
+}
+
+#[test]
+fn php_settings_saved_from_every_post_field() {
+    let src = r#"<?php
+session_start();
+if (!isset($_SESSION['admin'])) { exit; }
+foreach ($_POST as $k => $v) {
+    update_option($k, $v);
+}
+foreach ($_POST as $k => $v) {
+    if (in_array($k, $allowed)) {
+        update_option($k, $v);
+    }
+}
+"#;
+    let found: Vec<String> = scan(&[("options.php", src)])
+        .into_iter()
+        .filter(|f| f.starts_with("mass-assignment"))
+        .collect();
+    assert_eq!(found, vec!["mass-assignment options.php:4"]);
+}
+
+#[test]
+fn pages_rendered_through_a_helper_need_frame_protection() {
+    let src = r#"from fastapi import FastAPI, Request
+from fastapi.templating import Jinja2Templates
+app = FastAPI()
+templates = Jinja2Templates(directory="templates")
+
+def page(request, name, **ctx):
+    return templates.TemplateResponse(name, {"request": request, **ctx})
+
+@app.get("/")
+def index(request: Request):
+    return page(request, "index.html")
+"#;
+    assert_eq!(
+        scan(&[("main.py", src)]),
+        vec!["no-frame-protection main.py:3"]
+    );
+    let api = r#"from fastapi import FastAPI
+app = FastAPI()
+
+@app.get("/items")
+def items():
+    return {"items": []}
+"#;
+    assert_eq!(scan(&[("api.py", api)]), Vec::<String>::new());
+}
+
+#[test]
+fn templates_compiled_from_stored_data_are_reported() {
+    let src = r#"from jinja2 import Template, Environment
+from flask import Flask, render_template, request
+from models import Setting, db
+app = Flask(__name__)
+
+@app.route("/")
+def index():
+    footer = Setting.query.filter_by(key="footer").first()
+    html = Template(footer.value).render()
+    row = db.execute("SELECT body FROM pages WHERE id = 1").fetchone()
+    body = Environment().from_string(row["body"]).render()
+    fixed = Template("Hello {{ name }}").render(name=footer.value)
+    return render_template("index.html", footer=html, body=body, fixed=fixed)
+
+def report(path):
+    with open(path) as f:
+        return Template(f.read()).render()
+"#;
+    let found: Vec<String> = scan(&[("app.py", src)])
+        .into_iter()
+        .filter(|f| f.starts_with("stored-template"))
+        .collect();
+    assert_eq!(
+        found,
+        vec![
+            "stored-template-injection app.py:11",
+            "stored-template-injection app.py:9",
+        ]
+    );
+}
+
+#[test]
+fn a_password_as_an_hmac_key_or_a_request_edited_in_place_is_not_reported() {
+    let src = r#"<?php
+class Smtp {
+    protected function hmac($data, $key) {
+        if (strlen($key) > 64) {
+            $key = pack('H*', md5($key));
+        }
+        return md5($key . $data);
+    }
+    public function auth($username, $password, $challenge) {
+        return $username . ' ' . $this->hmac($challenge, $password);
+    }
+}
+foreach ($_POST as $key => $val) {
+    if (is_array($val)) {
+        $_POST[$key] = array_shift($val);
+    }
+}
+"#;
+    assert_eq!(scan(&[("smtp.php", src)]), Vec::<String>::new());
+}
+
+#[test]
+fn a_wordpress_referer_check_guards_a_get_that_changes_options() {
+    let src = r#"<?php
+if (!current_user_can('manage_options')) { wp_die('no'); }
+$action = $_GET['action'];
+if ($action === 'enable') {
+    check_admin_referer('enable-theme_' . $_GET['theme']);
+    update_option('allowedthemes', array($_GET['theme'] => true));
+}
+update_option('db_upgraded', false);
+"#;
+    assert_eq!(scan(&[("themes.php", src)]), Vec::<String>::new());
 }

@@ -324,6 +324,14 @@ rule!(
     0
 );
 rule!(
+    STORED_SSTI,
+    "stored-template-injection",
+    1336,
+    High,
+    "Шаблон собирается из сохранённых данных",
+    0
+);
+rule!(
     BUFFER_OVERFLOW,
     "buffer-overflow",
     787,

@@ -15,7 +15,7 @@ use crate::ir::*;
 use crate::project::{ModuleInfo, Project};
 use crate::rules::{
     name_words, Rule, CSRF, LOGIN_NO_LIMIT, LOGOUT_GET, MASS_ASSIGNMENT, NO_FRAME_PROTECTION,
-    STATE_CHANGE_GET, STATIC_SESSION, TIMING_COMPARE, WEAK_PASSWORD_HASH,
+    STATE_CHANGE_GET, STATIC_SESSION, STORED_SSTI, TIMING_COMPARE, WEAK_PASSWORD_HASH,
 };
 use crate::Language;
 use std::collections::{HashMap, HashSet};
@@ -79,6 +79,8 @@ struct Facts {
     csrf: bool,
     /// Limits attempts: a limiter, a counter, a captcha.
     limit: bool,
+    /// Renders a page: a template or HTML, which a frame could show.
+    page: bool,
     lines: Lines,
 }
 
@@ -94,15 +96,20 @@ pub fn check(project: &Project, include_tests: bool) -> Vec<Hit> {
     let mut hits = Vec::new();
     let text = ProjectText::new(project);
     let mut endpoints = Vec::new();
-    let mut scopes = Vec::with_capacity(project.modules.len());
+    let scopes: Vec<Scope> = project.modules.iter().map(Scope::of).collect();
+    let checked = |m: &ModuleInfo| {
+        (include_tests || !m.is_test) && !matches!(m.lang, Language::C | Language::Cpp)
+    };
+    let helpers = HashHelpers::of(project, &scopes, &checked);
+    let mut uses = Vec::new();
     for (i, m) in project.modules.iter().enumerate() {
-        scopes.push(Scope::of(m));
-        if (m.is_test && !include_tests) || matches!(m.lang, Language::C | Language::Cpp) {
+        if !checked(m) {
             continue;
         }
         endpoints.extend(find_endpoints(i, m, &text));
-        function_checks(i, m, &scopes[i], &mut hits);
+        function_checks(i, m, &scopes[i], &helpers, &mut uses, &mut hits);
     }
+    helpers.report(project, &uses, &mut hits);
     if endpoints.is_empty() {
         return hits;
     }
@@ -185,12 +192,12 @@ pub fn check(project: &Project, include_tests: bool) -> Vec<Hit> {
     let pages: Vec<usize> = endpoints
         .iter()
         .enumerate()
-        .filter(|(_, e)| {
+        .filter(|(i, e)| {
             let m = &project.modules[e.module];
             if m.lang == Language::Php {
                 prints_html(m.source())
             } else {
-                renders_html(e.body)
+                facts[*i].page || e.func.is_some_and(html_route)
             }
         })
         .map(|(i, _)| i)
@@ -570,6 +577,8 @@ fn spring_methods(f: &Function) -> Option<u8> {
 struct Scope<'a> {
     funcs: HashMap<&'a str, &'a Function>,
     imports: HashMap<&'a str, &'a str>,
+    /// Text constants of the module: `SALT = "shifo"`.
+    texts: HashMap<&'a str, &'a str>,
     lang: Language,
     /// Java: the module uses `MessageDigest`, whose `digest` and `update`
     /// hash.
@@ -580,8 +589,16 @@ impl<'a> Scope<'a> {
     fn of(m: &'a ModuleInfo) -> Scope<'a> {
         let mut funcs = HashMap::new();
         let mut imports = HashMap::new();
+        let mut texts = HashMap::new();
         for s in &m.ir.body {
             match s {
+                Stmt::Assign {
+                    target: Target::Name(n),
+                    value: Expr::Lit(Const::Str(v)),
+                    ..
+                } => {
+                    texts.insert(n.as_str(), v.as_str());
+                }
                 Stmt::FuncDef(f) => {
                     funcs.insert(f.name.as_str(), &**f);
                 }
@@ -599,6 +616,7 @@ impl<'a> Scope<'a> {
         Scope {
             funcs,
             imports,
+            texts,
             lang: m.lang,
             message_digest: m.lang == Language::Java && m.source().contains("MessageDigest"),
         }
@@ -749,6 +767,14 @@ fn writes(func: &Expr, args: &[Arg]) -> Option<Write> {
         | "insert_many" | "update_one" | "update_many" | "delete_one" | "delete_many"
         | "deleteById" | "deleteAll" | "deleteAllById" | "file_put_contents" | "unlink"
         | "rmtree" => true,
+        // WordPress options, meta and posts; a fixed flag the code resets
+        // itself (`update_option('db_upgraded', false)`) is housekeeping.
+        "update_option" | "add_option" | "delete_option" | "update_site_option"
+        | "update_user_meta" | "update_post_meta" | "add_post_meta" | "delete_post_meta"
+        | "wp_insert_post" | "wp_update_post" | "wp_delete_post" | "wp_insert_user"
+        | "wp_update_user" | "wp_delete_user" => {
+            !args.iter().all(|a| matches!(a.value, Expr::Lit(_)))
+        }
         // `obj.save()` of an ORM; `repo.save(entity)`.
         "save" => args.is_empty() || store(),
         // `obj.delete()`, `qs.filter(...).delete()`, `session.delete(obj)`.
@@ -1047,6 +1073,9 @@ impl<'a> Walk<'_, 'a> {
                 if lower == "php://input" {
                     f.json = true;
                 }
+                if template_file(s) || html_text(&lower) {
+                    f.page = true;
+                }
             }
             Expr::Bin(BinOp::Eq | BinOp::NotEq | BinOp::Is | BinOp::IsNot, l, r) => {
                 if mentions_password(l) || mentions_password(r) {
@@ -1062,6 +1091,9 @@ impl<'a> Walk<'_, 'a> {
                     None => {}
                 }
                 let on_session = matches!(&**func, Expr::Attr(o, _) if receiver_name(o).to_ascii_lowercase().contains("session"));
+                if renders(name) {
+                    f.page = true;
+                }
                 match name {
                     "set_cookie" | "setcookie" | "set_signed_cookie" => {
                         let cookie = args.first().and_then(|a| first_literal(&a.value));
@@ -1155,6 +1187,9 @@ impl<'a> Walk<'_, 'a> {
                 // as a CSRF token does: `hash_equals($row['hash'], $_GET['key'])`.
                 if lower.contains("csrf")
                     || lower.contains("nonce")
+                    // `check_admin_referer('save')`, `check_ajax_referer()`
+                    || (lower.contains("referer")
+                        && (lower.starts_with("check") || lower.starts_with("verify")))
                     || matches!(
                         lower.as_str(),
                         "validate_on_submit" | "hash_equals" | "compare_digest" | "isequal"
@@ -1331,26 +1366,53 @@ fn html_line(src: &str) -> Option<u32> {
         .map(|i| i as u32 + 1)
 }
 
-/// Whether the endpoint renders a page: a template or HTML.
-fn renders_html(body: &[Stmt]) -> bool {
+/// A route declared to answer with HTML:
+/// `@app.get("/", response_class=HTMLResponse)`.
+fn html_route(f: &Function) -> bool {
     let mut found = false;
-    visit_stmts(body, &mut |s| {
-        for e in own_exprs(s) {
-            each_expr(e, &mut |x| {
-                if let Expr::Call { func, .. } = x {
-                    found |= matches!(
-                        callee_name(func),
-                        "render_template"
-                            | "render"
-                            | "TemplateResponse"
-                            | "HTMLResponse"
-                            | "render_to_response"
-                    );
-                }
-            });
-        }
-    });
+    for d in &f.decorators {
+        each_expr(d, &mut |x| {
+            found |= matches!(x, Expr::Name(n) | Expr::Attr(_, n) if n.rsplit('.').next() == Some("HTMLResponse"));
+        });
+    }
     found
+}
+
+/// Calls that render a page from a template or send HTML.
+fn renders(name: &str) -> bool {
+    matches!(
+        name,
+        "render_template"
+            | "render_template_string"
+            | "render"
+            | "TemplateResponse"
+            | "HTMLResponse"
+            | "render_to_response"
+            | "render_to_string"
+            | "get_template"
+            | "ModelAndView"
+    )
+}
+
+/// A template's file name: `"index.html"`, `"admin/news.jinja2"`.
+fn template_file(s: &str) -> bool {
+    let l = s.to_ascii_lowercase();
+    !l.contains(char::is_whitespace)
+        && l.len() < 120
+        && [
+            ".html", ".htm", ".jinja", ".jinja2", ".j2", ".twig", ".jsp", ".ftl", ".mako", ".tpl",
+        ]
+        .iter()
+        .any(|x| l.ends_with(x) && l.len() > x.len())
+        && !l.starts_with("http:")
+        && !l.starts_with("https:")
+}
+
+/// Text of an HTML page, lowercased.
+fn html_text(lower: &str) -> bool {
+    ["<html", "<!doctype html", "<body"]
+        .iter()
+        .any(|t| lower.contains(t))
 }
 
 /// Names of the cookies the project's code reads.
@@ -1562,26 +1624,20 @@ fn scopes(m: &ModuleInfo) -> Vec<(&str, &[Param], &[Stmt])> {
 
 /// Checks in any function: keys compared with `==`, passwords under a
 /// fast hash, request forms written field by field.
-fn function_checks(module: usize, m: &ModuleInfo, scope: &Scope, hits: &mut Vec<Hit>) {
+fn function_checks(
+    module: usize,
+    m: &ModuleInfo,
+    scope: &Scope,
+    helpers: &HashHelpers,
+    uses: &mut Vec<HelperUse>,
+    hits: &mut Vec<Hit>,
+) {
     for (name, params, body) in scopes(m) {
         let request = request_vars(params, body);
         let password_fn = name_words(name).any(|w| w == "password" || w == "passwd");
         // Hashing again in a loop stretches the hash (phpass, PBKDF2 by
         // hand): not a fast hash.
-        let mut stretched = false;
-        visit_stmts(body, &mut |s| {
-            if let Stmt::Loop { body: inner, .. } = s {
-                visit_stmts(inner, &mut |t| {
-                    for e in own_exprs(t) {
-                        each_expr(e, &mut |x| {
-                            if let Expr::Call { func, args, .. } = x {
-                                stretched |= fast_hash(func, args, scope).is_some();
-                            }
-                        });
-                    }
-                });
-            }
-        });
+        let stretched = stretches(body, scope);
         let locals = single_assignments(body);
         let cx = Checked {
             params,
@@ -1593,9 +1649,276 @@ fn function_checks(module: usize, m: &ModuleInfo, scope: &Scope, hits: &mut Vec<
         visit_stmts(body, &mut |s| {
             if let Some(span) = stmt_span(s) {
                 stmt_checks(module, s, span.line, &cx, scope, hits);
+                helpers.uses_in(module, s, span.line, scope, uses);
             }
         });
     }
+}
+
+/// Whether a body hashes again in a loop, which stretches the hash
+/// (phpass, PBKDF2 by hand): not a fast hash.
+fn stretches(body: &[Stmt], scope: &Scope) -> bool {
+    let mut found = false;
+    visit_stmts(body, &mut |s| {
+        if let Stmt::Loop { body: inner, .. } = s {
+            visit_stmts(inner, &mut |t| {
+                for e in own_exprs(t) {
+                    each_expr(e, &mut |x| {
+                        if let Expr::Call { func, args, .. } = x {
+                            found |= fast_hash(func, args, scope).is_some();
+                        }
+                    });
+                }
+            });
+        }
+    });
+    found
+}
+
+/// A function that puts its parameter under a fast hash:
+/// `def _hash(p): return sha256(("salt" + p).encode()).hexdigest()`. It
+/// hashes passwords when some code passes it one.
+struct HashHelper {
+    name: String,
+    module: usize,
+    /// The module's dotted name, to match imports of the helper.
+    module_name: String,
+    line: u32,
+    /// The hash and the salt it adds, for the message.
+    how: String,
+}
+
+/// A call of a hash helper with a password.
+struct HelperUse {
+    helper: usize,
+    module: usize,
+    line: u32,
+}
+
+struct HashHelpers {
+    list: Vec<HashHelper>,
+    by_name: HashMap<String, Vec<usize>>,
+}
+
+impl HashHelpers {
+    fn of(
+        project: &Project,
+        module_scopes: &[Scope],
+        checked: &dyn Fn(&ModuleInfo) -> bool,
+    ) -> HashHelpers {
+        let mut list = Vec::new();
+        for (i, m) in project.modules.iter().enumerate() {
+            if !checked(m) {
+                continue;
+            }
+            for (name, params, body) in scopes(m) {
+                // A MAC keyed with a password (CRAM-MD5) stores nothing.
+                let mac = name_words(name).any(|w| matches!(w.as_str(), "hmac" | "mac" | "sign"));
+                if name.is_empty() || params.is_empty() || mac || stretches(body, &module_scopes[i])
+                {
+                    continue;
+                }
+                let mut found: Option<(u32, String)> = None;
+                visit_stmts(body, &mut |s| {
+                    let Some(span) = stmt_span(s) else { return };
+                    for e in own_exprs(s) {
+                        each_expr(e, &mut |x| {
+                            let Expr::Call { func, args, .. } = x else {
+                                return;
+                            };
+                            if found.is_some() {
+                                return;
+                            }
+                            if let Some((hashed, label)) = fast_hash(func, args, &module_scopes[i])
+                            {
+                                if mentions_param(hashed, params) {
+                                    found = Some((
+                                        span.line,
+                                        hash_how(&label, hashed, &module_scopes[i]),
+                                    ));
+                                }
+                            }
+                        });
+                    }
+                });
+                if let Some((line, how)) = found {
+                    list.push(HashHelper {
+                        name: name.to_string(),
+                        module: i,
+                        module_name: m.name.clone(),
+                        line,
+                        how,
+                    });
+                }
+            }
+        }
+        let mut by_name: HashMap<String, Vec<usize>> = HashMap::new();
+        for (i, h) in list.iter().enumerate() {
+            by_name.entry(h.name.clone()).or_default().push(i);
+        }
+        HashHelpers { list, by_name }
+    }
+
+    /// Calls in `s` of a helper with a password: an argument named as
+    /// one, a result stored as a password, or a result compared with one
+    /// (`admin.password_hash == _hash(p)`).
+    fn uses_in(
+        &self,
+        module: usize,
+        s: &Stmt,
+        line: u32,
+        scope: &Scope,
+        uses: &mut Vec<HelperUse>,
+    ) {
+        if self.list.is_empty() {
+            return;
+        }
+        let stored = match s {
+            Stmt::Assign {
+                target: Target::Name(n) | Target::Attr(_, n),
+                ..
+            } => password_ish(n),
+            Stmt::Assign {
+                target: Target::Index(_, k),
+                ..
+            } => first_literal(k).is_some_and(|k| identifier_like(k) && password_ish(k)),
+            _ => false,
+        };
+        // Calls whose result is compared with a password or passed as one
+        // (`Admin(password_hash=_hash(p))`).
+        let mut compared = Vec::new();
+        for e in own_exprs(s) {
+            each_expr(e, &mut |x| match x {
+                Expr::Bin(BinOp::Eq | BinOp::NotEq | BinOp::Is | BinOp::IsNot, l, r) => {
+                    for (call, other) in [(l, r), (r, l)] {
+                        if let Expr::Call { span, .. } = &**call {
+                            if names_password(other) {
+                                compared.push(*span);
+                            }
+                        }
+                    }
+                }
+                Expr::Call { args, .. } | Expr::New { args, .. } => {
+                    for a in args {
+                        if a.name.as_deref().is_some_and(password_ish) {
+                            if let Expr::Call { span, .. } = &a.value {
+                                compared.push(*span);
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            });
+        }
+        for e in own_exprs(s) {
+            each_expr(e, &mut |x| {
+                let Expr::Call { func, args, span } = x else {
+                    return;
+                };
+                let Some(candidates) = self.by_name.get(callee_name(func)) else {
+                    return;
+                };
+                if !(stored
+                    || compared.contains(span)
+                    || args
+                        .iter()
+                        .any(|a| names_password(&a.value) || mentions_password(&a.value)))
+                {
+                    return;
+                }
+                // The helper of this module, else the one its import names.
+                let path = match &**func {
+                    Expr::Name(n) => scope.imports.get(n.as_str()).copied(),
+                    Expr::Attr(o, _) => match &**o {
+                        Expr::Name(r) => {
+                            scope.imports.get(r.as_str()).copied().or(Some(r.as_str()))
+                        }
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                let pick = candidates
+                    .iter()
+                    .copied()
+                    .find(|&h| self.list[h].module == module)
+                    .or_else(|| {
+                        let path = path?;
+                        candidates.iter().copied().find(|&h| {
+                            let m = &self.list[h].module_name;
+                            path == m
+                                || path.starts_with(&format!("{m}."))
+                                || path.ends_with(&format!(".{m}"))
+                                || path.contains(&format!(".{m}."))
+                        })
+                    })
+                    .or_else(|| (candidates.len() == 1).then(|| candidates[0]));
+                if let Some(helper) = pick {
+                    uses.push(HelperUse {
+                        helper,
+                        module,
+                        line,
+                    });
+                }
+            });
+        }
+    }
+
+    /// One finding per helper that hashes passwords, at its hash.
+    fn report(&self, project: &Project, uses: &[HelperUse], hits: &mut Vec<Hit>) {
+        for (i, h) in self.list.iter().enumerate() {
+            let Some(u) = uses.iter().find(|u| u.helper == i) else {
+                continue;
+            };
+            if hits.iter().any(|x| {
+                x.module == h.module && x.line == h.line && x.rule.id == WEAK_PASSWORD_HASH.id
+            }) {
+                continue;
+            }
+            let at = &project.modules[u.module].path;
+            hits.push(Hit {
+                rule: &WEAK_PASSWORD_HASH,
+                module: h.module,
+                line: h.line,
+                what: format!(
+                    "{}() хеширует пароль (вызов в {at}:{}) быстрой функцией {}: перебор идёт миллиардами вариантов в секунду; используйте bcrypt, scrypt, Argon2 или PBKDF2",
+                    h.name, u.line, h.how
+                ),
+            });
+        }
+    }
+}
+
+/// `hashlib.sha256()` or, with a salt, `hashlib.sha256() с постоянной
+/// солью «shifo»`.
+fn hash_how(label: &str, hashed: &Expr, scope: &Scope) -> String {
+    match constant_salt(hashed, scope) {
+        Some(s) => format!("{label} с постоянной солью «{s}»"),
+        None => label.to_string(),
+    }
+}
+
+/// Whether an expression names a password anywhere: `admin.password_hash`,
+/// `ADMIN_PASS_HASH`, `stored_pw`.
+fn names_password(e: &Expr) -> bool {
+    let mut found = false;
+    each_expr(e, &mut |x| match x {
+        Expr::Name(n) | Expr::Attr(_, n) => found |= password_ish(n.trim_start_matches('$')),
+        Expr::Index(_, k) => {
+            found |= first_literal(k).is_some_and(|s| identifier_like(s) && password_ish(s))
+        }
+        _ => {}
+    });
+    found
+}
+
+/// A name with a password word anywhere in it.
+fn password_ish(name: &str) -> bool {
+    name_words(name).any(|w| {
+        matches!(
+            w.as_str(),
+            "password" | "passwd" | "pwd" | "pw" | "pass" | "passphrase"
+        )
+    })
 }
 
 /// A function under `function_checks`.
@@ -1633,16 +1956,18 @@ fn stmt_checks(
             });
         }
     };
-    // `for k, v in form.items(): setattr(obj, k, v)`
+    // `for k, v in form.items(): setattr(obj, k, v)`, `for k in form:
+    // db.add(Setting(k, form[k]))`, `foreach ($_POST as $k => $v)
+    // update_option($k, $v)`.
     if let Stmt::Loop {
-        target: Some(Target::Tuple(t)),
-        iter: Some(Expr::Call { func: it, .. }),
+        target: Some(target),
+        iter: Some(iter),
         body,
         ..
     } = s
     {
-        if let (Expr::Attr(src, items), Some(Target::Name(key))) = (&**it, t.first()) {
-            if items == "items" && from_request(src, request) && key_written(body, key) {
+        if let Some(key) = form_key_var(target, iter, request, cx.locals) {
+            if key_written(body, key) && !key_checked(body, key, request) {
                 push(
                     &MASS_ASSIGNMENT,
                     "в цикле записываются все поля пришедшей формы: какие ключи менять, выбирает отправитель, списка разрешённых полей нет".into(),
@@ -1705,6 +2030,18 @@ fn stmt_checks(
                         "в модель передаются все поля запроса: отправитель может задать и те поля, которые менять не должен (роль, владелец, цена)".into(),
                     );
                 }
+                // A template compiled from text kept in a database: whoever
+                // can change that text runs code in the template engine.
+                if let Some((source, how)) = template_source(callee, args, scope) {
+                    if !from_request(source, request) && stored(source, cx.locals, 0) {
+                        push(
+                            &STORED_SSTI,
+                            format!(
+                                "{how} компилирует шаблон из сохранённых данных, а не из файла шаблона: кто может изменить эти данные (форма админки, запись в БД), тот выполняет код на сервере; выводите такие данные как переменную шаблона"
+                            ),
+                        );
+                    }
+                }
                 if let Some((hashed, func)) =
                     fast_hash(callee, args, scope).filter(|_| !cx.stretched)
                 {
@@ -1713,20 +2050,98 @@ fn stmt_checks(
                     if password {
                         push(
                             &WEAK_PASSWORD_HASH,
-                            match constant_salt(hashed) {
-                                Some(s) => format!(
-                                    "пароль хешируется быстрой функцией {func} с постоянной солью «{s}»: соль одна на всех, а перебор идёт миллиардами вариантов в секунду; используйте bcrypt, scrypt, Argon2 или PBKDF2"
-                                ),
-                                None => format!(
-                                    "пароль хешируется быстрой функцией {func}: перебор идёт миллиардами вариантов в секунду; используйте bcrypt, scrypt, Argon2 или PBKDF2"
-                                ),
-                            },
+                            format!(
+                                "пароль хешируется быстрой функцией {}: перебор идёт миллиардами вариантов в секунду; используйте bcrypt, scrypt, Argon2 или PBKDF2",
+                                hash_how(&func, hashed, scope)
+                            ),
                         );
                     }
                 }
             }
             _ => {}
         });
+    }
+}
+
+/// The text a call compiles as a template, and how to name the call:
+/// `jinja2.Template(src)`, `env.from_string(src)`,
+/// `render_template_string(src)`, Twig `createTemplate($src)`, Velocity
+/// `evaluate(ctx, out, tag, src)`.
+fn template_source<'e>(
+    callee: &'e Expr,
+    args: &'e [Arg],
+    scope: &Scope,
+) -> Option<(&'e Expr, String)> {
+    let name = callee_name(callee);
+    let nth = |i: usize| args.get(i).filter(|a| a.name.is_none()).map(|a| &a.value);
+    match scope.lang {
+        Language::Python => {
+            let template_class = name == "Template"
+                && match callee {
+                    Expr::Name(n) => {
+                        n.starts_with("jinja2.")
+                            || n.starts_with("mako.")
+                            || scope.imported_from(n, &["jinja2", "mako"])
+                    }
+                    Expr::Attr(o, _) => matches!(&**o, Expr::Name(r)
+                        if r == "jinja2" || scope.imported_from(r, &["jinja2", "mako"])),
+                    _ => false,
+                };
+            if template_class || matches!(name, "from_string" | "render_template_string") {
+                return nth(0).map(|e| (e, format!("{name}()")));
+            }
+        }
+        Language::Php if name == "createTemplate" => {
+            return nth(0).map(|e| (e, format!("{name}()")))
+        }
+        Language::Java if name == "evaluate" && args.len() == 4 => {
+            return nth(3).map(|e| (e, "Velocity.evaluate()".to_string()));
+        }
+        _ => {}
+    }
+    None
+}
+
+/// Whether a value comes from stored data: what a query returns
+/// (`.first()`, `fetchone()`) or a field of it (`setting.value`,
+/// `row["footer"]`), directly or through variables.
+fn stored(e: &Expr, locals: &HashMap<&str, &Expr>, depth: u8) -> bool {
+    const FETCH: &[&str] = &[
+        "first",
+        "one",
+        "one_or_none",
+        "scalar",
+        "scalar_one",
+        "fetchone",
+        "fetch",
+        "fetch_assoc",
+        "fetch_array",
+        "fetch_object",
+        "mysqli_fetch_assoc",
+        "mysqli_fetch_array",
+        "fetchColumn",
+        "get_object_or_404",
+        "find_one",
+        "get_var",
+        "get_row",
+        "get_option",
+    ];
+    if depth > 4 {
+        return false;
+    }
+    match e {
+        Expr::Attr(o, _) | Expr::Index(o, _) => stored(o, locals, depth + 1),
+        Expr::Name(n) => locals
+            .get(n.as_str())
+            .is_some_and(|v| stored(v, locals, depth + 1)),
+        Expr::Call { func, .. } => {
+            let name = callee_name(func);
+            FETCH.contains(&name)
+                // `Setting.objects.get(key="footer")`, `Page.query.get(id)`
+                || (name == "get"
+                    && matches!(&**func, Expr::Attr(o, _) if matches!(callee_name(o), "objects" | "query")))
+        }
+        _ => false,
     }
 }
 
@@ -1970,8 +2385,20 @@ fn fast_hash<'e>(callee: &'e Expr, args: &'e [Arg], scope: &Scope) -> Option<(&'
     let first = || args.first().map(|a| &a.value);
     match scope.lang {
         Language::Python => {
-            let hashlib = matches!(callee, Expr::Attr(o, _) if receiver_name(o) == "hashlib")
-                || matches!(callee, Expr::Name(n) if n.starts_with("hashlib."));
+            // `hashlib.sha256`, `hl.sha256` after `import hashlib as hl`,
+            // `sha256` after `from hashlib import sha256`.
+            let hashlib = match callee {
+                Expr::Attr(o, _) => matches!(&**o, Expr::Name(r)
+                    if r == "hashlib" || scope.imports.get(r.as_str()) == Some(&"hashlib")),
+                Expr::Name(n) => {
+                    n.starts_with("hashlib.")
+                        || scope
+                            .imports
+                            .get(n.as_str())
+                            .is_some_and(|p| p.starts_with("hashlib."))
+                }
+                _ => false,
+            };
             if hashlib && fast(&lower) {
                 return first().map(|e| (e, format!("hashlib.{name}()")));
             }
@@ -2052,7 +2479,7 @@ fn mentions_param(e: &Expr, params: &[Param]) -> bool {
 }
 
 /// The literal text a hashed value is built with: `"shifo" + p`.
-fn constant_salt(e: &Expr) -> Option<String> {
+fn constant_salt(e: &Expr, scope: &Scope) -> Option<String> {
     let mut found = None;
     each_expr(e, &mut |x| {
         let parts: Vec<&Expr> = match x {
@@ -2061,9 +2488,15 @@ fn constant_salt(e: &Expr) -> Option<String> {
             _ => return,
         };
         for p in parts {
-            if let Expr::Lit(Const::Str(s)) = p {
-                if !s.is_empty() && found.is_none() {
-                    found = Some(s.clone());
+            let text = match p {
+                Expr::Lit(Const::Str(s)) => Some(s.as_str()),
+                // `SALT + p` with `SALT = "shifo"` in the module.
+                Expr::Name(n) => scope.texts.get(n.as_str()).copied(),
+                _ => None,
+            };
+            if let Some(s) = text.filter(|s| !s.is_empty()) {
+                if found.is_none() {
+                    found = Some(s.to_string());
                 }
             }
         }
@@ -2071,29 +2504,186 @@ fn constant_salt(e: &Expr) -> Option<String> {
     found
 }
 
-/// Whether the loop body writes using `key` as the name it stores under:
-/// `setattr(obj, key, v)`, `Model(key=key)`, `obj[key] = v`.
+/// The variable a loop binds to the field names of a whole request form:
+/// `for k in form`, `for k in form.keys()`, `for k, v in form.items()`,
+/// PHP `foreach ($_POST as $k => $v)`.
+fn form_key_var<'s>(
+    target: &'s Target,
+    iter: &Expr,
+    request: &[String],
+    locals: &HashMap<&str, &Expr>,
+) -> Option<&'s str> {
+    let (key, single) = match target {
+        Target::Name(n) => (n.as_str(), true),
+        Target::Tuple(t) => match t.first() {
+            Some(Target::Name(n)) => (n.as_str(), false),
+            _ => return None,
+        },
+        _ => return None,
+    };
+    let form = |e: &Expr| form_object(e, request, locals, 0);
+    let keyed = match iter {
+        Expr::Call { func, args, .. } => match &**func {
+            Expr::Attr(src, m) => match m.as_str() {
+                "items" | "iteritems" | "multi_items" | "lists" => !single && form(src),
+                "keys" | "iterkeys" => single && form(src),
+                _ => false,
+            },
+            Expr::Name(n) => match n.as_str() {
+                "__php_pairs" => !single && args.first().is_some_and(|a| form(&a.value)),
+                "list" | "sorted" | "set" | "iter" => {
+                    single && args.first().is_some_and(|a| form(&a.value))
+                }
+                _ => single && form(iter),
+            },
+            _ => single && form(iter),
+        },
+        e => single && form(e),
+    };
+    keyed.then_some(key)
+}
+
+/// A whole form or body the sender fills: `request.form`, `await
+/// request.form()`, `request.POST`, `request.get_json()`, `$_POST`, or a
+/// variable holding one.
+fn form_object(e: &Expr, request: &[String], locals: &HashMap<&str, &Expr>, depth: u8) -> bool {
+    const FORMS: &[&str] = &[
+        "form",
+        "POST",
+        "GET",
+        "args",
+        "values",
+        "json",
+        "data",
+        "query_params",
+        "query",
+        "body",
+    ];
+    match e {
+        Expr::Name(n) => {
+            matches!(n.as_str(), "$_POST" | "$_GET" | "$_REQUEST")
+                || (depth < 3
+                    && request.contains(n)
+                    && locals
+                        .get(n.as_str())
+                        .is_some_and(|v| form_object(v, request, locals, depth + 1)))
+        }
+        Expr::Attr(b, n) => is_request(b) && FORMS.contains(&n.as_str()),
+        Expr::Call { func, args, .. } => match &**func {
+            // `request.form()`, `request.get_json()`, `request.POST.copy()`,
+            // `request.form.to_dict()`.
+            Expr::Attr(b, n) => {
+                (is_request(b)
+                    && (FORMS.contains(&n.as_str()) || matches!(n.as_str(), "get_json" | "json")))
+                    || (matches!(n.as_str(), "copy" | "to_dict" | "dict")
+                        && form_object(b, request, locals, depth))
+            }
+            // `dict(request.form)`
+            Expr::Name(n) if n == "dict" => args
+                .first()
+                .is_some_and(|a| form_object(&a.value, request, locals, depth)),
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+/// Whether a loop body stores data under a key the sender chose: as an
+/// attribute (`setattr(obj, k, v)`), an index (`obj[k] = v`), a model
+/// field or row (`Setting(key=k, value=v)`, `db.add(Setting(k, v))`), a
+/// setting (`update_option($k, $v)`), a record it looks up and changes
+/// (`s = Setting.query.filter_by(key=k).first(); s.value = v`), or an SQL
+/// write with the key.
 fn key_written(body: &[Stmt], key: &str) -> bool {
     let mut found = false;
     let is_key = |e: &Expr| matches!(e, Expr::Name(n) if n == key);
+    let has_key = |e: &Expr| {
+        let mut f = false;
+        each_expr(e, &mut |x| f |= is_key(x));
+        f
+    };
+    let mut looked_up = false;
+    let mut changes_attr = false;
     visit_stmts(body, &mut |s| {
-        if let Stmt::Assign {
-            target: Target::Index(_, k),
-            ..
-        } = s
-        {
-            found |= is_key(k);
+        match s {
+            // Not `$_POST[$key] = ...`, which edits the request.
+            Stmt::Assign {
+                target: Target::Index(c, k),
+                ..
+            } => found |= is_key(k) && !request_data(c),
+            Stmt::Assign {
+                target: Target::Attr(..),
+                ..
+            } => changes_attr = true,
+            _ => {}
         }
         for e in own_exprs(s) {
             each_expr(e, &mut |x| {
-                if let Expr::Call { func, args, .. } = x {
-                    let name = callee_name(func);
-                    if name == "setattr" && args.get(1).is_some_and(|a| is_key(&a.value)) {
-                        found = true;
+                let Expr::Call { func, args, .. } = x else {
+                    return;
+                };
+                let name = callee_name(func);
+                let lower = name.to_ascii_lowercase();
+                if name == "setattr" && args.get(1).is_some_and(|a| is_key(&a.value)) {
+                    found = true;
+                }
+                // A model made with the key: `Setting(key=key, ...)`,
+                // `Setting(k, v)`; not an error or a response.
+                if name.chars().next().is_some_and(char::is_uppercase)
+                    && !["Error", "Exception", "Response", "Warning", "Redirect"]
+                        .iter()
+                        .any(|w| name.ends_with(w))
+                    && (args.iter().any(|a| a.name.is_some() && is_key(&a.value))
+                        || (args.len() >= 2 && args.iter().any(|a| is_key(&a.value))))
+                {
+                    found = true;
+                }
+                // `update_option($k, $v)`, `cache.set(k, v)`.
+                if args.len() >= 2
+                    && args.first().is_some_and(|a| is_key(&a.value))
+                    && [
+                        "update", "set", "save", "store", "put", "insert", "add", "write",
+                    ]
+                    .iter()
+                    .any(|w| lower.starts_with(w))
+                    && !matches!(lower.as_str(), "setdefault" | "set_cookie" | "setcookie")
+                {
+                    found = true;
+                }
+                // `obj.update({k: v})`, `coll.update_one(q, {"$set": {k: v}})`
+                if ["update", "insert", "create", "set", "replace", "patch"]
+                    .iter()
+                    .any(|w| lower.starts_with(w))
+                {
+                    for a in args {
+                        each_expr(&a.value, &mut |d| {
+                            if let Expr::Dict(pairs) = d {
+                                found |= pairs.iter().any(|(k, _)| is_key(k));
+                            }
+                        });
                     }
-                    // A model made with the key: `Setting(key=key, ...)`.
-                    if name.chars().next().is_some_and(char::is_uppercase)
-                        && args.iter().any(|a| a.name.is_some() && is_key(&a.value))
+                }
+                // A record picked by the key: `filter_by(key=k)`,
+                // `objects.get(name=k)`, `filter(Setting.key == k)`.
+                let lookup = matches!(
+                    name,
+                    "filter_by" | "filter" | "where" | "find_one" | "find" | "get_or_create"
+                ) || (name == "get"
+                    && matches!(&**func, Expr::Attr(o, _) if matches!(callee_name(o), "objects" | "query")));
+                if lookup && args.iter().any(|a| has_key(&a.value)) {
+                    looked_up = true;
+                }
+                if name == "update_or_create" && args.iter().any(|a| has_key(&a.value)) {
+                    found = true;
+                }
+                // `cur.execute("UPDATE settings SET value=? WHERE key=?", (v, k))`
+                if matches!(name, "execute" | "executemany" | "query" | "exec") {
+                    let sql = args.first().map(|a| sql_text(&a.value)).unwrap_or_default();
+                    let sql = sql.trim_start().to_ascii_lowercase();
+                    if ["update", "insert", "replace"]
+                        .iter()
+                        .any(|w| sql.starts_with(w))
+                        && args.iter().any(|a| has_key(&a.value))
                     {
                         found = true;
                     }
@@ -2101,7 +2691,107 @@ fn key_written(body: &[Stmt], key: &str) -> bool {
             });
         }
     });
+    found || (looked_up && changes_attr)
+}
+
+/// The request's own data: `$_POST`, `request.form`.
+fn request_data(e: &Expr) -> bool {
+    match e {
+        Expr::Name(n) => n.starts_with("$_"),
+        Expr::Attr(b, _) => is_request(b),
+        _ => false,
+    }
+}
+
+/// The literal text of an SQL argument, string-building included.
+fn sql_text(e: &Expr) -> String {
+    match e {
+        Expr::Lit(Const::Str(s)) => s.clone(),
+        Expr::Concat(parts) => parts.iter().map(sql_text).collect(),
+        Expr::Bin(BinOp::Add, l, r) => sql_text(l) + &sql_text(r),
+        _ => String::new(),
+    }
+}
+
+/// Whether a loop body checks the key against a list of allowed names
+/// before using it: `if k in ALLOWED`, `if k not in FIELDS: continue`,
+/// `k.startswith("site_")`, `in_array($k, $allowed)`. `hasattr(obj, k)`
+/// is no such check: it lets every attribute through.
+fn key_checked(body: &[Stmt], key: &str, request: &[String]) -> bool {
+    let is_key = |e: &Expr| matches!(e, Expr::Name(n) if n == key);
+    let mut found = false;
+    visit_stmts(body, &mut |s| {
+        let test = match s {
+            Stmt::If { test, .. } => test,
+            Stmt::Loop { test: Some(t), .. } => t,
+            _ => return,
+        };
+        each_expr(test, &mut |x| match x {
+            Expr::Bin(BinOp::In | BinOp::NotIn, l, r) if is_key(l) => {
+                found |= !from_request(r, request) && !only_form_fields(r) && !every_field(r);
+            }
+            Expr::Call { func, args, .. } => {
+                let name = callee_name(func);
+                let on_key = matches!(&**func, Expr::Attr(o, _) if is_key(o));
+                let key_arg = args.iter().any(|a| is_key(&a.value));
+                found |= (on_key
+                    && matches!(name, "startswith" | "endswith" | "isidentifier" | "match"))
+                    || (key_arg
+                        && matches!(
+                            name,
+                            "in_array" | "array_key_exists" | "match" | "fullmatch" | "preg_match"
+                        )
+                        && !args.iter().any(|a| from_request(&a.value, request)));
+            }
+            // `isset($allowed[$k])`
+            Expr::Index(b, k) if is_key(k) => {
+                found |= !from_request(b, request)
+                    && matches!(&**b, Expr::Name(n) if !n.starts_with("$_"));
+            }
+            _ => {}
+        });
+    });
     found
+}
+
+/// All fields of an object or model, which a check against lets every
+/// field through: `obj.__dict__`, `Model.__table__.columns`, `vars(obj)`.
+fn every_field(e: &Expr) -> bool {
+    let mut found = false;
+    each_expr(e, &mut |x| match x {
+        Expr::Attr(_, n) => {
+            found |= matches!(
+                n.as_str(),
+                "__dict__"
+                    | "__table__"
+                    | "__annotations__"
+                    | "__fields__"
+                    | "model_fields"
+                    | "_meta"
+            )
+        }
+        Expr::Call { func, .. } => found |= matches!(callee_name(func), "vars" | "dir"),
+        _ => {}
+    });
+    found
+}
+
+/// A literal list of names a form carries besides its data
+/// (`("csrf_token", "submit")`): skipping them allows every other field.
+fn only_form_fields(e: &Expr) -> bool {
+    let items = match e {
+        Expr::List(items) => items,
+        _ => return false,
+    };
+    !items.is_empty()
+        && items.iter().all(|i| {
+            first_literal(i).is_some_and(|s| {
+                let l = s.to_ascii_lowercase();
+                l.contains("csrf")
+                    || l.contains("token")
+                    || matches!(l.as_str(), "submit" | "action" | "_method" | "save")
+            })
+        })
 }
 
 fn stmt_span(s: &Stmt) -> Option<Span> {

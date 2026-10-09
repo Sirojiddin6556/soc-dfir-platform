@@ -398,6 +398,12 @@ def save_settings():
     db.session.add(Setting(request.form['key'], request.form['value']))
     db.session.commit()
     return render_template('admin.html')
+
+
+@app.route('/footer')
+def footer():
+    row = Setting.query.filter_by(key='footer').first()
+    return jinja2.Template(row.value).render()
 `,
   'web/item.php': `<?php
 $db = mysqli_connect('localhost', 'shop', 'secret', 'shop');
@@ -568,6 +574,7 @@ const CODE_EXPECTED = [
   'login-no-limit app/admin.py:6',
   'weak-password-hash app/admin.py:9',
   'csrf app/admin.py:14',
+  'stored-template-injection app/admin.py:26',
   'no-frame-protection app/views.py:5',
 ];
 const CODE_EXPECTED_TEST = 'command-injection tests/test_views.py:6';
@@ -635,7 +642,7 @@ async function checkCodeScan(page, base, shot, allowIpcError) {
     // flaws without any input.
     const sourced = (f) => f.source || (f.rule === 'buffer-overflow' && f.line === 14)
       || ['null-dereference', 'unchecked-null', 'use-after-free', 'double-free', 'hardcoded-secret', 'env-secret',
-        'login-no-limit', 'weak-password-hash', 'csrf', 'no-frame-protection'].includes(f.rule);
+        'login-no-limit', 'weak-password-hash', 'csrf', 'no-frame-protection', 'stored-template-injection'].includes(f.rule);
     check(report.findings.every((f) => f.trace.length > 0 && sourced(f) && f.snippet),
       'every finding has its source, data path and code line');
     check(report.test_files === 1, `the test file is counted as skipped (${report.test_files})`);
@@ -700,6 +707,11 @@ async function checkCodeScan(page, base, shot, allowIpcError) {
       `a logged-in form that saves data without a CSRF token is shown as CSRF (${csrfDetail.trim().split('\n')[0]})`);
     const loginRow = page.locator('#codeTable tr.vuln-row[data-file="app/admin.py"][data-line="6"]');
     check((await loginRow.textContent()).includes('CWE-307'), 'a login without a limit on attempts is shown');
+    const tplRow = page.locator('#codeTable tr.vuln-row[data-file="app/admin.py"][data-line="26"]');
+    await tplRow.click();
+    const tplDetail = await tplRow.locator('xpath=following-sibling::tr[1]').textContent();
+    check((await tplRow.textContent()).includes('CWE-1336') && tplDetail.includes('из сохранённых данных'),
+      `a template compiled from a database value is shown (${tplDetail.trim().split('\n')[0]})`);
     const other = await page.textContent('#codeOtherFiles');
     check(other.includes('.env 1') && other.includes('шаблоны 1'),
       `files no language reads are still checked and counted (${other.trim()})`);
