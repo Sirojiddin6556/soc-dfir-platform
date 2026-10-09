@@ -378,6 +378,27 @@ def ping():
     subprocess.run(['ping', '-c', '1', host], check=False)
     return 'ok'
 `,
+  'app/admin.py': `import hashlib
+from flask import request, session, redirect, render_template
+from app.views import app
+
+
+@app.route('/admin/login', methods=['POST'])
+def login():
+    user = load_admin(request.form['username'])
+    if user and user.pw == hashlib.sha256(request.form['password'].encode()).hexdigest():
+        session['admin'] = True
+    return redirect('/admin')
+
+
+@app.route('/admin/settings', methods=['POST'])
+def save_settings():
+    if 'admin' not in session:
+        return redirect('/admin')
+    db.session.add(Setting(request.form['key'], request.form['value']))
+    db.session.commit()
+    return render_template('admin.html')
+`,
   'web/item.php': `<?php
 $db = mysqli_connect('localhost', 'shop', 'secret', 'shop');
 $id = $_GET['id'];
@@ -544,6 +565,10 @@ const CODE_EXPECTED = [
   'integer-overflow cgi/upload.c:9',
   'hardcoded-secret app/settings.py:4',
   'env-secret .env:1',
+  'login-no-limit app/admin.py:6',
+  'weak-password-hash app/admin.py:9',
+  'csrf app/admin.py:14',
+  'no-frame-protection app/views.py:5',
 ];
 const CODE_EXPECTED_TEST = 'command-injection tests/test_views.py:6';
 
@@ -609,7 +634,8 @@ async function checkCodeScan(page, base, shot, allowIpcError) {
     // A string that does not fit, a NULL pointer and freed memory are
     // flaws without any input.
     const sourced = (f) => f.source || (f.rule === 'buffer-overflow' && f.line === 14)
-      || ['null-dereference', 'unchecked-null', 'use-after-free', 'double-free', 'hardcoded-secret', 'env-secret'].includes(f.rule);
+      || ['null-dereference', 'unchecked-null', 'use-after-free', 'double-free', 'hardcoded-secret', 'env-secret',
+        'login-no-limit', 'weak-password-hash', 'csrf', 'no-frame-protection'].includes(f.rule);
     check(report.findings.every((f) => f.trace.length > 0 && sourced(f) && f.snippet),
       'every finding has its source, data path and code line');
     check(report.test_files === 1, `the test file is counted as skipped (${report.test_files})`);
@@ -666,6 +692,14 @@ async function checkCodeScan(page, base, shot, allowIpcError) {
       'a default password in the code is shown as a secret, with the value hidden');
     check(!report.findings.some((f) => JSON.stringify(f).includes('Adm1n-2026!') || JSON.stringify(f).includes('9f8e7d6c5b4a3f2e1d0c')),
       'the engine report never carries a secret value');
+    // The application model: what each route does, read from its code.
+    const csrfRow = page.locator('#codeTable tr.vuln-row[data-file="app/admin.py"][data-line="14"]');
+    await csrfRow.click();
+    const csrfDetail = await csrfRow.locator('xpath=following-sibling::tr[1]').textContent();
+    check((await csrfRow.textContent()).includes('CWE-352') && csrfDetail.includes('токен CSRF не проверяется'),
+      `a logged-in form that saves data without a CSRF token is shown as CSRF (${csrfDetail.trim().split('\n')[0]})`);
+    const loginRow = page.locator('#codeTable tr.vuln-row[data-file="app/admin.py"][data-line="6"]');
+    check((await loginRow.textContent()).includes('CWE-307'), 'a login without a limit on attempts is shown');
     const other = await page.textContent('#codeOtherFiles');
     check(other.includes('.env 1') && other.includes('шаблоны 1'),
       `files no language reads are still checked and counted (${other.trim()})`);

@@ -601,6 +601,9 @@ impl Model for Python {
                 a0().sanitized(ctx::HTML)
             }
             "flask.Flask" => Value::Obj(Rc::new(Obj::new("flask.Flask"))),
+            "starlette.templating.Jinja2Templates" | "fastapi.templating.Jinja2Templates" => {
+                Value::Obj(Rc::new(Obj::new("starlette.Jinja2Templates")))
+            }
 
             // ---- outbound requests ----
             "requests.get"
@@ -1913,6 +1916,18 @@ fn obj_method(
         Some(Value::Obj(Rc::new(n)))
     };
     match &*o.class {
+        // Jinja escapes what a page template prints, as `render_template`.
+        "starlette.Jinja2Templates" if matches!(name, "TemplateResponse" | "get_template") => {
+            let page = args
+                .iter()
+                .filter(|a| a.name.is_none())
+                .find(|a| a.value.as_str().is_some_and(|s| s.contains('.')) || a.value.is_tainted())
+                .map(|a| a.value.clone())
+                .or_else(|| kwarg(args, "name").cloned())
+                .unwrap_or_else(Value::clean);
+            it.sink(&PATH, &page, span, name);
+            (Value::Obj(Rc::new(Obj::new("flask.Response"))), None)
+        }
         "configparser.ConfigParser" => match name {
             "set" => {
                 let (Some(s), Some(k)) = (

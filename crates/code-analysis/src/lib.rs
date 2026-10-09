@@ -12,6 +12,7 @@ pub mod project;
 pub mod rules;
 pub mod secrets;
 pub mod value;
+pub mod webapp;
 
 use serde::Serialize;
 
@@ -175,6 +176,15 @@ pub fn analyze_with(project: &project::Project, options: Options) -> Report {
     }
     let mut findings = std::mem::take(&mut interp.findings);
     findings.extend(text_findings(project, options));
+    findings.extend(webapp_findings(project, options));
+    // A password under MD5 is one finding: the password rule says more.
+    let password_hashes: std::collections::HashSet<(String, u32)> = findings
+        .iter()
+        .filter(|f| f.rule == "weak-password-hash")
+        .map(|f| (f.file.clone(), f.line))
+        .collect();
+    findings
+        .retain(|f| f.rule != "weak-hash" || !password_hashes.contains(&(f.file.clone(), f.line)));
     findings.sort_by(|a, b| {
         b.severity
             .cmp(&a.severity)
@@ -218,6 +228,44 @@ pub fn analyze_with(project: &project::Project, options: Options) -> Report {
         load_ms: 0,
         analysis_ms: started.elapsed().as_millis() as u64,
     }
+}
+
+/// Findings of the web application model: CSRF, changes on GET, logins
+/// without a limit on attempts and the like.
+fn webapp_findings(project: &project::Project, options: Options) -> Vec<rules::Finding> {
+    webapp::check(project, options.include_tests)
+        .into_iter()
+        .map(|h| {
+            let m = &project.modules[h.module];
+            let snippet = m.line_text(h.line);
+            let column = m
+                .source()
+                .lines()
+                .nth(h.line.saturating_sub(1) as usize)
+                .map(|l| (l.len() - l.trim_start().len()) as u32 + 1)
+                .unwrap_or(1);
+            let at = rules::Location {
+                file: m.path.clone(),
+                line: h.line,
+                column,
+                note: format!("сток: {}", h.what),
+            };
+            rules::Finding {
+                rule: h.rule.id.to_string(),
+                cwe: h.rule.cwe,
+                severity: h.rule.severity,
+                title: h.rule.title.to_string(),
+                message: format!("{}: {}", h.rule.title, h.what),
+                file: m.path.clone(),
+                line: h.line,
+                column,
+                snippet,
+                source: None,
+                trace: vec![at],
+                other_sources: Vec::new(),
+            }
+        })
+        .collect()
 }
 
 /// Findings of the checks that read files as text: secrets in code of

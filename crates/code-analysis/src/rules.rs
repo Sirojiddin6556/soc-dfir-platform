@@ -258,6 +258,71 @@ rule!(
     "Секрет в .env, который не исключён из git",
     0
 );
+rule!(CSRF, "csrf", 352, Medium, "Нет защиты от CSRF", 0);
+rule!(
+    STATE_CHANGE_GET,
+    "state-change-get",
+    352,
+    Medium,
+    "Данные меняются GET-запросом",
+    0
+);
+rule!(
+    LOGOUT_GET,
+    "logout-get",
+    352,
+    Low,
+    "Выход по GET-запросу",
+    0
+);
+rule!(
+    LOGIN_NO_LIMIT,
+    "login-no-limit",
+    307,
+    Medium,
+    "Вход без ограничения попыток",
+    0
+);
+rule!(
+    NO_FRAME_PROTECTION,
+    "no-frame-protection",
+    1021,
+    Low,
+    "Страницы можно встроить в чужой сайт",
+    0
+);
+rule!(
+    STATIC_SESSION,
+    "static-session-token",
+    330,
+    High,
+    "Постоянный токен сессии",
+    0
+);
+rule!(
+    TIMING_COMPARE,
+    "timing-unsafe-compare",
+    208,
+    Medium,
+    "Секрет сравнивается не за постоянное время",
+    0
+);
+rule!(
+    WEAK_PASSWORD_HASH,
+    "weak-password-hash",
+    916,
+    Medium,
+    "Пароль хешируется быстрой функцией",
+    0
+);
+rule!(
+    MASS_ASSIGNMENT,
+    "mass-assignment",
+    915,
+    Medium,
+    "Записываются все поля формы",
+    0
+);
 rule!(
     BUFFER_OVERFLOW,
     "buffer-overflow",
