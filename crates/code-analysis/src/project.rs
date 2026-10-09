@@ -1,8 +1,9 @@
 //! A set of source files analyzed together, so calls across files resolve.
 
+use crate::files::{self, TextFile};
 use crate::ir::Module;
 use crate::Language;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 
 /// Files larger than this are skipped: generated or minified code.
@@ -60,6 +61,10 @@ impl ModuleInfo {
         }
     }
 
+    pub fn source(&self) -> &str {
+        &self.source
+    }
+
     pub fn line_count(&self) -> usize {
         self.source.lines().count()
     }
@@ -75,6 +80,12 @@ pub struct Project {
     /// Values of keys in the project's `.properties` files, every value
     /// found for a key.
     pub config: HashMap<String, Vec<String>>,
+    /// Files no front end reads, checked as text.
+    pub texts: Vec<TextFile>,
+    /// `.gitignore` files: the directory and the text.
+    pub gitignores: Vec<(String, String)>,
+    /// Files neither analyzed nor checked as text, counted by reason.
+    pub unchecked: BTreeMap<String, usize>,
 }
 
 pub fn language_of(path: &Path) -> Option<Language> {
@@ -146,7 +157,15 @@ impl Project {
         let mut files = Vec::new();
         let mut skipped = Vec::new();
         let mut config_files = Vec::new();
-        walk(root, root, &mut files, &mut skipped, &mut config_files)?;
+        let mut unchecked = BTreeMap::new();
+        walk(
+            root,
+            root,
+            &mut files,
+            &mut skipped,
+            &mut config_files,
+            &mut unchecked,
+        )?;
         files.sort();
         let mut sources = Vec::new();
         for rel in files {
@@ -156,6 +175,9 @@ impl Project {
             }
             let full = root.join(&rel);
             match std::fs::read(&full) {
+                Ok(bytes) if language_of(&full).is_none() && !files::looks_like_text(&bytes) => {
+                    *unchecked.entry(BINARY.to_string()).or_default() += 1;
+                }
                 Ok(bytes) => sources.push((rel, String::from_utf8_lossy(&bytes).into_owned())),
                 Err(e) => skipped.push((rel, e.to_string())),
             }
@@ -171,6 +193,9 @@ impl Project {
             .collect();
         let mut project = Project::from_sources_with(sources, &dirs_with_init);
         project.skipped.extend(skipped);
+        for (k, n) in unchecked {
+            *project.unchecked.entry(k).or_default() += n;
+        }
         for rel in config_files {
             if let Ok(text) = std::fs::read_to_string(root.join(&rel)) {
                 project.add_properties(&text);
@@ -193,6 +218,7 @@ impl Project {
         let mut headers = CHeaders::new(&sources);
         for (path, source) in sources {
             let Some(lang) = language_of_source(Path::new(&path), &source) else {
+                project.add_text(path, source);
                 continue;
             };
             // C and C++ are parsed after preprocessing, which keeps lines
@@ -300,6 +326,33 @@ impl Project {
             }
         }
         project
+    }
+
+    /// Keeps a file no front end reads for the text checks.
+    fn add_text(&mut self, path: String, text: String) {
+        let name = path.rsplit('/').next().unwrap_or(&path);
+        if name == ".gitignore" {
+            let dir = path.rsplit_once('/').map(|(d, _)| d).unwrap_or("");
+            self.gitignores.push((dir.to_string(), text));
+            return;
+        }
+        let Some(kind) = files::text_kind(&path) else {
+            *self.unchecked.entry(BINARY.to_string()).or_default() += 1;
+            return;
+        };
+        if files::is_minified(&path, &text) {
+            *self
+                .unchecked
+                .entry("минифицированные".to_string())
+                .or_default() += 1;
+            return;
+        }
+        self.texts.push(TextFile {
+            is_test: is_test_path(&path),
+            path,
+            kind,
+            text,
+        });
     }
 
     /// Reads `key=value` / `key: value` lines of a Java properties file.
@@ -474,12 +527,17 @@ pub fn is_test_path(path: &str) -> bool {
     }
 }
 
+/// Why a file is neither analyzed nor checked: media, archives, compiled
+/// code and other binary data.
+const BINARY: &str = "двоичные и медиафайлы";
+
 fn walk(
     root: &Path,
     dir: &Path,
     out: &mut Vec<String>,
     skipped: &mut Vec<(String, String)>,
     config: &mut Vec<String>,
+    unchecked: &mut BTreeMap<String, usize>,
 ) -> std::io::Result<()> {
     let mut entries: Vec<_> = std::fs::read_dir(dir)?.filter_map(|e| e.ok()).collect();
     entries.sort_by_key(|e| e.file_name());
@@ -494,29 +552,38 @@ fn walk(
             if SKIP_DIRS.contains(&name.as_str()) || name.starts_with('.') && name.len() > 1 {
                 continue;
             }
-            walk(root, &path, out, skipped, config)?;
-        } else if ft.is_file() && name.ends_with(".properties") && config.len() < 1000 {
-            if entry
-                .metadata()
-                .map(|m| m.len() < 1024 * 1024)
-                .unwrap_or(false)
-            {
-                config.push(
-                    path.strip_prefix(root)
-                        .unwrap_or(&path)
-                        .to_string_lossy()
-                        .into_owned(),
-                );
+            walk(root, &path, out, skipped, config, unchecked)?;
+            continue;
+        }
+        if !ft.is_file() {
+            continue;
+        }
+        let rel = path
+            .strip_prefix(root)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        let size = entry.metadata().map(|m| m.len());
+        if name.ends_with(".properties")
+            && config.len() < 1000
+            && size.as_ref().is_ok_and(|n| *n < 1024 * 1024)
+        {
+            config.push(rel.clone());
+        }
+        if language_of(&path).is_some() {
+            match size {
+                Ok(n) if n > MAX_FILE_BYTES => skipped.push((rel, "файл слишком большой".into())),
+                Ok(_) => out.push(rel),
+                Err(e) => skipped.push((rel, e.to_string())),
             }
-        } else if ft.is_file() && language_of(&path).is_some() {
-            let rel = path
-                .strip_prefix(root)
-                .unwrap_or(&path)
-                .to_string_lossy()
-                .replace('\\', "/");
-            match entry.metadata() {
-                Ok(m) if m.len() > MAX_FILE_BYTES => {
-                    skipped.push((rel, "файл слишком большой".into()))
+        } else if name == ".gitignore" {
+            out.push(rel);
+        } else if files::text_kind(&rel).is_none() {
+            *unchecked.entry(BINARY.to_string()).or_default() += 1;
+        } else {
+            match size {
+                Ok(n) if n > files::MAX_TEXT_BYTES => {
+                    *unchecked.entry("слишком большие".to_string()).or_default() += 1;
                 }
                 Ok(_) => out.push(rel),
                 Err(e) => skipped.push((rel, e.to_string())),

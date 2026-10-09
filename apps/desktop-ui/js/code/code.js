@@ -219,6 +219,9 @@ export class CodeSpace {
       .join(', ');
     const parseErrors = report.parse_errors || [];
     const skipped = report.skipped || [];
+    const listCounts = pairs => (pairs || []).map(([what, n]) => `${what} ${n}`).join(', ');
+    const otherFiles = listCounts(report.other_files);
+    const uncheckedFiles = listCounts(report.unchecked_files);
     const rules = [...new Map(all.map(f => [f.rule, f.title])).entries()]
       .map(([rule, title]) => ({ rule, title, n: all.filter(f => f.rule === rule).length }))
       .sort((a, b) => b.n - a.n);
@@ -243,8 +246,10 @@ export class CodeSpace {
       </div>
       <div class="vuln-note" id="codeMeta">
         Проверено ${escapeHtml(formatDate(s.finished_at))}: <span class="vuln-mono">${escapeHtml(s.path)}</span>,
-        файлов ${escapeHtml(String(report.files))}${languages ? ` (${escapeHtml(languages)})` : ''}, строк ${escapeHtml(String(report.lines))},
+        файлов кода ${escapeHtml(String(report.files))}${languages ? ` (${escapeHtml(languages)})` : ''}, строк ${escapeHtml(String(report.lines))},
         за ${escapeHtml(duration(report.load_ms + report.analysis_ms))}.
+        ${otherFiles ? `<span id="codeOtherFiles">Остальные файлы проверены на секреты: ${escapeHtml(otherFiles)}.</span>` : ''}
+        ${uncheckedFiles ? `<span id="codeUncheckedFiles">Не проверялись: ${escapeHtml(uncheckedFiles)}.</span>` : ''}
         ${report.test_files ? `Тестовых файлов не проверялось: ${escapeHtml(String(report.test_files))}.` : ''}
         ${s.external_sources ? 'Аргументы, окружение и файлы считались входом атакующего.' : ''}
       </div>

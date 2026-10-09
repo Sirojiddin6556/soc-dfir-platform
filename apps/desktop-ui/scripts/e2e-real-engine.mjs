@@ -510,6 +510,17 @@ int main(void) {
     return 0;
 }
 `,
+  'app/settings.py': `import os
+
+ADMIN_USER = os.getenv("ADMIN_USER", "admin")
+ADMIN_PASS = os.getenv("ADMIN_PASS", "Adm1n-2026!")
+DB_PASS = os.getenv("DB_PASS")
+`,
+  '.env': `SESSION_SECRET=9f8e7d6c5b4a3f2e1d0c
+DEBUG=true
+`,
+  'templates/index.html': `<p>{{ name }}</p>
+`,
   'tests/test_views.py': `import os
 from flask import request
 
@@ -531,6 +542,8 @@ const CODE_EXPECTED = [
   'use-after-free cgi/session.c:19',
   'double-free cgi/session.c:24',
   'integer-overflow cgi/upload.c:9',
+  'hardcoded-secret app/settings.py:4',
+  'env-secret .env:1',
 ];
 const CODE_EXPECTED_TEST = 'command-injection tests/test_views.py:6';
 
@@ -596,7 +609,7 @@ async function checkCodeScan(page, base, shot, allowIpcError) {
     // A string that does not fit, a NULL pointer and freed memory are
     // flaws without any input.
     const sourced = (f) => f.source || (f.rule === 'buffer-overflow' && f.line === 14)
-      || ['null-dereference', 'unchecked-null', 'use-after-free', 'double-free'].includes(f.rule);
+      || ['null-dereference', 'unchecked-null', 'use-after-free', 'double-free', 'hardcoded-secret', 'env-secret'].includes(f.rule);
     check(report.findings.every((f) => f.trace.length > 0 && sourced(f) && f.snippet),
       'every finding has its source, data path and code line');
     check(report.test_files === 1, `the test file is counted as skipped (${report.test_files})`);
@@ -646,6 +659,16 @@ async function checkCodeScan(page, base, shot, allowIpcError) {
     check((await sumRow.textContent()).includes('CWE-190') && (await sumRow.textContent()).includes('getenv()')
       && sumDetail.includes('максимум int'),
       `a header number added to without a check is an integer overflow (${sumDetail.trim().split('\n')[0]})`);
+
+    const secretRow = page.locator('#codeTable tr.vuln-row[data-file="app/settings.py"][data-line="4"]');
+    const secretText = await secretRow.textContent();
+    check(secretText.includes('CWE-798') && secretText.includes('Ad••••••') && !secretText.includes('Adm1n-2026!'),
+      'a default password in the code is shown as a secret, with the value hidden');
+    check(!report.findings.some((f) => JSON.stringify(f).includes('Adm1n-2026!') || JSON.stringify(f).includes('9f8e7d6c5b4a3f2e1d0c')),
+      'the engine report never carries a secret value');
+    const other = await page.textContent('#codeOtherFiles');
+    check(other.includes('.env 1') && other.includes('шаблоны 1'),
+      `files no language reads are still checked and counted (${other.trim()})`);
 
     await page.selectOption('#codeRule', 'command-injection');
     const shown = await page.locator('#codeTable tr.vuln-row').count();

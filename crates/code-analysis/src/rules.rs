@@ -251,6 +251,14 @@ rule!(
     0
 );
 rule!(
+    ENV_SECRET,
+    "env-secret",
+    312,
+    Low,
+    "Секрет в .env, который не исключён из git",
+    0
+);
+rule!(
     BUFFER_OVERFLOW,
     "buffer-overflow",
     787,

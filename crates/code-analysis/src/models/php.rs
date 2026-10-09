@@ -1532,6 +1532,7 @@ pub const WORDPRESS: &[&str] = &[
     "do_action",
     "wp_redirect",
     "wp_safe_redirect",
+    "wp_validate_redirect",
     "wp_remote_get",
     "wp_remote_post",
     "wp_remote_head",
@@ -1674,6 +1675,8 @@ fn wordpress(it: &mut Interp, name: &str, args: &[ArgVal], span: Span) -> Option
         }
         // Checked against the allowed hosts.
         "wp_safe_redirect" => Value::Bool(true),
+        // The URL when its host is allowed, the fallback otherwise.
+        "wp_validate_redirect" => join(&a0.sanitized(ctx::URL), &a(args, 1)),
         "wp_remote_get" | "wp_remote_post" | "wp_remote_head" | "wp_remote_request"
         | "download_url" => {
             it.sink(&SSRF, &a0, span, name);
