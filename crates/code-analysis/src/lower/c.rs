@@ -672,8 +672,16 @@ impl<'s> Lower<'s> {
     fn block(&self, node: Node, out: &mut Vec<Stmt>) {
         if node.kind() == "compound_statement" {
             let start = out.len();
-            for c in named_children(node) {
-                self.stmt(c, out);
+            let items = named_children(node);
+            let mut i = 0;
+            while i < items.len() {
+                if let (Some(head), Some(body)) = (self.foreach_head(items[i]), items.get(i + 1)) {
+                    self.foreach(head, *body, out);
+                    i += 2;
+                    continue;
+                }
+                self.stmt(items[i], out);
+                i += 1;
             }
             // C++ objects made in the block are destroyed where it ends.
             let made: Vec<String> = out[start..]
@@ -702,6 +710,55 @@ impl<'s> Lower<'s> {
         } else {
             self.stmt(node, out);
         }
+    }
+
+    /// The macro call of a loop the preprocessor writes, which the parser
+    /// sees as a call missing its `;` before the loop body:
+    /// `TAILQ_FOREACH(item, &head, entry) { ... }`.
+    fn foreach_head<'t>(&self, node: Node<'t>) -> Option<Node<'t>> {
+        if node.kind() != "expression_statement"
+            || !node
+                .child(node.child_count().checked_sub(1)?)
+                .is_some_and(|semi| semi.is_missing() || semi.byte_range().is_empty())
+        {
+            return None;
+        }
+        let call = node
+            .named_child(0)
+            .filter(|c| c.kind() == "call_expression")?;
+        let name = self
+            .text(call.child_by_field_name("function")?)
+            .to_ascii_lowercase();
+        (name.contains("foreach") || name.contains("for_each")).then_some(call)
+    }
+
+    /// A macro loop: the body runs any number of times, with the variable
+    /// the macro steps (its first argument) set to an element.
+    fn foreach(&self, head: Node, body: Node, out: &mut Vec<Stmt>) {
+        let sp = span(head);
+        let saved = self.hoisted.take();
+        let test = self.expr(head);
+        out.extend(self.hoisted.replace(saved));
+        let mut stmts = Vec::new();
+        let var = head
+            .child_by_field_name("arguments")
+            .and_then(|a| a.named_child(0))
+            .filter(|a| a.kind() == "identifier");
+        if let Some(var) = var {
+            stmts.push(Stmt::Assign {
+                target: Target::Name(self.text(var).to_string()),
+                value: test.clone(),
+                span: sp,
+            });
+        }
+        self.block(body, &mut stmts);
+        out.push(Stmt::Loop {
+            target: None,
+            iter: None,
+            test: Some(test),
+            body: stmts,
+            span: sp,
+        });
     }
 
     fn stmts(&self, node: Option<Node>) -> Vec<Stmt> {
@@ -1378,6 +1435,16 @@ impl<'s> Lower<'s> {
     }
 
     /// Whether `name` is a pointer to a pointer here.
+    /// Whether `node` is a pointer to something that is not a pointer, and
+    /// not a fixed pointer to a variable (`p = &x`).
+    fn single_pointer(&self, node: Node) -> bool {
+        if node.kind() == "identifier" && self.alias_of(self.text(node)) != self.text(node) {
+            return false;
+        }
+        self.pointer_type(node)
+            .is_some_and(|t| !t.contains('(') && t.matches(['*', '[']).count() == 1)
+    }
+
     fn is_deep(&self, name: &str) -> bool {
         self.deep.borrow().last().is_some_and(|d| d.contains(name))
     }
@@ -1469,6 +1536,35 @@ impl<'s> Lower<'s> {
     /// finds its tail.
     fn label_tails(&self, body: Node) {
         let items = named_children(body);
+        // The tails run after the body's declarations: `*p` there reads
+        // through the `int *p` declared before the label.
+        let mut declared = HashMap::new();
+        let mut deep = self.deep.borrow().last().cloned().unwrap_or_default();
+        for item in items.iter().filter(|i| i.kind() == "declaration") {
+            let ty = item
+                .child_by_field_name("type")
+                .map(|t| self.text(t).to_string())
+                .unwrap_or_default();
+            for d in crate::lower::field_children(*item, "declarator") {
+                let (name, suffix) = self.declarator_name(d);
+                if name.is_empty() {
+                    continue;
+                }
+                let full = format!("{ty}{suffix}");
+                if is_deep_pointer(&full) {
+                    deep.insert(name.clone());
+                }
+                declared.insert(name, full);
+            }
+        }
+        self.declared.borrow_mut().push(declared);
+        self.deep.borrow_mut().push(deep);
+        self.lower_tails(&items);
+        self.deep.borrow_mut().pop();
+        self.declared.borrow_mut().pop();
+    }
+
+    fn lower_tails(&self, items: &[Node]) {
         for (k, item) in items.iter().enumerate().rev() {
             if item.kind() != "labeled_statement" {
                 continue;
@@ -1716,7 +1812,25 @@ impl<'s> Lower<'s> {
                     return Expr::Other(Vec::new());
                 };
                 let le = self.expr(l);
+                let mark = self.hoisted.borrow().len();
                 let re = self.expr(r);
+                // `!r || (err = r->type)`: what the right side does happens
+                // only when the left side did not decide.
+                if matches!(op, "&&" | "||" | "and" | "or") {
+                    let right = self.hoisted.borrow_mut().split_off(mark);
+                    if !right.is_empty() {
+                        let test = match op {
+                            "&&" | "and" => le.clone(),
+                            _ => Expr::Un(UnOp::Not, Box::new(le.clone())),
+                        };
+                        self.hoisted.borrow_mut().push(Stmt::If {
+                            test,
+                            then: right,
+                            other: Vec::new(),
+                            span: span(node),
+                        });
+                    }
+                }
                 match bin_op(op) {
                     Some(b) => Expr::Bin(b, Box::new(le), Box::new(re)),
                     None => Expr::Other(vec![le, re]),
@@ -1731,7 +1845,15 @@ impl<'s> Lower<'s> {
                     .child_by_field_name("operator")
                     .map(|o| self.text(o))
                     .unwrap_or("");
+                // `!p` of a pointer is `p == NULL`: where it holds, `p` is
+                // NULL, not just zero.
+                let pointer = node
+                    .child_by_field_name("argument")
+                    .is_some_and(|a| a.kind() == "identifier" && self.single_pointer(a));
                 match op {
+                    "!" | "not" if pointer => {
+                        Expr::Bin(BinOp::Eq, Box::new(arg), Box::new(Expr::Lit(Const::None)))
+                    }
                     "!" | "not" => Expr::Un(UnOp::Not, Box::new(arg)),
                     "-" => Expr::Un(UnOp::Neg, Box::new(arg)),
                     "+" => Expr::Un(UnOp::Pos, Box::new(arg)),
@@ -1752,12 +1874,21 @@ impl<'s> Lower<'s> {
                         .then(|| self.declared_type(self.text(a)))
                         .flatten()
                         .filter(|t| small_int_range(t).is_some());
-                    if let Some(t) = small {
-                        return Expr::Cast(t, Box::new(self.expr(a)));
-                    }
-                    return self.place(a);
+                    let place = match small {
+                        Some(t) => Expr::Cast(t, Box::new(self.expr(a))),
+                        None => self.place(a),
+                    };
+                    return Expr::Un(UnOp::Addr, Box::new(place));
                 }
                 let v = self.expr(a);
+                // A pointer to a pointer holds what it points to (`&s`
+                // passes `s`), so only a read through the last pointer is
+                // one the program could find NULL.
+                let v = if self.single_pointer(a) {
+                    Expr::Un(UnOp::Deref, Box::new(v))
+                } else {
+                    v
+                };
                 match self.pointee_int(a) {
                     Some(t) => Expr::Cast(t, Box::new(v)),
                     None => v,
@@ -1867,6 +1998,10 @@ impl<'s> Lower<'s> {
                     if let Some(n) = size_of_type(&base_type(t)) {
                         return Expr::Lit(Const::Int(n));
                     }
+                }
+                // The operand is not run: `sizeof(p->name)` with `p` NULL.
+                if !matches!(v, Expr::Name(_)) {
+                    return call("sizeof", Vec::new(), sp);
                 }
                 call("sizeof", vec![v], sp)
             }
@@ -2164,10 +2299,11 @@ fn is_place(e: &Expr) -> bool {
     }
 }
 
-/// `e` without the integer type a read through a pointer gives it.
+/// `e` without the integer type a read through a pointer gives it, and
+/// without the read: `p` for `*p`.
 fn uncast(e: &Expr) -> &Expr {
     match e {
-        Expr::Cast(_, inner) => uncast(inner),
+        Expr::Cast(_, inner) | Expr::Un(UnOp::Deref, inner) => uncast(inner),
         e => e,
     }
 }

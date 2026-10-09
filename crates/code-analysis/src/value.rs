@@ -200,8 +200,9 @@ pub struct Buf {
     /// Where it was declared or allocated.
     pub module: usize,
     pub at: Span,
-    /// An allocation not yet checked for NULL; an array never is NULL.
-    pub nullable: bool,
+    /// The allocator (`malloc`), while its result is not yet checked for
+    /// NULL; an array never is NULL.
+    pub nullable: Option<&'static str>,
 }
 
 impl Buf {
@@ -587,7 +588,7 @@ impl Value {
                     .then_some(first)
             }
             Value::Range(lo, hi, _, _) => (*lo > 0 || *hi < 0).then_some(true),
-            Value::Buf(b) => (!b.nullable).then_some(true),
+            Value::Buf(b) => b.nullable.is_none().then_some(true),
             Value::Unknown(_) | Value::Ref(..) => None,
         }
     }
@@ -749,7 +750,7 @@ pub fn join(a: &Value, b: &Value) -> Value {
                 len: (x.len.0.min(y.len.0), x.len.1.max(y.len.1)),
                 len_sure: x.len_is_sure() && y.len_is_sure(),
                 content: join(&x.content, &y.content),
-                nullable: x.nullable || y.nullable,
+                nullable: x.nullable.or(y.nullable),
                 ..(**x).clone()
             }))
         }

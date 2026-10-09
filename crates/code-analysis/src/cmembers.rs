@@ -180,7 +180,7 @@ impl<'a> Found<'a> {
             Expr::Call { func: f, args, .. } => {
                 if let Expr::Name(callee) = &**f {
                     for (k, a) in args.iter().enumerate() {
-                        if let Expr::Name(n) = &a.value {
+                        if let Expr::Name(n) = crate::ir::underef(&a.value) {
                             self.calls.push((func, callee.clone(), k, n.clone()));
                         }
                     }

@@ -234,7 +234,7 @@ pub fn array(it: &mut Interp, args: &[ArgVal], span: Span) -> Value {
         content,
         module,
         at: span,
-        nullable: false,
+        nullable: None,
     }));
     if let Some(place) = args.first().and_then(|a| a.place.clone()) {
         it.assign_expr(&place, b.clone(), span);
@@ -288,10 +288,7 @@ pub fn alloc(it: &mut Interp, name: &str, args: &[ArgVal], span: Span) -> Option
         content,
         module,
         at: span,
-        nullable: !matches!(
-            name,
-            "alloca" | "_alloca" | "__builtin_alloca" | "operator new" | "__c_new_array"
-        ),
+        nullable: crate::models::cnull::allocator(name),
     })))
 }
 
@@ -385,10 +382,14 @@ pub fn binop(op: BinOp, l: &Value, r: &Value) -> Option<Value> {
             return Some(moved(b, k, 1))
         }
         (Sub, Value::Buf(b), k) if numeric(k) => return Some(moved(b, k, -1)),
+        // A pointer set to 0 is NULL.
+        (Eq | NotEq, Value::None, Value::Int(0)) | (Eq | NotEq, Value::Int(0), Value::None) => {
+            return Some(Value::Bool(op == Eq))
+        }
         // An array or a checked allocation is not NULL.
         (Eq | NotEq, Value::Buf(b), Value::None | Value::Int(0))
         | (Eq | NotEq, Value::None | Value::Int(0), Value::Buf(b))
-            if !b.nullable =>
+            if b.nullable.is_none() =>
         {
             return Some(Value::Bool(op == NotEq))
         }

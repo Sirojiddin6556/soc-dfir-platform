@@ -435,6 +435,32 @@ int main(void) {
     return name[0] + safe[0] + tag[0];
 }
 `,
+  'cgi/users.c': `#include <stdlib.h>
+#include <string.h>
+
+struct user { char *name; struct user *next; };
+
+static struct user *find(struct user *list, const char *name) {
+    for (; list; list = list->next)
+        if (strcmp(list->name, name) == 0)
+            return list;
+    return NULL;
+}
+
+int main(void) {
+    struct user *list = NULL;
+    struct user *admin = find(list, "admin");
+    char *copy = malloc(64);
+    strcpy(copy, "guest");
+    char *checked = malloc(64);
+    if (!checked)
+        return 1;
+    strcpy(checked, "guest");
+    if (admin != NULL)
+        checked[0] = admin->name[0];
+    return admin->name[0] + copy[0] + checked[0];
+}
+`,
   'tests/test_views.py': `import os
 from flask import request
 
@@ -451,6 +477,8 @@ const CODE_EXPECTED = [
   'command-injection cgi/report.c:8',
   'buffer-overflow cgi/name.c:11',
   'buffer-overflow cgi/name.c:14',
+  'unchecked-null cgi/users.c:17',
+  'null-dereference cgi/users.c:24',
 ];
 const CODE_EXPECTED_TEST = 'command-injection tests/test_views.py:6';
 
@@ -511,8 +539,10 @@ async function checkCodeScan(page, base, shot, allowIpcError) {
     console.log(`  engine: ${found.join(', ')}; files ${report.files}, ${report.load_ms + report.analysis_ms} ms`);
     check(JSON.stringify([...found].sort()) === JSON.stringify([...CODE_EXPECTED].sort()),
       `engine reports exactly the planted flaws, not the safe calls or the test (${found.length})`);
-    // A string that does not fit is a flaw without any input.
-    const sourced = (f) => f.source || (f.rule === 'buffer-overflow' && f.line === 14);
+    // A string that does not fit and a NULL pointer are flaws without any
+    // input.
+    const sourced = (f) => f.source || (f.rule === 'buffer-overflow' && f.line === 14)
+      || f.rule === 'null-dereference' || f.rule === 'unchecked-null';
     check(report.findings.every((f) => f.trace.length > 0 && sourced(f) && f.snippet),
       'every finding has its source, data path and code line');
     check(report.test_files === 1, `the test file is counted as skipped (${report.test_files})`);
@@ -538,6 +568,15 @@ async function checkCodeScan(page, base, shot, allowIpcError) {
     const constantDetail = await constant.locator('xpath=following-sibling::tr[1]').textContent();
     check(constantDetail.includes('записывает 6 байт в буфер размером 4 байта'),
       `a string longer than its array says by how much (${constantDetail.trim().split('\n')[0]})`);
+
+    const nullRow = page.locator('#codeTable tr.vuln-row[data-file="cgi/users.c"][data-line="24"]');
+    check((await nullRow.textContent()).includes('Разыменование нулевого указателя'),
+      'a pointer NULL on every path to its use is shown as a NULL dereference');
+    const unchecked = page.locator('#codeTable tr.vuln-row[data-file="cgi/users.c"][data-line="17"]');
+    await unchecked.click();
+    const uncheckedDetail = await unchecked.locator('xpath=following-sibling::tr[1]').textContent();
+    check((await unchecked.textContent()).includes('CWE-690') && uncheckedDetail.includes('malloc() в строке 16'),
+      `a malloc result used before a check names the allocation (${uncheckedDetail.trim().split('\n')[0]})`);
 
     await page.selectOption('#codeRule', 'command-injection');
     const shown = await page.locator('#codeTable tr.vuln-row').count();

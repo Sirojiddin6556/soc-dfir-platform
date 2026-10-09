@@ -57,6 +57,12 @@ pub enum UnOp {
     Neg,
     Pos,
     BitNot,
+    /// C `*p`: what a pointer points to. The interpreter keeps a pointer
+    /// and what it points to as one value, so this only marks the read.
+    Deref,
+    /// C `&x`: a pointer to `x`, which is never NULL. Its value is `x`'s
+    /// (see `Deref`).
+    Addr,
 }
 
 #[derive(Debug, Clone)]
@@ -106,6 +112,14 @@ pub enum Expr {
     Lambda(Rc<Function>),
     /// Anything else: its sub-expressions still carry data.
     Other(Vec<Expr>),
+}
+
+/// The variable a C `*p` reads through or `&x` points to, or `e` itself.
+pub fn underef(e: &Expr) -> &Expr {
+    match e {
+        Expr::Un(UnOp::Deref | UnOp::Addr, x) => underef(x),
+        e => e,
+    }
 }
 
 #[derive(Debug, Clone)]

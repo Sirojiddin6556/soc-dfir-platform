@@ -32,6 +32,12 @@ pub struct ArgVal {
     /// (`buf` for `buf + n`, `(char *) buf` or `&buf[0]`), which functions
     /// that fill a buffer write.
     pub place: Option<Expr>,
+    /// C: the argument is `&x`, a pointer that is not NULL whatever `x`
+    /// holds.
+    pub addressed: bool,
+    /// C: the argument is NULL on every path to the call (see
+    /// `Interp::null_source`).
+    pub null_sure: bool,
 }
 
 impl ArgVal {
@@ -42,6 +48,8 @@ impl ArgVal {
             spread: false,
             var: None,
             place: None,
+            addressed: false,
+            null_sure: false,
         }
     }
 }
@@ -252,13 +260,22 @@ struct Frame {
     /// Variables of a module's top level where it returned or exited:
     /// a PHP script that ends with `exit` still defined them.
     exit_env: Option<Env>,
-    /// C pointer and reference parameters, with their values where the
-    /// function returned having changed them, and on entry.
-    outs: Vec<(Rc<str>, Option<Value>, Option<Value>)>,
+    /// C pointer and reference parameters.
+    outs: Vec<Out>,
     /// C globals where the function returned.
     exit_globals: Option<HashMap<Rc<str>, Value>>,
     /// `break` and `continue` statements run so far.
     jumps: usize,
+    /// Branches being run whose condition the analysis could not decide.
+    guesses: usize,
+    /// Of those, branches it took on what a field or element holds, which
+    /// code it did not follow may have changed (`if (ts->items == 0)`).
+    on_memory: usize,
+    /// Local variables last set to NULL for certain (see `null_source`),
+    /// with `guesses` at the time.
+    null_at: HashMap<Rc<str>, usize>,
+    /// Pointer parameters given `&x`: not NULL until assigned.
+    addressed: HashSet<Rc<str>>,
 }
 
 enum Globals {
@@ -325,6 +342,9 @@ pub struct Interp<'p> {
     /// Pointer and reference parameters a C function changed, by argument
     /// position, for the caller to write back (see `run_function`).
     c_outs: Vec<(usize, Value)>,
+    /// A function of the project ran (or a summary of it replayed) since
+    /// the flag was cleared: the call being made was followed.
+    ran: bool,
     /// See `crate::cmembers`.
     c_members: Option<Rc<HashMap<String, Vec<String>>>>,
     /// Calls through a struct member run on a guess at its function (see
@@ -346,6 +366,33 @@ type CIndex = Rc<HashMap<String, Vec<CDef>>>;
 
 /// A call's result: its value, the receiver it left, the C out
 /// parameters it changed and the C globals it set.
+/// A C pointer or reference parameter, through which the function may give
+/// the caller a value.
+struct Out {
+    name: Rc<str>,
+    /// Its value where the function returned having changed it.
+    last: Option<Value>,
+    /// Its value on entry.
+    entry: Option<Value>,
+    /// Whether the function assigned it.
+    written: bool,
+    /// Whether the function returned somewhere without changing it.
+    kept: bool,
+}
+
+/// `Frame::null_at` and `Frame::addressed`.
+type NullMarks = (HashMap<Rc<str>, usize>, HashSet<Rc<str>>);
+
+/// What holds after two branches that both went on.
+fn join_null_marks(a: NullMarks, b: NullMarks) -> NullMarks {
+    let null_at =
+        a.0.into_iter()
+            .filter_map(|(k, at)| b.0.get(&k).map(|bt| (k, at.min(*bt))))
+            .collect();
+    let addressed = a.1.intersection(&b.1).cloned().collect();
+    (null_at, addressed)
+}
+
 type Memo = (
     Value,
     Option<Value>,
@@ -400,6 +447,7 @@ impl<'p> Interp<'p> {
             c_defs: None,
             c_globals: HashMap::new(),
             c_outs: Vec::new(),
+            ran: false,
             c_members: None,
             guessed: 0,
             c_globals_taint: Taint::clean(),
@@ -878,9 +926,62 @@ impl<'p> Interp<'p> {
         }
     }
 
+    /// Sets `name`. A parameter given `&x` stays one: as a pointer and
+    /// what it points to are one value, `*valp = NULL` sets it too.
     pub fn set_var(&mut self, name: &str, value: Value) {
-        if let Some(env) = self.frame().env.as_mut() {
+        let f = self.frame();
+        if matches!(value, Value::None) {
+            let at = f.guesses;
+            f.null_at.insert(name.into(), at);
+        }
+        if let Some(env) = f.env.as_mut() {
             env.insert(name.into(), value);
+        }
+    }
+
+    /// What the frame knows of NULL pointers (see `null_here`), saved
+    /// around a branch: like the variables, each branch sets its own.
+    fn null_marks(&mut self) -> NullMarks {
+        let f = self.frame();
+        (f.null_at.clone(), f.addressed.clone())
+    }
+
+    fn set_null_marks(&mut self, marks: NullMarks) {
+        let f = self.frame();
+        (f.null_at, f.addressed) = marks;
+    }
+
+    /// Whether the local variable `name`, now NULL, is NULL on every path
+    /// to here: no branch the analysis guessed at was entered since it was
+    /// set (`p = NULL; if (prev == q) p->n++;` is not).
+    pub fn null_here(&self, name: &str) -> bool {
+        let Some(f) = self.frames.last() else {
+            return false;
+        };
+        self.is_local(name) && f.null_at.get(name).is_some_and(|at| *at >= f.guesses)
+    }
+
+    /// Whether the parameter `name` was given `&x`, a pointer that is not
+    /// NULL.
+    pub fn addressed(&self, name: &str) -> bool {
+        self.frames
+            .last()
+            .is_some_and(|f| f.addressed.contains(name))
+    }
+
+    /// Whether `e`, which is NULL, is NULL for certain: the NULL constant, a
+    /// call's result, a local variable NULL on every path here, or a global
+    /// this run set. Not a field or an element, which code the analysis
+    /// did not follow may have set.
+    fn null_source(&self, e: &Expr) -> bool {
+        match e {
+            Expr::Lit(Const::None) | Expr::Call { .. } => true,
+            // `&p` passes `p`'s value on (see `UnOp::Addr`).
+            Expr::Cast(_, x) | Expr::Un(UnOp::Addr, x) => self.null_source(x),
+            Expr::Name(n) => {
+                self.null_here(n) || (!self.is_local(n) && self.c_globals.contains_key(n.as_str()))
+            }
+            _ => false,
         }
     }
 
@@ -918,16 +1019,24 @@ impl<'p> Interp<'p> {
     // ----- statements -----
 
     pub fn exec_block(&mut self, stmts: &[Stmt]) {
+        // A branch taken on a field (see `exec_if`) is a guess for the rest
+        // of the block.
+        let depth = self.frames.len();
+        let guesses = self.frames.last().map(|f| (f.guesses, f.on_memory));
         for s in stmts {
             if !self.live() {
-                return;
+                break;
             }
             self.steps += 1;
             if self.steps > MAX_STEPS {
                 self.cutoffs += 1;
-                return;
+                break;
             }
             self.exec(s);
+        }
+        if let Some((g, m)) = guesses.filter(|_| self.frames.len() == depth) {
+            let f = self.frame();
+            (f.guesses, f.on_memory) = (g, m);
         }
     }
 
@@ -940,7 +1049,16 @@ impl<'p> Interp<'p> {
             } => {
                 self.frame().span = *span;
                 let v = self.eval(value);
+                let unsure = match target {
+                    Target::Name(n) if self.in_c() && matches!(v, Value::None) => {
+                        (!self.null_source(value)).then(|| n.clone())
+                    }
+                    _ => None,
+                };
                 self.assign(target, v, *span);
+                if let Some(n) = unsure {
+                    self.frame().null_at.remove(n.as_str());
+                }
             }
             Stmt::Declare {
                 name,
@@ -958,7 +1076,12 @@ impl<'p> Interp<'p> {
                 if secret_name(name) {
                     self.sink(&WEAK_RANDOM, &v, *span, name);
                 }
+                let unsure = matches!(v, Value::None)
+                    && !value.as_ref().is_some_and(|e| self.null_source(e));
                 self.set_var(name, v);
+                if unsure {
+                    self.frame().null_at.remove(name.as_str());
+                }
             }
             Stmt::Expr(e, span) => {
                 self.frame().span = *span;
@@ -1025,7 +1148,17 @@ impl<'p> Interp<'p> {
             }
             Stmt::Return(e, span) => {
                 self.frame().span = *span;
-                let v = e.as_ref().map(|e| self.eval(e)).unwrap_or(Value::None);
+                let mut v = e.as_ref().map(|e| self.eval(e)).unwrap_or(Value::None);
+                // `if (ts->items == 0) return NULL;` and `return s->bufr;`
+                // return NULL only as far as the analysis knows the field.
+                if matches!(v, Value::None)
+                    && self.in_c()
+                    && e.as_ref().is_some_and(|e| {
+                        pointer_expr(e) && (self.frame_ref().on_memory > 0 || !self.null_source(e))
+                    })
+                {
+                    v = Value::OneOf(Rc::new(vec![Value::None, Value::clean()]));
+                }
                 let func = self.frames.last().and_then(|f| f.func.clone());
                 if let Some(func) = func.filter(|f| makes_secret(&f.name)) {
                     self.sink(&WEAK_RANDOM, &v, *span, &format!("{}()", func.name));
@@ -1131,16 +1264,33 @@ impl<'p> Interp<'p> {
             }
         }
         if let Some(env) = &f.env {
-            for (name, last, entry) in f.outs.iter_mut() {
+            for Out {
+                name,
+                last,
+                entry,
+                written,
+                kept,
+            } in f.outs.iter_mut()
+            {
                 // `if (!(tp = realloc(...))) return -1; *dp = tp;`: a path
                 // that leaves the caller's pointer alone does not undo the
-                // others, whose result the caller goes on with.
-                let Some(v) = env
+                // others, whose result the caller goes on with. A NULL
+                // the function only checked for (`if (p == NULL) return 0;`)
+                // is not one it gives back.
+                let Some(mut v) = env
                     .get(name.as_ref())
                     .filter(|v| Some(*v) != entry.as_ref())
+                    .filter(|v| *written || !matches!(v, Value::None))
                 else {
+                    *kept = true;
                     continue;
                 };
+                // Given back NULL as far as the analysis knows a field.
+                let unsure;
+                if f.on_memory > 0 && matches!(v, Value::None) {
+                    unsure = Value::OneOf(Rc::new(vec![Value::None, Value::clean()]));
+                    v = &unsure;
+                }
                 *last = Some(match last.take() {
                     None => v.clone(),
                     Some(prev) => join(&prev, v),
@@ -1149,40 +1299,70 @@ impl<'p> Interp<'p> {
         }
     }
 
+    /// Whether `e` is a parameter given `&x` while `x` is NULL. The pointer
+    /// is not NULL though `x` is, and as the two are one value, a test of
+    /// either (`if (value)`, `*value != NULL`) is a guess.
+    fn addressed_null(&mut self, e: &Expr) -> bool {
+        matches!(e, Expr::Name(n) if self.addressed(n) && matches!(self.get_var(n), Some(Value::None)))
+    }
+
+    /// The value of a condition.
+    fn eval_test(&mut self, e: &Expr) -> Value {
+        if self.addressed_null(e) {
+            return Value::clean();
+        }
+        self.eval(e)
+    }
+
     fn exec_if(&mut self, test: &Expr, then: &[Stmt], other: &[Stmt]) {
-        let cond = self.eval(test);
+        let cond = self.eval_test(test);
         match cond.truthy() {
-            Some(true) => {
-                self.refine(test, true);
-                self.exec_block(then);
-            }
-            Some(false) => {
-                self.refine(test, false);
-                self.exec_block(other);
+            Some(truth) => {
+                // The analysis may not know what code it did not follow
+                // stored in the field: a NULL set or returned from here on
+                // (`if (q->head) return 1; *pbuf = NULL;`) is not NULL for
+                // certain.
+                if self.in_c() && reads_memory(test) {
+                    self.frame().guesses += 1;
+                    self.frame().on_memory += 1;
+                }
+                self.refine(test, truth);
+                self.exec_block(if truth { then } else { other });
             }
             None => {
                 let saved = self.frame().env.clone();
                 let saved_globals = self.c_globals.clone();
+                let saved_marks = self.null_marks();
                 let jumps = self.frame().jumps;
+                self.frame().guesses += 1;
                 self.refine(test, true);
                 self.exec_block(then);
                 let after_then = self.frame().env.take();
                 // A branch that returned left its globals with the frame.
                 let then_returned = after_then.is_none() && self.frame().jumps == jumps;
                 let then_globals = std::mem::replace(&mut self.c_globals, saved_globals);
+                let then_marks = self.null_marks();
+                self.set_null_marks(saved_marks);
                 self.frame().env = saved;
                 let jumps = self.frame().jumps;
                 self.refine(test, false);
                 self.exec_block(other);
+                self.frame().guesses -= 1;
                 let after_other = self.frame().env.take();
                 let other_returned = after_other.is_none() && self.frame().jumps == jumps;
                 self.frame().env = join_env(after_then, after_other);
                 let other_globals = std::mem::take(&mut self.c_globals);
+                let other_marks = self.null_marks();
                 self.c_globals = match (then_returned, other_returned) {
                     (true, false) => other_globals,
                     (false, true) => then_globals,
                     _ => join_globals(then_globals, other_globals),
                 };
+                self.set_null_marks(match (then_returned, other_returned) {
+                    (true, false) => other_marks,
+                    (false, true) => then_marks,
+                    _ => join_null_marks(then_marks, other_marks),
+                });
             }
         }
     }
@@ -1193,7 +1373,7 @@ impl<'p> Interp<'p> {
         let Expr::Bin(op, l, r) = test else {
             return None;
         };
-        let (var, op, bound) = match (&**l, &**r) {
+        let (var, op, bound) = match (underef(l), underef(r)) {
             (Expr::Name(v), b) => (v.as_str(), *op, b),
             (b, Expr::Name(v)) => (
                 v.as_str(),
@@ -1294,16 +1474,24 @@ impl<'p> Interp<'p> {
         });
         for pass in 0..2 {
             self.frame().env = state.clone();
+            // A body that may run no times is a guess.
+            let mut guessed = false;
             if let Some(t) = test {
                 self.at(span);
-                let c = self.eval(t);
+                let c = self.eval_test(t);
                 match c.truthy() {
                     Some(false) => {
                         exits = join_env(exits, self.frame().env.take());
                         break;
                     }
                     Some(true) => first_true |= pass == 0,
-                    None => exits = join_env(exits, self.frame().env.clone()),
+                    None => {
+                        exits = join_env(exits, self.frame().env.clone());
+                        guessed = true;
+                    }
+                }
+                if guessed {
+                    self.frame().guesses += 1;
                 }
                 self.refine(t, true);
             }
@@ -1314,6 +1502,9 @@ impl<'p> Interp<'p> {
                 self.set_var(&c.var, c.inside.clone());
             }
             self.exec_block(body);
+            if guessed {
+                self.frame().guesses -= 1;
+            }
             let end = self.frame().env.take();
             let cont = self
                 .frame()
@@ -1410,6 +1601,7 @@ impl<'p> Interp<'p> {
             continues: None,
             is_switch: true,
         });
+        let mut guessed = false;
         for case in cases {
             let matched = if case.patterns.is_empty() {
                 Some(true)
@@ -1442,7 +1634,15 @@ impl<'p> Interp<'p> {
             }
             self.frame().env = entry;
             let globals_before = (matched != Some(true)).then(|| self.c_globals.clone());
+            // A case after one the analysis could not decide is a guess too.
+            guessed |= matched.is_none();
+            if guessed {
+                self.frame().guesses += 1;
+            }
             self.exec_block(&case.body);
+            if guessed {
+                self.frame().guesses -= 1;
+            }
             if let Some(before) = globals_before {
                 let after = std::mem::take(&mut self.c_globals);
                 self.c_globals = join_globals(before, after);
@@ -1476,6 +1676,11 @@ impl<'p> Interp<'p> {
                 if secret_name(n) {
                     self.sink(&WEAK_RANDOM, &value, span, n);
                 }
+                if let Some(f) = self.frames.last_mut() {
+                    for out in f.outs.iter_mut().filter(|o| *o.name == **n) {
+                        out.written = true;
+                    }
+                }
                 self.forget_paths(n);
                 if self.in_c() && self.live() && !self.is_local(n) {
                     // A field of `this`, or a global variable.
@@ -1500,6 +1705,7 @@ impl<'p> Interp<'p> {
                     self.sink(&WEAK_RANDOM, &value, span, field);
                 }
                 let base = self.eval(obj);
+                let base = self.c_deref(obj, base);
                 match &base {
                     Value::Obj(o) => {
                         let mut o = (**o).clone();
@@ -1535,13 +1741,14 @@ impl<'p> Interp<'p> {
                 }
             }
             Target::Index(base_e, key_e) => {
-                if let Expr::Name(n) = &**base_e {
+                if let Expr::Name(n) = underef(base_e) {
                     self.forget_paths(n);
                 }
                 let base = self.eval(base_e);
+                let base = self.c_deref(base_e, base);
                 let key = self.eval(key_e);
                 let key_name = key.as_str().unwrap_or_default();
-                let store = match &**base_e {
+                let store = match underef(base_e) {
                     Expr::Name(n) | Expr::Attr(_, n) => n.as_str(),
                     _ => "",
                 };
@@ -1587,11 +1794,24 @@ impl<'p> Interp<'p> {
         }
     }
 
+    /// `e`, with the value `v`, read through as a C pointer: reports a
+    /// NULL one (see `cnull::deref`) and gives the value the program goes
+    /// on with.
+    fn c_deref(&mut self, e: &Expr, v: Value) -> Value {
+        if !self.in_c() {
+            return v;
+        }
+        crate::models::cnull::deref(self, Some(e), v, None)
+    }
+
     /// Writes a changed receiver back to the place it was read from.
     pub fn assign_expr(&mut self, e: &Expr, value: Value, span: Span) {
         if let (Expr::Cast(ty, inner), true) = (e, self.in_c()) {
             let model = self.model();
             let value = model.coerce(self, ty, value);
+            return self.assign_expr(inner, value, span);
+        }
+        if let Expr::Un(UnOp::Deref | UnOp::Addr, inner) = e {
             return self.assign_expr(inner, value, span);
         }
         let target = match e {
@@ -1680,6 +1900,17 @@ impl<'p> Interp<'p> {
                 {
                     self.c_globals.insert(var, refined);
                 }
+                // A field of `this` in a C++ method: the object keeps the
+                // check (`if (data == NULL) exit(1);` in a constructor).
+                None if self.in_c() && !self.is_local(&var) => match self.this_field_of(&var) {
+                    Some(this) => {
+                        let t =
+                            Target::Attr(Box::new(Expr::Name(this.to_string())), var.to_string());
+                        let span = self.span();
+                        self.assign(&t, refined, span);
+                    }
+                    None => self.set_var(&var, refined),
+                },
                 None => self.set_var(&var, refined),
             }
         }
@@ -1714,6 +1945,7 @@ impl<'p> Interp<'p> {
     fn collect_facts(&mut self, e: &Expr, truth: bool, out: &mut Vec<(Rc<str>, Fact)>) {
         match e {
             Expr::Un(UnOp::Not, inner) => self.collect_facts(inner, !truth, out),
+            Expr::Un(UnOp::Deref | UnOp::Addr, inner) => self.collect_facts(inner, truth, out),
             Expr::Bin(BinOp::And, a, b) if truth => {
                 self.collect_facts(a, true, out);
                 self.collect_facts(b, true, out);
@@ -1771,19 +2003,30 @@ impl<'p> Interp<'p> {
             }
             Expr::Bin(op @ (BinOp::Eq | BinOp::NotEq | BinOp::Is | BinOp::IsNot), l, r) => {
                 if matches!(op, BinOp::Eq | BinOp::Is) == truth {
+                    // `p == q` makes `p` NULL only where `q` is NULL for
+                    // certain (see `null_source`).
+                    let c = self.in_c();
+                    let known = |it: &Self, v: &Value, e: &Expr| {
+                        is_const(v) && !(c && matches!(v, Value::None) && !it.null_source(e))
+                    };
                     let rv = self.eval(r);
-                    if is_const(&rv) {
+                    if known(self, &rv, r) {
                         self.fact_on(l, Fact::OneOf(vec![rv]), out);
                     } else {
                         let lv = self.eval(l);
-                        if is_const(&lv) {
+                        if known(self, &lv, l) {
                             self.fact_on(r, Fact::OneOf(vec![lv]), out);
                         }
                     }
                 } else if self.in_c() {
                     // `n != -1`: a C integer is not that value; `p != NULL`:
-                    // a pointer is not NULL.
-                    match (self.eval(l), self.eval(r)) {
+                    // a pointer is not NULL. A call the test made reports
+                    // nothing more when run again here: `buf && read(fd,
+                    // buf, n) != n`.
+                    self.guessed += 1;
+                    let sides = (self.eval(l), self.eval(r));
+                    self.guessed -= 1;
+                    match sides {
                         (_, Value::Int(k)) => self.fact_on(l, Fact::Not(k), out),
                         (Value::Int(k), _) => self.fact_on(r, Fact::Not(k), out),
                         (_, Value::None) => self.fact_on(l, Fact::Not(0), out),
@@ -1878,7 +2121,7 @@ impl<'p> Interp<'p> {
     /// Attaches a fact to the variable an expression reads, looking through
     /// conversions like `str(p)` and attribute checks like `url.netloc`.
     fn fact_on(&mut self, e: &Expr, fact: Fact, out: &mut Vec<(Rc<str>, Fact)>) {
-        match e {
+        match underef(e) {
             Expr::Name(n) => out.push((n.as_str().into(), fact)),
             Expr::Index(..) => {
                 // `is_numeric($octet[0])`, `preg_match('/^\d+$/', $_GET['id'])`
@@ -2002,6 +2245,16 @@ impl<'p> Interp<'p> {
         match e {
             Expr::Lit(c) => const_value(c),
             Expr::Name(n) => match self.get_var(n).or_else(|| self.lookup_global(n)) {
+                // A C global is NULL only where this run set it so: other
+                // functions may have set it before this one runs.
+                Some(Value::None)
+                    if self.in_c()
+                        && self.frame_ref().func.is_some()
+                        && !self.is_local(n)
+                        && !self.c_globals.contains_key(n.as_str()) =>
+                {
+                    Value::clean()
+                }
                 Some(v) => v,
                 None => {
                     let model = self.model();
@@ -2010,6 +2263,7 @@ impl<'p> Interp<'p> {
             },
             Expr::Attr(base, name) => {
                 let b = self.eval(base);
+                let b = self.c_deref(base, b);
                 self.get_attr(&b, name)
             }
             Expr::Index(base, key) => {
@@ -2026,6 +2280,7 @@ impl<'p> Interp<'p> {
                     }
                 }
                 let b = self.eval(base);
+                let b = self.c_deref(base, b);
                 let k = self.eval(key);
                 self.index(&b, &k)
             }
@@ -2065,27 +2320,66 @@ impl<'p> Interp<'p> {
             // The right operand runs only when the left one decided nothing:
             // `ok(f) && use(f)`, `!ok(f) || use(f)`.
             Expr::Bin(op @ (BinOp::And | BinOp::Or), l, r) => {
-                let lv = self.eval(l);
+                let lv = self.eval_test(l);
                 let and = *op == BinOp::And;
                 match lv.truthy() {
                     Some(t) if t != and => lv,
-                    Some(_) => self.eval(r),
+                    Some(_) => self.eval_test(r),
                     None => {
                         let saved = self.frame().env.clone();
+                        let saved_marks = self.null_marks();
+                        self.frame().guesses += 1;
                         self.refine(l, and);
-                        let rv = self.eval(r);
-                        self.frame().env = saved;
+                        // `a() || b(&x)`: what the right side stores may have
+                        // happened; what the left side's check found holds
+                        // only there.
+                        let refined = self.in_c().then(|| self.frame().env.clone());
+                        let rv = self.eval_test(r);
+                        self.frame().guesses -= 1;
+                        let after = self.frame().env.take();
+                        self.frame().env = match (saved, refined.flatten(), after) {
+                            (Some(mut saved), Some(refined), Some(after)) => {
+                                for (k, v) in after {
+                                    if refined.get(&k) != Some(&v) {
+                                        let joined = match saved.get(&k) {
+                                            Some(s) => join(s, &v),
+                                            None => v,
+                                        };
+                                        saved.insert(k, joined);
+                                    }
+                                }
+                                Some(saved)
+                            }
+                            (saved, ..) => saved,
+                        };
+                        self.set_null_marks(saved_marks);
                         join(&lv, &rv)
                     }
                 }
+            }
+            Expr::Bin(op @ (BinOp::Eq | BinOp::NotEq), l, r)
+                if self.in_c()
+                    && match (&**l, &**r) {
+                        (x, Expr::Lit(Const::None)) | (Expr::Lit(Const::None), x) => {
+                            self.addressed_null(x)
+                        }
+                        _ => false,
+                    } =>
+            {
+                Value::clean()
             }
             Expr::Bin(op, l, r) => {
                 let lv = self.eval(l);
                 let rv = self.eval(r);
                 self.binop(*op, &lv, &rv)
             }
-            Expr::Un(op, inner) => {
+            Expr::Un(UnOp::Deref, inner) => {
                 let v = self.eval(inner);
+                self.c_deref(inner, v)
+            }
+            Expr::Un(UnOp::Addr, inner) => self.eval(inner),
+            Expr::Un(op, inner) => {
+                let v = self.eval_test(inner);
                 match (op, &v) {
                     (UnOp::Not, v) => match v.truthy() {
                         Some(b) => Value::Bool(!b),
@@ -2108,13 +2402,15 @@ impl<'p> Interp<'p> {
                 concat(&vals)
             }
             Expr::Cond { test, then, other } => {
-                let t = self.eval(test);
+                let t = self.eval_test(test);
                 match t.truthy() {
                     Some(true) => self.eval(then),
                     Some(false) => self.eval(other),
                     None => {
+                        self.frame().guesses += 1;
                         let a = self.eval(then);
                         let b = self.eval(other);
+                        self.frame().guesses -= 1;
                         join(&a, &b)
                     }
                 }
@@ -2189,15 +2485,23 @@ impl<'p> Interp<'p> {
             if let Some(name) = a.name.as_deref().filter(|n| secret_name(n)) {
                 self.sink(&WEAK_RANDOM, &value, span, name);
             }
+            let null_sure = c && matches!(value, Value::None) && self.null_source(&a.value);
             out.push(ArgVal {
                 name: a.name.as_deref().map(Rc::from),
                 value,
                 spread: a.spread,
-                var: match &a.value {
+                var: match underef(&a.value) {
                     Expr::Name(n) => Some(n.as_str().into()),
                     _ => None,
                 },
                 place: if c { c_place(&a.value) } else { None },
+                addressed: match uncast(&a.value) {
+                    Expr::Un(UnOp::Addr, _) => true,
+                    // Passed on: `raxFind(r, s, n, value)`.
+                    Expr::Name(n) => c && self.addressed(n),
+                    _ => false,
+                },
+                null_sure,
             });
         }
         out
@@ -2206,8 +2510,10 @@ impl<'p> Interp<'p> {
     fn eval_call(&mut self, func: &Expr, args: &[Arg], span: Span) -> Value {
         let argv = self.eval_args(args, span);
         self.c_outs.clear();
+        self.ran = false;
         let v = if let Expr::Attr(recv_e, name) = func {
             let recv = self.eval(recv_e);
+            let recv = self.c_deref(recv_e, recv);
             let (v, new_recv) = self.call_method(&recv, name, &argv, span);
             if let Some(nr) = new_recv {
                 self.assign_expr(recv_e, nr, span);
@@ -2221,6 +2527,20 @@ impl<'p> Interp<'p> {
         for (i, value) in std::mem::take(&mut self.c_outs) {
             if let Some(place) = argv.get(i).and_then(|a| a.place.as_ref()) {
                 self.assign_expr(place, value, span);
+            }
+        }
+        // A function the analysis did not follow may set the pointer `&p`
+        // points to: `raxFind(rax, key, len, &found)`.
+        if !self.ran {
+            for a in argv
+                .iter()
+                .filter(|a| a.addressed && matches!(a.value, Value::None))
+            {
+                if let Some(place) = &a.place {
+                    if matches!(self.eval(place), Value::None) {
+                        self.assign_expr(place, Value::clean(), span);
+                    }
+                }
             }
         }
         v
@@ -2788,22 +3108,26 @@ impl<'p> Interp<'p> {
             let t =
                 args_taint(args).union(&fv.bound.as_ref().map(|b| b.taint()).unwrap_or_default());
             // A C array is followed a little further: its size is known only
-            // where it was declared.
+            // where it was declared. So is a NULL pointer, or a result not
+            // checked for NULL, which the callee may read through.
+            let c = matches!(
+                self.project.modules[fv.module].lang,
+                crate::Language::C | crate::Language::Cpp
+            );
             let sized = self.frames.len() < QUIET_DEPTH + 3
                 && args.iter().any(|a| {
-                    a.value
-                        .alternatives()
-                        .iter()
-                        .any(|v| matches!(v, Value::Buf(_)))
+                    a.value.alternatives().iter().any(|v| match v {
+                        Value::Buf(_) => true,
+                        Value::None => c,
+                        Value::Ref(n, _) => c && crate::models::cnull::unchecked(n).is_some(),
+                        _ => false,
+                    })
                 });
             if !t.is_tainted() && !sized {
                 // C globals the skipped function sets are no longer known:
                 // a sentinel it would replace (`first_free = -1`) must not
                 // stay exact.
-                if matches!(
-                    self.project.modules[fv.module].lang,
-                    crate::Language::C | crate::Language::Cpp
-                ) {
+                if c {
                     for g in set_globals(&fv.def) {
                         self.c_globals
                             .insert(g.into(), Value::Unknown(Taint::clean()));
@@ -2814,6 +3138,7 @@ impl<'p> Interp<'p> {
         }
         let key = self.memo_key(fv, args);
         if let Some((v, s, outs, set)) = key.as_ref().and_then(|k| self.memo.get(k)).cloned() {
+            self.ran = true;
             merge_outs(&mut self.c_outs, &outs);
             // `first_free = i;` in a function called before with the same
             // arguments happens again.
@@ -2894,10 +3219,13 @@ impl<'p> Interp<'p> {
         }
         for a in args {
             let name = a.name.as_deref().unwrap_or("");
+            // `&p` and a NULL for certain run the callee differently.
             let _ = write!(
                 key,
-                ",{}{}:{name}",
+                ",{}{}{}{}:{name}",
                 if a.spread { "*" } else { "" },
+                if a.addressed { "&" } else { "" },
+                if a.null_sure { "!" } else { "" },
                 name.len()
             );
             fingerprint(&a.value, &mut key)?;
@@ -2924,6 +3252,8 @@ impl<'p> Interp<'p> {
             }
         }
         let mut spread_taint: Option<Taint> = None;
+        let mut sure_nulls: Vec<Rc<str>> = Vec::new();
+        let mut addressed: HashSet<Rc<str>> = HashSet::new();
         let mut positional = args.iter().filter(|a| a.name.is_none());
         for p in &params[idx..] {
             if let Some(a) = args
@@ -2953,6 +3283,12 @@ impl<'p> Interp<'p> {
                 }
                 Some(a) => {
                     env.insert(p.name.as_str().into(), a.value.clone());
+                    if a.null_sure {
+                        sure_nulls.push(Rc::from(p.name.as_str()));
+                    }
+                    if a.addressed {
+                        addressed.insert(Rc::from(p.name.as_str()));
+                    }
                 }
                 None => {
                     if let Some(t) = &spread_taint {
@@ -2991,11 +3327,16 @@ impl<'p> Interp<'p> {
         frame.scope = Scope::of_body(&fv.def.body, fv.scope.clone());
         frame.self_name = self_name;
         frame.span = span;
+        frame.null_at = sure_nulls.into_iter().map(|n| (n, 0)).collect();
+        frame.addressed = addressed;
         frame.outs = outs
             .iter()
-            .map(|(_, n)| {
-                let entry = frame.env.as_ref().and_then(|e| e.get(n.as_ref())).cloned();
-                (n.clone(), None, entry)
+            .map(|(_, n)| Out {
+                name: n.clone(),
+                last: None,
+                entry: frame.env.as_ref().and_then(|e| e.get(n.as_ref())).cloned(),
+                written: false,
+                kept: false,
             })
             .collect();
         self.frames.push(frame);
@@ -3020,6 +3361,7 @@ impl<'p> Interp<'p> {
         let route = model.route(self, fv.module, &fv.def);
         self.frame().route = route;
         self.calls.push((caller_module, span));
+        self.ran = true;
         self.exec_block(&fv.def.body);
         self.calls.pop();
         if self.live() {
@@ -3029,7 +3371,13 @@ impl<'p> Interp<'p> {
         self.globals_at_exit(&frame);
         let positional: Vec<&ArgVal> = args.iter().filter(|a| a.name.is_none()).collect();
         let mut changed = Vec::new();
-        for (((i, _), (_, v, _)), copy) in outs.iter().zip(frame.outs).zip(by_value) {
+        for (((i, _), out), copy) in outs.iter().zip(frame.outs).zip(by_value) {
+            // NULL on the paths that changed the pointer, and what it was
+            // on the others.
+            let v = match (out.last, out.entry) {
+                (Some(Value::None), Some(entry)) if out.kept => Some(join(&Value::None, &entry)),
+                (v, _) => v,
+            };
             if let (Some(v), Some(a)) = (v, positional.get(*i)) {
                 // `*dst++ = c` moves the callee's copy of the pointer only:
                 // the caller's still points where it did, at what the
@@ -3737,6 +4085,10 @@ impl Frame {
             outs: Vec::new(),
             exit_globals: None,
             jumps: 0,
+            guesses: 0,
+            on_memory: 0,
+            null_at: HashMap::new(),
+            addressed: HashSet::new(),
         }
     }
 }
@@ -3854,7 +4206,7 @@ fn c_place(e: &Expr) -> Option<Expr> {
         {
             Some(e.clone())
         }
-        Expr::Cast(_, x) => c_place(x),
+        Expr::Cast(_, x) | Expr::Un(UnOp::Deref | UnOp::Addr, x) => c_place(x),
         Expr::Bin(BinOp::Add | BinOp::Sub, l, _) => c_place(l),
         Expr::Index(b, _) => c_place(b),
         _ => None,
@@ -4514,6 +4866,39 @@ fn target_names(t: &Target, out: &mut Vec<String>) {
     }
 }
 
+/// Whether `e` may give a pointer, not a number computed from one: `NULL`,
+/// `p`, `s->bufr`, `f()`, not `12 + digits10(v)`.
+fn pointer_expr(e: &Expr) -> bool {
+    matches!(
+        uncast(e),
+        Expr::Lit(Const::None)
+            | Expr::Name(_)
+            | Expr::Attr(..)
+            | Expr::Index(..)
+            | Expr::Un(UnOp::Deref, _)
+            | Expr::Call { .. }
+    )
+}
+
+/// `e` without the casts around it: `(void **)&p`.
+fn uncast(e: &Expr) -> &Expr {
+    match e {
+        Expr::Cast(_, x) => uncast(x),
+        e => e,
+    }
+}
+
+/// Whether the test reads a field, an element or what a pointer points to,
+/// besides through the calls it makes.
+fn reads_memory(e: &Expr) -> bool {
+    match e {
+        Expr::Attr(..) | Expr::Index(..) | Expr::Un(UnOp::Deref, _) => true,
+        Expr::Bin(_, l, r) => reads_memory(l) || reads_memory(r),
+        Expr::Un(_, x) | Expr::Cast(_, x) => reads_memory(x),
+        _ => false,
+    }
+}
+
 fn expr_names(e: &Expr, out: &mut Vec<String>) {
     match e {
         Expr::Name(n) => out.push(n.clone()),
@@ -4614,15 +4999,27 @@ fn narrow_numbers(cur: &Value, facts: &[Fact], c: bool) -> Option<Value> {
             Value::Range(a, b, t, _) => (*a, *b, t.clone()),
             Value::Unknown(t) => (i64::MIN, i64::MAX, t.clone()),
             // Checked for NULL.
-            Value::Buf(b) if b.nullable && facts.iter().any(|f| matches!(f, Fact::Not(0))) => {
+            Value::Buf(b)
+                if b.nullable.is_some() && facts.iter().any(|f| matches!(f, Fact::Not(0))) =>
+            {
                 return Some(Value::Buf(Rc::new(Buf {
-                    nullable: false,
+                    nullable: None,
                     ..(**b).clone()
                 })))
             }
             // `if (!p)`: what may be NULL is NULL there.
             Value::Buf(b) if c && facts.iter().any(|f| matches!(f, Fact::Bounds(0, 0))) => {
-                return b.nullable.then_some(Value::None)
+                return b.nullable.map(|_| Value::None)
+            }
+            // A result of `fopen()` checked for NULL is the stream it opened.
+            Value::Ref(name, t) if c && crate::models::cnull::unchecked(name).is_some() => {
+                if facts.iter().any(|f| matches!(f, Fact::Not(0))) {
+                    return Some(Value::Unknown(t.clone()));
+                }
+                if facts.iter().any(|f| matches!(f, Fact::Bounds(0, 0))) {
+                    return Some(Value::None);
+                }
+                return Some(v.clone());
             }
             _ => return Some(v.clone()),
         };
@@ -4713,7 +5110,7 @@ fn path_key(e: &Expr) -> Option<String> {
     let Expr::Index(base, key) = e else {
         return None;
     };
-    let Expr::Name(n) = &**base else {
+    let Expr::Name(n) = underef(base) else {
         return None;
     };
     match &**key {
@@ -4725,7 +5122,7 @@ fn path_key(e: &Expr) -> Option<String> {
 
 /// `ctx.qry.path` for a chain of fields on a name.
 fn place_key(e: &Expr) -> Option<String> {
-    match e {
+    match underef(e) {
         Expr::Name(n) => Some(n.clone()),
         Expr::Attr(b, f) => place_key(b).map(|k| format!("{k}.{f}")),
         _ => None,
@@ -4734,7 +5131,7 @@ fn place_key(e: &Expr) -> Option<String> {
 
 /// The variable an expression is rooted at (`x`, `x.y`, `x[0]`).
 pub fn root_var(e: &Expr) -> Option<Rc<str>> {
-    match e {
+    match underef(e) {
         Expr::Name(n) => Some(n.as_str().into()),
         _ => None,
     }

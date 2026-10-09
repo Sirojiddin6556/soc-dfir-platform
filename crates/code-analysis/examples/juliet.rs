@@ -31,6 +31,8 @@ fn rule_for(cwe: &str) -> Option<&'static str> {
         "CWE90" => "ldap-injection",
         "CWE121" | "CWE122" | "CWE124" => "buffer-overflow",
         "CWE126" | "CWE127" => "buffer-overread",
+        "CWE476" => "null-dereference",
+        "CWE690" => "unchecked-null",
         _ => return None,
     })
 }

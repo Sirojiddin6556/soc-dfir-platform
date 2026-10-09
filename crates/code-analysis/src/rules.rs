@@ -267,6 +267,22 @@ rule!(
     0
 );
 rule!(
+    NULL_DEREF,
+    "null-dereference",
+    476,
+    Medium,
+    "Разыменование нулевого указателя",
+    0
+);
+rule!(
+    NULL_RETURN,
+    "unchecked-null",
+    690,
+    Medium,
+    "Результат не проверен на NULL",
+    0
+);
+rule!(
     FORMAT_STRING,
     "format-string",
     134,

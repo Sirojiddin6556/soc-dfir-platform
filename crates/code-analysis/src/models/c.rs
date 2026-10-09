@@ -15,7 +15,7 @@
 
 use crate::interp::{args_taint, ArgVal, Fact, FactOn, Interp, Model};
 use crate::ir::{BinOp, Function, Param, Span};
-use crate::models::cmem;
+use crate::models::{cmem, cnull};
 use crate::rules::*;
 use crate::value::*;
 
@@ -556,6 +556,8 @@ fn initialized(it: &mut Interp, ty: &str, value: Value) -> Value {
 }
 
 fn function(it: &mut Interp, name: &str, args: &[ArgVal], span: Span) -> Value {
+    let checked = cnull::check_call(it, name, args);
+    let args = checked.as_deref().unwrap_or(args);
     let a0 = a(args, 0);
     cmem::check_call(it, name, args, span);
     // printf family: the format must be a fixed string.
@@ -585,6 +587,13 @@ fn function(it: &mut Interp, name: &str, args: &[ArgVal], span: Span) -> Value {
             it.sink(&PATH, &a(args, i), span, name);
         }
         // A stream from a name the user chose reads what they chose.
+        if matches!(
+            name,
+            "fopen" | "_wfopen" | "freopen" | "_wfreopen" | "fopen64"
+        ) {
+            // NULL when the file cannot be opened.
+            return cnull::maybe_null(name, a0.taint());
+        }
         return Value::Unknown(a0.taint());
     }
     match name {
@@ -769,11 +778,13 @@ fn function(it: &mut Interp, name: &str, args: &[ArgVal], span: Span) -> Value {
         }
         "__c_new_array" | "malloc" | "calloc" | "_alloca" | "alloca" | "operator new"
         | "__builtin_alloca" | "valloc" => {
-            cmem::alloc(it, name, args, span).unwrap_or_else(Value::clean)
+            cmem::alloc(it, name, args, span).unwrap_or_else(|| match cnull::allocator(name) {
+                Some(f) => cnull::maybe_null(f, Taint::clean()),
+                None => Value::clean(),
+            })
         }
-        "realloc" => {
-            cmem::alloc(it, name, args, span).unwrap_or_else(|| Value::Unknown(a0.taint()))
-        }
+        "realloc" => cmem::alloc(it, name, args, span)
+            .unwrap_or_else(|| cnull::maybe_null("realloc", a0.taint())),
         // `delete p` and the end of the block declaring an object run its
         // destructor.
         "__c_delete" | "__c_destroy" => {
