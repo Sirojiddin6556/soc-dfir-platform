@@ -30,6 +30,7 @@ host-snapshot = { path = "../host-snapshot" }
 scan-engine = { path = "../scan-engine" }
 vulnerability-engine = { path = "../vulnerability-engine" }
 code-analysis = { path = "../code-analysis" }
+web-scan = { path = "../web-scan" }
 
 
 uuid = { workspace = true, features = ["v7"] }

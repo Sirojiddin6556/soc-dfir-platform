@@ -27,6 +27,7 @@ pub mod scenario_eval;
 pub mod scope;
 pub mod target_parser;
 pub mod vulndb;
+pub mod web_scan;
 
 pub use http::{bind_server, handle_connection, run_embedded_server, run_server_loop};
 
@@ -53,6 +54,7 @@ pub struct EngineApp {
     pub login_throttle: auth::LoginThrottle,
     pub vulndb: Arc<vulndb::VulnDbService>,
     pub code_scan: Arc<code_scan::CodeScanService>,
+    pub web_scan: Arc<web_scan::WebScanService>,
 }
 
 impl EngineApp {
@@ -115,6 +117,7 @@ impl EngineApp {
             job_engine: core_domain::ctf::LocalJobEngine::new(),
             login_throttle: auth::LoginThrottle::new(),
             code_scan: Arc::new(code_scan::CodeScanService::new(vulndb.clone())),
+            web_scan: Arc::new(web_scan::WebScanService::new()),
             vulndb,
         }
     }

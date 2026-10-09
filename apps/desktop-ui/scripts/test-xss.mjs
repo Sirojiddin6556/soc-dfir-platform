@@ -221,6 +221,7 @@ const { TerminalView } = await load('ctf/components/terminal_view.js');
 const { RecipeBuilder } = await load('ctf/components/recipe_builder.js');
 const { CtfApp } = await load('ctf/ctf_app.js');
 const { CodeSpace } = await load('code/code.js');
+const { WebSpace } = await load('web/web.js');
 
 // ---------------------------------------------------------------------------
 // Harness
@@ -478,6 +479,47 @@ await sink('code analysis dependency block (ecosystems, unpinned, imports, error
   space.depsError = v;
   space.renderDeps();
   return `${root.querySelector('#codeDeps').innerHTML}\n${space.packagesTable(status.report.dependency_check)}`;
+});
+
+console.log('\n=== Running site (DAST) ===');
+// URLs, parameter names, evidence snippets and the reproduction request all
+// come from the scanned site's own responses, which the attacker controls;
+// a reflected-XSS evidence string literally contains injected markup.
+const webStatus = (v, extra = {}) => ({
+  running: false, target: v, started_at: '2026-01-01T00:00:00Z', finished_at: '2026-01-01T00:00:05Z', error: null,
+  report: {
+    target: v, pages_crawled: 3, forms_found: 2, requests_made: 10, authenticated: true,
+    notes: [v], duration_ms: 50,
+    findings: [{
+      rule: v, cwe: v, severity: v, title: v, message: v, url: v, method: v, param: v,
+      evidence: v, request: v, request_detail: { method: v, url: v, body: v }
+    }]
+  },
+  ...extra
+});
+async function webSpace(status, setup = () => {}) {
+  const space = new WebSpace({ call: async () => status });
+  setup(space);
+  const root = freshEl();
+  await space.render(root);
+  return { space, root };
+}
+await sink('running-site findings (url, param, evidence, repro request)', async (v) => {
+  const { root } = await webSpace(webStatus(v));
+  return root.querySelector('#webResultPanel').innerHTML;
+});
+await sink('running-site form (remembered url and login fields in value attrs)', async (v) => {
+  const { space, root } = await webSpace({ running: false, report: null }, (s) => { s.url = v; s.useLogin = true; });
+  space.renderResult();
+  return root.innerHTML;
+});
+await sink('running-site progress (running target, engine error)', async (v) => {
+  const { space, root } = await webSpace(webStatus(v, { running: true, report: null }));
+  space.stopPolling();
+  const running = root.querySelector('#webProgress').innerHTML;
+  space.status = webStatus(v, { error: v, report: null });
+  space.renderProgress();
+  return `${running}\n${root.querySelector('#webProgress').innerHTML}`;
 });
 
 console.log('\n=== CTF ===');

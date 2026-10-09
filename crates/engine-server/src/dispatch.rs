@@ -284,6 +284,17 @@ impl EngineApp {
                 let res = Ok::<_, ProblemDetails>(self.code_scan.status());
                 respond_res(req.request_id, res)
             }
+            "web.scan" => {
+                let res = self
+                    .web_scan
+                    .start(&req.params)
+                    .map_err(|e| ProblemDetails::bad_request(&e, vec!["url".to_string()]));
+                respond_res(req.request_id, res)
+            }
+            "web.status" => {
+                let res = Ok::<_, ProblemDetails>(self.web_scan.status());
+                respond_res(req.request_id, res)
+            }
             "code.deps" => {
                 let code_scan = self.code_scan.clone();
                 let res = tokio::task::spawn_blocking(move || code_scan.recheck_dependencies())

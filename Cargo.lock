@@ -1029,6 +1029,7 @@ dependencies = [
  "ureq",
  "uuid",
  "vulnerability-engine",
+ "web-scan",
  "workflow-dag",
  "zip",
 ]
@@ -4371,6 +4372,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "81941cd78d0c92026c33e5e01312845a4cb1e9af3407f9134b100dd03144103e"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "web-scan"
+version = "0.1.0"
+dependencies = [
+ "percent-encoding",
+ "regex",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "ureq",
+ "url",
+ "uuid",
 ]
 
 [[package]]

@@ -833,6 +833,117 @@ async function checkCodeScan(page, base, shot, allowIpcError) {
   }
 }
 
+/** A tiny, deliberately vulnerable site the scanner is pointed at. */
+async function startVulnerableSite() {
+  const http = await import('node:http');
+  const decode = (s) => { try { return decodeURIComponent(s.replace(/\+/g, ' ')); } catch { return s; } };
+  const param = (query, name) => {
+    for (const pair of query.split('&')) {
+      const [k, v] = pair.split('=');
+      if (k === name) return decode(v || '');
+    }
+    return '';
+  };
+  const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  const server = http.createServer((req, res) => {
+    const [pathname, query = ''] = req.url.split('?');
+    const html = (body, headers = {}) => {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', ...headers });
+      res.end(body);
+    };
+    switch (pathname) {
+      case '/':
+        return html(
+          `<html><body>
+            <a href="/search?q=hi">search</a>
+            <a href="/item?id=1">item</a>
+            <a href="/page?file=home.txt">page</a>
+            <a href="/go?next=/dashboard">go</a>
+            <a href="/safe?q=hi">safe</a>
+          </body></html>`,
+          { 'Set-Cookie': 'session=abc; Path=/', Server: 'nginx/1.18.0' }
+        );
+      case '/search':
+        return html(`<html><body>Нашли: ${param(query, 'q')}</body></html>`); // unescaped -> XSS
+      case '/safe':
+        return html(`<html><body>Safe: ${esc(param(query, 'q'))}</body></html>`); // escaped -> clean
+      case '/item': {
+        const id = param(query, 'id');
+        if (id.includes("'")) { res.writeHead(500); return res.end('sqlite3.OperationalError: near "\'" : syntax error'); }
+        return html('<html><body>item</body></html>');
+      }
+      case '/page': {
+        const file = param(query, 'file');
+        if (file.includes('etc/passwd')) { res.writeHead(200, { 'Content-Type': 'text/plain' }); return res.end('root:x:0:0:root:/root:/bin/bash\n'); }
+        return html('<html><body>home</body></html>');
+      }
+      case '/go':
+        res.writeHead(302, { Location: param(query, 'next') });
+        return res.end('redirecting');
+      default:
+        res.writeHead(404);
+        return res.end('nope');
+    }
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address();
+  return { url: `http://127.0.0.1:${port}/`, close: () => new Promise((r) => server.close(r)) };
+}
+
+async function checkWebScan(page, base, shot) {
+  const token = await page.evaluate(() => localStorage.getItem('soc_session_token'));
+  const rpc = async (method, params = {}) => {
+    const r = await fetch(`${base}/rpc`, {
+      method: 'POST',
+      body: JSON.stringify({ api_version: 1, request_id: 't', method, params: { ...params, token } }),
+    });
+    return r.json();
+  };
+  const anon = await fetch(`${base}/rpc`, {
+    method: 'POST',
+    body: JSON.stringify({ api_version: 1, request_id: 't', method: 'web.scan', params: { url: 'http://127.0.0.1:1/' } }),
+  });
+  check(anon.status === 401, 'web.scan without a session is refused (it makes requests from the engine machine)');
+
+  const site = await startVulnerableSite();
+  try {
+    await page.click('.global-nav button[data-space="web"]');
+    await page.waitForSelector('#webUrl');
+    const empty = await page.waitForSelector('#webEmpty', { timeout: 15000 }).then(() => true, () => false);
+    check(empty, 'running-site space opens with no scan yet');
+
+    await page.fill('#webUrl', site.url);
+    await page.click('#webScanBtn');
+    await page.waitForFunction(() => {
+      const btn = document.getElementById('webScanBtn');
+      return btn && !btn.disabled && document.getElementById('webSummary');
+    }, null, { timeout: 120000 });
+
+    const status = (await rpc('web.status')).result;
+    check(!status.running && !status.error, `scan finished (${status.error || 'no error'})`);
+    const rules = [...new Set(status.report.findings.map((f) => f.rule))].sort();
+    console.log(`  engine: ${rules.join(', ')} across ${status.report.pages_crawled} pages, ${status.report.requests_made} requests`);
+    for (const rule of ['reflected-xss', 'sql-injection', 'path-traversal', 'open-redirect', 'clickjacking', 'cookie-flags', 'version-disclosure']) {
+      check(rules.includes(rule), `engine finds ${rule} on the running site`);
+    }
+    check(!status.report.findings.some((f) => f.rule === 'reflected-xss' && f.url.includes('/safe')),
+      'the escaped endpoint is not a false XSS');
+    check(status.report.findings.every((f) => f.request.startsWith('curl')), 'every finding carries a repro request');
+    check(status.report.findings.every((f) => f.url.includes('127.0.0.1')), 'the scan stays on the target origin');
+
+    const cards = await page.locator('.web-finding').count();
+    check(cards > 0, `UI shows finding cards (${cards})`);
+    const xssCard = page.locator('.web-finding', { hasText: 'Отражённый XSS' }).first();
+    check((await xssCard.locator('.web-finding-repro pre').textContent()).includes('curl'),
+      'a finding card shows how to repeat the request');
+    // The reflected payload is shown as text, not run as markup.
+    check((await page.locator('.web-finding svg').count()) === 0, 'the reflected payload is escaped in the UI');
+    await shot('08-web');
+  } finally {
+    await site.close();
+  }
+}
+
 async function main() {
   if (!fs.existsSync(engineBin)) throw new Error(`engine binary not found: ${engineBin} (cargo build -p engine-server)`);
   const { chromium } = await loadPlaywright();
@@ -908,7 +1019,7 @@ async function main() {
     await shot('02-evidence');
 
     console.log('\n[4] Every space opens without errors');
-    for (const space of ['operations', 'investigation', 'evidence', 'vulns', 'code', 'range', 'ctf', 'system']) {
+    for (const space of ['operations', 'investigation', 'evidence', 'vulns', 'code', 'web', 'range', 'ctf', 'system']) {
       await page.click(`.global-nav button[data-space="${space}"]`);
       await page.waitForTimeout(1200);
       await shot(`03-${space}`);
@@ -974,7 +1085,10 @@ async function main() {
     console.log('\n[7] Source code analysis of a project folder');
     await checkCodeScan(page, base, shot, (on) => { allowIpcError = on; });
 
-    console.log('\n[8] Session survives reload, logout and login work');
+    console.log('\n[8] Dynamic scan of a running web application');
+    await checkWebScan(page, base, shot);
+
+    console.log('\n[9] Session survives reload, logout and login work');
     await page.reload();
     await page.waitForFunction(() => /^[0-9a-f-]{36}$/.test(document.getElementById('caseId').textContent.trim()), null, { timeout: 15000 });
     check(await page.isHidden('#authOverlay'), 'reload keeps the session');
@@ -997,7 +1111,7 @@ async function main() {
     check(true, 'correct password logs in');
     await page.waitForTimeout(1500);
 
-    console.log('\n[9] No page errors, console errors or failed requests');
+    console.log('\n[10] No page errors, console errors or failed requests');
     check(problems.length === 0, problems.length ? `problems:\n    ${problems.join('\n    ')}` : 'clean run');
   } finally {
     await browser.close();

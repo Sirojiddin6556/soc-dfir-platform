@@ -25,6 +25,7 @@ members = [
     "crates/scan-engine",
     "crates/vulnerability-engine",
     "crates/code-analysis",
+    "crates/web-scan",
     "crates/engine-server", "crates/desktop-app",
 ]
 

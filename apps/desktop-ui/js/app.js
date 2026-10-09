@@ -6,6 +6,7 @@ import { RangeSpace } from './range/range.js';
 import { SystemSpace } from './system/system.js';
 import { VulnerabilitySpace } from './vulns/vulns.js';
 import { CodeSpace } from './code/code.js';
+import { WebSpace } from './web/web.js';
 import { TeamPresence } from './collaboration/presence.js';
 import { CtfApp } from './ctf/ctf_app.js';
 import { ctfIpc } from './ctf/ctf_ipc.js';
@@ -25,6 +26,7 @@ class SocDfirApplication {
     this.system = new SystemSpace(this.ipc);
     this.vulns = new VulnerabilitySpace(this.ipc);
     this.code = new CodeSpace(this.ipc);
+    this.web = new WebSpace(this.ipc);
     this.ctfApp = new CtfApp({
       ipc: ctfIpc,
       onNavigateLegacy: (caseId) => this.switchCase(caseId)
@@ -179,6 +181,8 @@ class SocDfirApplication {
         this.vulns.render(altContainer);
       } else if (space === 'code') {
         this.code.render(altContainer);
+      } else if (space === 'web') {
+        this.web.render(altContainer);
       }
     }
   }
