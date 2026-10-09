@@ -9,7 +9,9 @@
 use crate::ir::*;
 use crate::models::cfree::FreedArg;
 use crate::project::Project;
-use crate::rules::{makes_secret, name_words, secret_name, Finding, Location, Rule, WEAK_RANDOM};
+use crate::rules::{
+    makes_secret, name_words, secret_name, Finding, Location, Rule, REDIRECT, WEAK_RANDOM,
+};
 use crate::value::*;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -669,7 +671,18 @@ impl<'p> Interp<'p> {
         span: Span,
         what: &str,
     ) -> bool {
-        let Some(t) = reaching(value, rule.context) else {
+        let t = if std::ptr::eq(rule, &REDIRECT) {
+            // Only targets whose site the user picks: `"/admin/" + kind`
+            // stays on this site whatever `kind` holds.
+            value
+                .alternatives()
+                .iter()
+                .filter(|a| !crate::models::common::site_fixed(a))
+                .find_map(|a| reaching(a, rule.context))
+        } else {
+            reaching(value, rule.context)
+        };
+        let Some(t) = t else {
             return false;
         };
         let want_random = rule.context & ctx::SECRET != 0;
@@ -2168,10 +2181,14 @@ impl<'p> Interp<'p> {
                 if present {
                     // `var in ("a", "b")`: var is one of the constants.
                     let hay_v = self.eval(hay);
-                    if let Value::List(items) = &hay_v {
-                        if items.iter().all(is_const) {
-                            self.fact_on(needle, Fact::OneOf(items.as_ref().clone()), out);
-                        }
+                    // `var in {"a": .., "b": ..}`: one of the keys.
+                    let items: Vec<Value> = match &hay_v {
+                        Value::List(items) => items.as_ref().clone(),
+                        Value::Dict(pairs) => pairs.iter().map(|(k, _)| k.clone()).collect(),
+                        _ => Vec::new(),
+                    };
+                    if !items.is_empty() && items.iter().all(is_const) {
+                        self.fact_on(needle, Fact::OneOf(items), out);
                     }
                 }
             }
