@@ -505,7 +505,9 @@ async function checkCodeScan(page, base, shot, allowIpcError) {
 
     await page.click('.global-nav button[data-space="code"]');
     await page.waitForSelector('#codePath');
-    check(await page.isVisible('#codeEmpty'), 'code space opens with no analysis yet');
+    // The result panel fills in once the engine answers code.status.
+    const empty = await page.waitForSelector('#codeEmpty', { timeout: 15000 }).then(() => true, () => false);
+    check(empty, 'code space opens with no analysis yet');
 
     allowIpcError(true);
     await page.fill('#codePath', path.join(dir, 'missing'));
