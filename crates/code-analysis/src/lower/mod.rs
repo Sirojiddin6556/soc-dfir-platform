@@ -30,6 +30,12 @@ pub(crate) fn text<'a>(node: Node, src: &'a str) -> &'a str {
     src.get(node.byte_range()).unwrap_or("")
 }
 
+/// The last name of a dotted or namespaced name: `\Foo\Bar` and
+/// `foo.Bar` give `Bar`.
+pub(crate) fn last_name(s: &str) -> String {
+    s.rsplit(['.', '\\']).next().unwrap_or(s).trim().to_string()
+}
+
 /// Named children of a node, skipping comments.
 pub(crate) fn named_children(node: Node) -> Vec<Node> {
     let mut cursor = node.walk();

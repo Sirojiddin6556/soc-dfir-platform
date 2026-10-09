@@ -1261,6 +1261,7 @@ impl<'p> Interp<'p> {
                 body,
                 handlers,
                 finally,
+                ..
             } => {
                 let entry = self.frame().env.clone();
                 self.exec_block(body);
@@ -4553,6 +4554,7 @@ fn set_globals(def: &Function) -> Vec<String> {
                     body,
                     handlers,
                     finally,
+                    ..
                 } => {
                     walk(body, locals, out);
                     for h in handlers {
@@ -4787,6 +4789,7 @@ fn object_assignments(body: &[Stmt], out: &mut HashMap<String, Option<Expr>>) {
                 body,
                 handlers,
                 finally,
+                ..
             } => {
                 object_assignments(body, out);
                 for h in handlers {
@@ -5235,6 +5238,7 @@ fn assigned_names(body: &[Stmt], out: &mut Vec<String>) {
                 body,
                 handlers,
                 finally,
+                ..
             } => {
                 assigned_names(body, out);
                 for h in handlers {
@@ -5649,6 +5653,7 @@ fn collect_functions(
                 body,
                 handlers,
                 finally,
+                ..
             } => {
                 collect_functions(body, scope.clone(), class.clone(), out);
                 for h in handlers {

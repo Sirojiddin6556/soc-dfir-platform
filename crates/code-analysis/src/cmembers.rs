@@ -166,6 +166,7 @@ impl<'a> Found<'a> {
                 body,
                 handlers,
                 finally,
+                ..
             } => {
                 for s in body.iter().chain(handlers.iter().flatten()).chain(finally) {
                     self.stmt(s, func);

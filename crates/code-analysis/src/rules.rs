@@ -316,6 +316,14 @@ rule!(
     0
 );
 rule!(
+    PREDICTABLE_SALT,
+    "predictable-salt",
+    760,
+    Medium,
+    "Пароль хешируется с постоянной солью",
+    0
+);
+rule!(
     MASS_ASSIGNMENT,
     "mass-assignment",
     915,
@@ -329,6 +337,54 @@ rule!(
     1336,
     High,
     "Шаблон собирается из сохранённых данных",
+    0
+);
+rule!(
+    PUBLIC_FORM_NO_LIMIT,
+    "public-form-no-limit",
+    770,
+    Low,
+    "Публичная форма без ограничения запросов",
+    0
+);
+rule!(
+    CONTENT_SPOOFING,
+    "content-spoofing",
+    74,
+    Low,
+    "Текст сообщения берётся из адреса",
+    0
+);
+rule!(
+    UNHANDLED_PARSE,
+    "unhandled-parse-error",
+    248,
+    Low,
+    "Ошибка разбора числа из запроса не обрабатывается",
+    0
+);
+rule!(
+    FAIL_OPEN,
+    "fail-open",
+    636,
+    Medium,
+    "Ошибка проверки глушится, и код идёт дальше",
+    0
+);
+rule!(
+    SWALLOWED_ERROR,
+    "swallowed-startup-error",
+    390,
+    Low,
+    "Ошибка запуска или подключения к БД глушится",
+    0
+);
+rule!(
+    DB_IN_WORKDIR,
+    "db-file-in-workdir",
+    552,
+    Low,
+    "Файл базы данных в рабочей или веб-папке",
     0
 );
 rule!(
