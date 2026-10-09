@@ -57,6 +57,12 @@ pub enum UnOp {
     Neg,
     Pos,
     BitNot,
+    /// C `*p`: what a pointer points to. The interpreter keeps a pointer
+    /// and what it points to as one value, so this only marks the read.
+    Deref,
+    /// C `&x`: a pointer to `x`, which is never NULL. Its value is `x`'s
+    /// (see `Deref`).
+    Addr,
 }
 
 #[derive(Debug, Clone)]
@@ -108,6 +114,14 @@ pub enum Expr {
     Other(Vec<Expr>),
 }
 
+/// The variable a C `*p` reads through or `&x` points to, or `e` itself.
+pub fn underef(e: &Expr) -> &Expr {
+    match e {
+        Expr::Un(UnOp::Deref | UnOp::Addr, x) => underef(x),
+        e => e,
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum Target {
     Name(String),
@@ -139,10 +153,12 @@ pub enum Stmt {
         span: Span,
     },
     Expr(Expr, Span),
+    /// `span` is where the test is, for findings in it.
     If {
         test: Expr,
         then: Vec<Stmt>,
         other: Vec<Stmt>,
+        span: Span,
     },
     /// `for target in iter` (iter set) or `while test` (test set).
     Loop {
@@ -150,6 +166,7 @@ pub enum Stmt {
         iter: Option<Expr>,
         test: Option<Expr>,
         body: Vec<Stmt>,
+        span: Span,
     },
     Switch {
         subject: Expr,

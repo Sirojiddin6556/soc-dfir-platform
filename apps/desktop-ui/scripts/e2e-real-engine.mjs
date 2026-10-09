@@ -418,6 +418,82 @@ int main(void) {
     return 0;
 }
 `,
+  'cgi/name.c': `#include <stdlib.h>
+#include <string.h>
+
+int main(void) {
+    char name[16];
+    char safe[16];
+    char tag[4];
+    const char *q = getenv("QUERY_STRING");
+    if (!q)
+        return 1;
+    strcpy(name, q);
+    strncpy(safe, q, sizeof(safe) - 1);
+    safe[sizeof(safe) - 1] = 0;
+    strcpy(tag, "draft");
+    return name[0] + safe[0] + tag[0];
+}
+`,
+  'cgi/users.c': `#include <stdlib.h>
+#include <string.h>
+
+struct user { char *name; struct user *next; };
+
+static struct user *find(struct user *list, const char *name) {
+    for (; list; list = list->next)
+        if (strcmp(list->name, name) == 0)
+            return list;
+    return NULL;
+}
+
+int main(void) {
+    struct user *list = NULL;
+    struct user *admin = find(list, "admin");
+    char *copy = malloc(64);
+    strcpy(copy, "guest");
+    char *checked = malloc(64);
+    if (!checked)
+        return 1;
+    strcpy(checked, "guest");
+    if (admin != NULL)
+        checked[0] = admin->name[0];
+    return admin->name[0] + copy[0] + checked[0];
+}
+`,
+  'cgi/session.c': `#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+struct session { char *user; int id; };
+
+static void end_session(struct session *s) {
+    free(s->user);
+    free(s);
+}
+
+int main(void) {
+    struct session *s = malloc(sizeof(struct session));
+    if (!s)
+        return 1;
+    s->user = strdup("guest");
+    s->id = 1;
+    end_session(s);
+    printf("%d\\n", s->id);
+    char *note = malloc(32);
+    if (!note)
+        return 1;
+    free(note);
+    free(note);
+    char *done = malloc(32);
+    if (!done)
+        return 1;
+    strcpy(done, "done");
+    puts(done);
+    free(done);
+    return 0;
+}
+`,
   'tests/test_views.py': `import os
 from flask import request
 
@@ -432,6 +508,12 @@ const CODE_EXPECTED = [
   'sql-injection web/item.php:4',
   'path-traversal src/shop/Download.java:14',
   'command-injection cgi/report.c:8',
+  'buffer-overflow cgi/name.c:11',
+  'buffer-overflow cgi/name.c:14',
+  'unchecked-null cgi/users.c:17',
+  'null-dereference cgi/users.c:24',
+  'use-after-free cgi/session.c:19',
+  'double-free cgi/session.c:24',
 ];
 const CODE_EXPECTED_TEST = 'command-injection tests/test_views.py:6';
 
@@ -458,7 +540,9 @@ async function checkCodeScan(page, base, shot, allowIpcError) {
 
     await page.click('.global-nav button[data-space="code"]');
     await page.waitForSelector('#codePath');
-    check(await page.isVisible('#codeEmpty'), 'code space opens with no analysis yet');
+    // The result panel fills in once the engine answers code.status.
+    const empty = await page.waitForSelector('#codeEmpty', { timeout: 15000 }).then(() => true, () => false);
+    check(empty, 'code space opens with no analysis yet');
 
     allowIpcError(true);
     await page.fill('#codePath', path.join(dir, 'missing'));
@@ -492,7 +576,11 @@ async function checkCodeScan(page, base, shot, allowIpcError) {
     console.log(`  engine: ${found.join(', ')}; files ${report.files}, ${report.load_ms + report.analysis_ms} ms`);
     check(JSON.stringify([...found].sort()) === JSON.stringify([...CODE_EXPECTED].sort()),
       `engine reports exactly the planted flaws, not the safe calls or the test (${found.length})`);
-    check(report.findings.every((f) => f.trace.length > 0 && f.source && f.snippet),
+    // A string that does not fit, a NULL pointer and freed memory are
+    // flaws without any input.
+    const sourced = (f) => f.source || (f.rule === 'buffer-overflow' && f.line === 14)
+      || ['null-dereference', 'unchecked-null', 'use-after-free', 'double-free'].includes(f.rule);
+    check(report.findings.every((f) => f.trace.length > 0 && sourced(f) && f.snippet),
       'every finding has its source, data path and code line');
     check(report.test_files === 1, `the test file is counted as skipped (${report.test_files})`);
 
@@ -508,6 +596,33 @@ async function checkCodeScan(page, base, shot, allowIpcError) {
     check(await detail.isVisible(), 'a finding expands to its data path');
     check((await detail.locator('.code-trace li').count()) === report.findings.find((f) => f.file === 'web/item.php').trace.length,
       'the expanded path has every step the engine reported');
+
+    const overflow = page.locator('#codeTable tr.vuln-row[data-file="cgi/name.c"][data-line="11"]');
+    check((await overflow.textContent()).includes('Переполнение буфера') && (await overflow.textContent()).includes('getenv()'),
+      'a network-sized copy is shown as a buffer overflow from QUERY_STRING');
+    const constant = page.locator('#codeTable tr.vuln-row[data-file="cgi/name.c"][data-line="14"]');
+    await constant.click();
+    const constantDetail = await constant.locator('xpath=following-sibling::tr[1]').textContent();
+    check(constantDetail.includes('записывает 6 байт в буфер размером 4 байта'),
+      `a string longer than its array says by how much (${constantDetail.trim().split('\n')[0]})`);
+
+    const nullRow = page.locator('#codeTable tr.vuln-row[data-file="cgi/users.c"][data-line="24"]');
+    check((await nullRow.textContent()).includes('Разыменование нулевого указателя'),
+      'a pointer NULL on every path to its use is shown as a NULL dereference');
+    const unchecked = page.locator('#codeTable tr.vuln-row[data-file="cgi/users.c"][data-line="17"]');
+    await unchecked.click();
+    const uncheckedDetail = await unchecked.locator('xpath=following-sibling::tr[1]').textContent();
+    check((await unchecked.textContent()).includes('CWE-690') && uncheckedDetail.includes('malloc() в строке 16'),
+      `a malloc result used before a check names the allocation (${uncheckedDetail.trim().split('\n')[0]})`);
+
+    const freedRow = page.locator('#codeTable tr.vuln-row[data-file="cgi/session.c"][data-line="19"]');
+    await freedRow.click();
+    const freedDetail = await freedRow.locator('xpath=following-sibling::tr[1]').textContent();
+    check((await freedRow.textContent()).includes('Использование памяти после освобождения')
+      && freedDetail.includes('освобождения в строке 9'),
+      `memory a helper freed and then read is a use after free naming the free (${freedDetail.trim().split('\n')[0]})`);
+    const twiceRow = page.locator('#codeTable tr.vuln-row[data-file="cgi/session.c"][data-line="24"]');
+    check((await twiceRow.textContent()).includes('CWE-415'), 'freeing memory twice is shown as a double free');
 
     await page.selectOption('#codeRule', 'command-injection');
     const shown = await page.locator('#codeTable tr.vuln-row').count();

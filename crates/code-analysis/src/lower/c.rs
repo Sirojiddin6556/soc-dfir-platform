@@ -14,7 +14,7 @@
 //! assigns `__c_stdin()` to `x`, `new T[n]` calls `__c_new_array`, and
 //! `delete p` calls `__c_delete`.
 
-use super::{named_children, span, text};
+use super::{named_children, span, test_span, text};
 use crate::ir::*;
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
@@ -26,6 +26,7 @@ pub fn lower(root: Node, src: &str) -> Module {
         src,
         depth: Cell::new(0),
         hoisted: RefCell::new(Vec::new()),
+        post: RefCell::new(Vec::new()),
         class_stack: RefCell::new(Vec::new()),
         outside: RefCell::new(Vec::new()),
         classes: RefCell::new(Vec::new()),
@@ -34,6 +35,10 @@ pub fn lower(root: Node, src: &str) -> Module {
         gotos: RefCell::new(Vec::new()),
         unions: union_types(root, src),
         types: RefCell::new(vec![HashMap::new()]),
+        arrays: RefCell::new(vec![HashMap::new()]),
+        deep: RefCell::new(vec![HashSet::new()]),
+        declared: RefCell::new(vec![HashMap::new()]),
+        blocks: RefCell::new(Vec::new()),
     };
     let mut body = Vec::new();
     l.top_level(root, &mut body);
@@ -84,6 +89,9 @@ struct Lower<'s> {
     depth: Cell<u32>,
     /// Assignments used as values, run before the statement holding them.
     hoisted: RefCell<Vec<Stmt>>,
+    /// Postfix updates (`*p++ = c`), run after the statement holding them:
+    /// the statement sees the old value.
+    post: RefCell<Vec<Stmt>>,
     /// Classes being lowered, innermost last: their field names, so a
     /// method's bare `x` reads `this->x`.
     class_stack: RefCell<Vec<(String, Vec<String>)>>,
@@ -105,7 +113,32 @@ struct Lower<'s> {
     /// Declared types of variables, file scope first, then the functions
     /// being lowered.
     types: RefCell<Vec<HashMap<String, String>>>,
+    /// Byte sizes of the arrays declared in the same scopes, for
+    /// `sizeof(buf)`; None for variables that are not arrays.
+    arrays: RefCell<Vec<HashMap<String, Option<Expr>>>>,
+    /// Pointers to pointers (`char **pp`) in the same scopes: with `&x`
+    /// read as `x`, `*pp = p` sets the pointer `pp` stands for.
+    deep: RefCell<Vec<HashSet<String>>>,
+    /// Full declared types (`u_char *`, `char[10]`) in the same scopes.
+    declared: RefCell<Vec<HashMap<String, String>>>,
+    /// Names the parameters and the open blocks of the function being
+    /// lowered declare, outermost first: a block declaring one again hides
+    /// the outer variable until it ends.
+    blocks: RefCell<Vec<Block>>,
 }
+
+/// Variables a block of a function declares (see `Lower::blocks`).
+#[derive(Default)]
+struct Block {
+    names: Vec<String>,
+    /// Those that hide a variable of an outer block, with the name each
+    /// has in the lowered code.
+    renamed: HashMap<String, String>,
+}
+
+/// What hides an outer variable's name: the name with this and the depth
+/// of the block appended, which findings leave out (`Interp::report`).
+pub const HIDDEN: char = '\u{1}';
 
 /// Names of the union types a file defines (`union U {...}`,
 /// `typedef union {...} U;`).
@@ -172,7 +205,7 @@ fn stmt_size(s: &Stmt) -> usize {
 }
 
 /// Bytes of a type for `sizeof`, on a 64-bit Linux build.
-fn size_of_type(ty: &str) -> Option<i64> {
+pub(crate) fn size_of_type(ty: &str) -> Option<i64> {
     let t = ty.trim();
     if t.ends_with('*') {
         return Some(8);
@@ -454,15 +487,40 @@ impl<'s> Lower<'s> {
                 .map(|p| (p.name.clone(), base_type(p.ty.as_deref().unwrap_or(""))))
                 .collect(),
         );
+        // Parameters are pointers even when written `char buf[]`.
+        self.arrays
+            .borrow_mut()
+            .push(params.iter().map(|p| (p.name.clone(), None)).collect());
+        self.deep.borrow_mut().push(
+            params
+                .iter()
+                .filter(|p| p.ty.as_deref().is_some_and(is_deep_pointer))
+                .map(|p| p.name.clone())
+                .collect(),
+        );
+        self.declared.borrow_mut().push(
+            params
+                .iter()
+                .map(|p| (p.name.clone(), p.ty.clone().unwrap_or_default()))
+                .collect(),
+        );
         if let Some(b) = node.child_by_field_name("body") {
             self.aliases.borrow_mut().push(self.find_aliases(b));
             self.gotos.borrow_mut().push(HashMap::new());
+            let outer = self.blocks.replace(vec![Block {
+                names: params.iter().map(|p| p.name.clone()).collect(),
+                renamed: HashMap::new(),
+            }]);
             self.label_tails(b);
             self.block(b, &mut body);
+            self.blocks.replace(outer);
             self.gotos.borrow_mut().pop();
             self.aliases.borrow_mut().pop();
         }
         self.types.borrow_mut().pop();
+        self.arrays.borrow_mut().pop();
+        self.deep.borrow_mut().pop();
+        self.declared.borrow_mut().pop();
         self.locals.borrow_mut().pop();
         let fname = match &class {
             Some(cls) if name == *cls || name.rsplit("::").next() == Some(cls.as_str()) => {
@@ -497,15 +555,23 @@ impl<'s> Lower<'s> {
         ) {
             return;
         }
-        if t.child_by_field_name("name").is_some() {
-            self.class(t);
-            return;
-        }
-        if let Some(d) = crate::lower::field_children(node, "declarator")
+        let alias = crate::lower::field_children(node, "declarator")
             .into_iter()
             .find(|d| d.kind() == "type_identifier")
-        {
-            self.class_named(t, Some(self.text(d).to_string()));
+            .map(|d| self.text(d).to_string());
+        if let Some(n) = t.child_by_field_name("name") {
+            self.class(t);
+            // `typedef struct _S {...} S;` names the struct twice.
+            match alias {
+                Some(a) if a != self.text(n) => {
+                    self.class_named(t, Some(a));
+                }
+                _ => {}
+            }
+            return;
+        }
+        if let Some(a) = alias {
+            self.class_named(t, Some(a));
         }
     }
 
@@ -629,9 +695,19 @@ impl<'s> Lower<'s> {
     fn block(&self, node: Node, out: &mut Vec<Stmt>) {
         if node.kind() == "compound_statement" {
             let start = out.len();
-            for c in named_children(node) {
-                self.stmt(c, out);
+            let items = named_children(node);
+            self.blocks.borrow_mut().push(Block::default());
+            let mut i = 0;
+            while i < items.len() {
+                if let (Some(head), Some(body)) = (self.foreach_head(items[i]), items.get(i + 1)) {
+                    self.foreach(head, *body, out);
+                    i += 2;
+                    continue;
+                }
+                self.stmt(items[i], out);
+                i += 1;
             }
+            self.blocks.borrow_mut().pop();
             // C++ objects made in the block are destroyed where it ends.
             let made: Vec<String> = out[start..]
                 .iter()
@@ -661,6 +737,88 @@ impl<'s> Lower<'s> {
         }
     }
 
+    /// Notes the variables the declaration `node` declares in the
+    /// innermost open block. One an outer block or a parameter declares
+    /// too hides that variable until the block ends, under a name of its
+    /// own: `{ size_t i; for (i = 0; ...) }` inside `for (i = 0; i < 1;
+    /// i++)` leaves the outer `i` alone. Gives the names changed.
+    fn hide_outer(&self, node: Node) -> Vec<(String, String)> {
+        let mut changed = Vec::new();
+        for d in crate::lower::field_children(node, "declarator") {
+            if d.kind() == "function_declarator" {
+                continue;
+            }
+            let (name, _) = self.declarator_name(d);
+            if name.is_empty() {
+                continue;
+            }
+            let mut blocks = self.blocks.borrow_mut();
+            let depth = blocks.len();
+            let Some((here, outer)) = blocks.split_last_mut() else {
+                break;
+            };
+            if here.names.contains(&name) {
+                continue;
+            }
+            here.names.push(name.clone());
+            if outer.iter().any(|b| b.names.contains(&name)) {
+                let own = format!("{name}{HIDDEN}{depth}");
+                here.renamed.insert(name.clone(), own.clone());
+                changed.push((name, own));
+            }
+        }
+        changed
+    }
+
+    /// The macro call of a loop the preprocessor writes, which the parser
+    /// sees as a call missing its `;` before the loop body:
+    /// `TAILQ_FOREACH(item, &head, entry) { ... }`.
+    fn foreach_head<'t>(&self, node: Node<'t>) -> Option<Node<'t>> {
+        if node.kind() != "expression_statement"
+            || !node
+                .child(node.child_count().checked_sub(1)?)
+                .is_some_and(|semi| semi.is_missing() || semi.byte_range().is_empty())
+        {
+            return None;
+        }
+        let call = node
+            .named_child(0)
+            .filter(|c| c.kind() == "call_expression")?;
+        let name = self
+            .text(call.child_by_field_name("function")?)
+            .to_ascii_lowercase();
+        (name.contains("foreach") || name.contains("for_each")).then_some(call)
+    }
+
+    /// A macro loop: the body runs any number of times, with the variable
+    /// the macro steps (its first argument) set to an element.
+    fn foreach(&self, head: Node, body: Node, out: &mut Vec<Stmt>) {
+        let sp = span(head);
+        let saved = self.hoisted.take();
+        let test = self.expr(head);
+        out.extend(self.hoisted.replace(saved));
+        let mut stmts = Vec::new();
+        let var = head
+            .child_by_field_name("arguments")
+            .and_then(|a| a.named_child(0))
+            .filter(|a| a.kind() == "identifier");
+        if let Some(var) = var {
+            stmts.push(Stmt::Assign {
+                target: Target::Name(self.text(var).to_string()),
+                value: test.clone(),
+                span: sp,
+            });
+        }
+        self.block(body, &mut stmts);
+        out.push(Stmt::Loop {
+            target: None,
+            iter: None,
+            test: Some(test),
+            body: stmts,
+            span: sp,
+        });
+    }
+
     fn stmts(&self, node: Option<Node>) -> Vec<Stmt> {
         let mut out = Vec::new();
         if let Some(n) = node {
@@ -671,11 +829,21 @@ impl<'s> Lower<'s> {
 
     fn stmt(&self, node: Node, out: &mut Vec<Stmt>) {
         let saved = self.hoisted.take();
+        let saved_post = self.post.take();
         let mut mine = Vec::new();
         self.stmt_inner(node, &mut mine);
         let hoisted = self.hoisted.replace(saved);
+        let post = self.post.replace(saved_post);
         out.extend(hoisted);
-        out.extend(mine);
+        // A condition's update is run before the statement: its body
+        // must see the new value.
+        if matches!(node.kind(), "expression_statement" | "declaration") {
+            out.extend(mine);
+            out.extend(post);
+        } else {
+            out.extend(post);
+            out.extend(mine);
+        }
     }
 
     fn stmt_inner(&self, node: Node, out: &mut Vec<Stmt>) {
@@ -752,7 +920,12 @@ impl<'s> Lower<'s> {
                     }
                     None => Vec::new(),
                 };
-                out.push(Stmt::If { test, then, other });
+                out.push(Stmt::If {
+                    test,
+                    then,
+                    other,
+                    span: test_span(node),
+                });
             }
             "while_statement" => {
                 let mut pre = Vec::new();
@@ -764,6 +937,7 @@ impl<'s> Lower<'s> {
                     iter: None,
                     test: Some(test),
                     body,
+                    span: test_span(node),
                 });
                 char_checks(out, span(node));
             }
@@ -777,12 +951,14 @@ impl<'s> Lower<'s> {
                     test: Expr::Un(UnOp::Not, Box::new(test)),
                     then: vec![Stmt::Break],
                     other: Vec::new(),
+                    span: test_span(node),
                 });
                 out.push(Stmt::Loop {
                     target: None,
                     iter: None,
                     test: Some(Expr::Lit(Const::Bool(true))),
                     body,
+                    span: sp,
                 });
             }
             "for_statement" => {
@@ -813,6 +989,7 @@ impl<'s> Lower<'s> {
                     iter: None,
                     test: Some(test),
                     body,
+                    span: test_span(node),
                 });
                 char_checks(out, span(node));
             }
@@ -831,6 +1008,7 @@ impl<'s> Lower<'s> {
                     iter: Some(iter),
                     test: None,
                     body,
+                    span: sp,
                 });
             }
             "switch_statement" => {
@@ -934,6 +1112,34 @@ impl<'s> Lower<'s> {
     }
 
     fn declaration(&self, node: Node, out: &mut Vec<Stmt>) {
+        let from = out.len();
+        let changed = self.hide_outer(node);
+        self.declare(node, out);
+        if changed.is_empty() {
+            return;
+        }
+        let own = |n: &str| changed.iter().find(|(o, _)| o == n).map(|(_, r)| r.clone());
+        for s in &mut out[from..] {
+            match s {
+                Stmt::Declare { name, .. } => {
+                    if let Some(r) = own(name) {
+                        *name = r;
+                    }
+                }
+                // `__c_array(buf, n, size)` and `__c_slots(p, n)`.
+                Stmt::Expr(Expr::Call { args, .. }, _) => {
+                    if let Some(Expr::Name(n)) = args.first_mut().map(|a| &mut a.value) {
+                        if let Some(r) = own(n) {
+                            *n = r;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn declare(&self, node: Node, out: &mut Vec<Stmt>) {
         let type_node = node.child_by_field_name("type");
         let ty = type_node
             .map(|t| self.text(t).to_string())
@@ -980,6 +1186,16 @@ impl<'s> Lower<'s> {
                 t.insert(name.clone(), base_type(&ty));
             }
             let full_ty = format!("{ty}{suffix}");
+            if let Some(t) = self.declared.borrow_mut().last_mut() {
+                t.insert(name.clone(), full_ty.clone());
+            }
+            if let Some(d) = self.deep.borrow_mut().last_mut() {
+                if is_deep_pointer(&full_ty) {
+                    d.insert(name.clone());
+                } else {
+                    d.remove(&name);
+                }
+            }
             let value = if d.kind() == "init_declarator" {
                 match d.child_by_field_name("value") {
                     // `Foo f(1, 2);` and `std::string s(data);`
@@ -997,13 +1213,85 @@ impl<'s> Lower<'s> {
             } else {
                 None
             };
+            let array = self.array_size(d);
+            let var = name.clone();
             out.push(Stmt::Declare {
                 name,
                 ty: full_ty,
                 value,
                 span: sp,
             });
+            if array.is_none() {
+                if let Some(a) = self.arrays.borrow_mut().last_mut() {
+                    a.insert(var.clone(), None);
+                }
+                // `char *p[5];`: five pointers, each kept apart.
+                if d.kind() != "init_declarator" {
+                    if let Some(n) = self.pointer_array_size(d) {
+                        out.push(Stmt::Expr(
+                            call("__c_slots", vec![Expr::Name(var.clone()), n], sp),
+                            sp,
+                        ));
+                    }
+                }
+            }
+            // `char b[50];`: the model learns the array's size.
+            if let Some(count) = array {
+                let base = base_type(&ty);
+                let elem = match size_of_type(&base) {
+                    Some(n) => Expr::Lit(Const::Int(n)),
+                    None => call("sizeof", vec![Expr::Lit(Const::Str(base))], sp),
+                };
+                let bytes = count
+                    .as_ref()
+                    .map(|c| Expr::Bin(BinOp::Mul, Box::new(c.clone()), Box::new(elem.clone())));
+                if let Some(a) = self.arrays.borrow_mut().last_mut() {
+                    a.insert(var.clone(), bytes);
+                }
+                let count = count.unwrap_or(Expr::Lit(Const::None));
+                out.push(Stmt::Expr(
+                    call("__c_array", vec![Expr::Name(var), count, elem], sp),
+                    sp,
+                ));
+            }
         }
+    }
+
+    /// The element count of `*p[N]`, an array of pointers.
+    fn pointer_array_size(&self, d: Node) -> Option<Expr> {
+        if d.kind() != "pointer_declarator" {
+            return None;
+        }
+        let a = d.child_by_field_name("declarator")?;
+        if a.kind() != "array_declarator"
+            || a.child_by_field_name("declarator")?.kind() != "identifier"
+        {
+            return None;
+        }
+        a.child_by_field_name("size").map(|s| self.expr(s))
+    }
+
+    /// The element count of a one-dimensional array declarator: `b[50]`
+    /// gives `Some(Some(50))`, `s[]` gives `Some(None)`. None for
+    /// pointers, arrays of pointers and arrays of arrays.
+    fn array_size(&self, d: Node) -> Option<Option<Expr>> {
+        let mut cur = d;
+        let mut found = None;
+        for _ in 0..32 {
+            match cur.kind() {
+                "identifier" => return found,
+                "array_declarator" => {
+                    if found.is_some() {
+                        return None;
+                    }
+                    found = Some(cur.child_by_field_name("size").map(|s| self.expr(s)));
+                }
+                "init_declarator" => {}
+                _ => return None,
+            }
+            cur = cur.child_by_field_name("declarator")?;
+        }
+        None
     }
 
     /// `T x(a, b);` in a function body, which C++ parses as a prototype
@@ -1125,6 +1413,15 @@ impl<'s> Lower<'s> {
             },
             None => right,
         };
+        // `u_char ch; ch = *p;`: the variable holds a byte.
+        let small = (op == "=" && l.kind() == "identifier")
+            .then(|| self.declared_type(self.text(l)))
+            .flatten()
+            .filter(|t| small_int_range(t).is_some());
+        let value = match small {
+            Some(t) => Expr::Cast(t, Box::new(value)),
+            None => value,
+        };
         out.push(Stmt::Assign {
             target: self.target(l),
             value,
@@ -1197,7 +1494,8 @@ impl<'s> Lower<'s> {
             // variable a fixed pointer points to.
             "pointer_expression" => match node.child_by_field_name("argument") {
                 Some(a)
-                    if a.kind() == "identifier" && self.alias_of(self.text(a)) != self.text(a) =>
+                    if a.kind() == "identifier"
+                        && (self.is_alias(self.text(a)) || self.is_deep(self.text(a))) =>
                 {
                     self.target(a)
                 }
@@ -1221,6 +1519,91 @@ impl<'s> Lower<'s> {
         }
     }
 
+    /// Whether `name` is a pointer to a pointer here.
+    /// Whether `node` is a pointer to something that is not a pointer, and
+    /// not a fixed pointer to a variable (`p = &x`).
+    fn single_pointer(&self, node: Node) -> bool {
+        if node.kind() == "identifier" && self.is_alias(self.text(node)) {
+            return false;
+        }
+        self.pointer_type(node)
+            .is_some_and(|t| !t.contains('(') && t.matches(['*', '[']).count() == 1)
+    }
+
+    fn is_deep(&self, name: &str) -> bool {
+        self.deep.borrow().last().is_some_and(|d| d.contains(name))
+    }
+
+    /// The declared type of `name`, innermost scope first.
+    fn declared_type(&self, name: &str) -> Option<String> {
+        self.declared
+            .borrow()
+            .iter()
+            .rev()
+            .find_map(|m| m.get(name).cloned())
+    }
+
+    /// The integer type read through `node`: `u_char` for `u_char *p`,
+    /// `p + 1`, `p++`, `(u_char *) q` and `*pp` of `u_char **pp`; `int`
+    /// for `int a[4]`.
+    fn pointee_int(&self, node: Node) -> Option<String> {
+        pointee_int_type(&self.pointer_type(node)?)
+    }
+
+    /// The declared type of a pointer expression: `char **` for `pp`,
+    /// `pp + 1` and `pp++`, `char *` for `*pp` and `pp[i]`.
+    fn pointer_type(&self, node: Node) -> Option<String> {
+        let arg = || node.child_by_field_name("argument");
+        match node.kind() {
+            "identifier" => self.declared_type(self.text(node)),
+            "parenthesized_expression" => named_children(node)
+                .last()
+                .and_then(|n| self.pointer_type(*n)),
+            "update_expression" => self.pointer_type(arg()?),
+            "binary_expression" => {
+                let op = node.child_by_field_name("operator").map(|o| self.text(o));
+                if !matches!(op, Some("+" | "-")) {
+                    return None;
+                }
+                self.pointer_type(node.child_by_field_name("left")?)
+            }
+            "cast_expression" => Some(self.text(node.child_by_field_name("type")?).to_string()),
+            "pointer_expression"
+                if node.child_by_field_name("operator").map(|o| self.text(o)) == Some("*") =>
+            {
+                deref_type(&self.pointer_type(arg()?)?)
+            }
+            "subscript_expression" => deref_type(&self.pointer_type(arg()?)?),
+            _ => None,
+        }
+    }
+
+    /// `p[i]` or `*p` as a place, for `&p[i]` and `&*p`: the element, not
+    /// the integer read from it.
+    fn place(&self, node: Node) -> Expr {
+        match node.kind() {
+            "subscript_expression" => {
+                let base = node
+                    .child_by_field_name("argument")
+                    .map(|a| self.expr(a))
+                    .unwrap_or(Expr::Other(Vec::new()));
+                Expr::Index(Box::new(base), Box::new(self.subscript_index(node)))
+            }
+            "pointer_expression"
+                if node.child_by_field_name("operator").map(|o| self.text(o)) == Some("*") =>
+            {
+                node.child_by_field_name("argument")
+                    .map(|a| self.expr(a))
+                    .unwrap_or(Expr::Other(Vec::new()))
+            }
+            "parenthesized_expression" => match named_children(node).last() {
+                Some(inner) => self.place(*inner),
+                None => Expr::Other(Vec::new()),
+            },
+            _ => self.expr(node),
+        }
+    }
+
     fn subscript_index(&self, node: Node) -> Expr {
         if let Some(i) = node.child_by_field_name("index") {
             return self.expr(i);
@@ -1238,6 +1621,41 @@ impl<'s> Lower<'s> {
     /// finds its tail.
     fn label_tails(&self, body: Node) {
         let items = named_children(body);
+        // The tails run after the body's declarations: `*p` there reads
+        // through the `int *p` declared before the label.
+        let mut declared = HashMap::new();
+        let mut deep = self.deep.borrow().last().cloned().unwrap_or_default();
+        for item in items.iter().filter(|i| i.kind() == "declaration") {
+            let ty = item
+                .child_by_field_name("type")
+                .map(|t| self.text(t).to_string())
+                .unwrap_or_default();
+            for d in crate::lower::field_children(*item, "declarator") {
+                let (name, suffix) = self.declarator_name(d);
+                if name.is_empty() {
+                    continue;
+                }
+                let full = format!("{ty}{suffix}");
+                if is_deep_pointer(&full) {
+                    deep.insert(name.clone());
+                }
+                declared.insert(name, full);
+            }
+        }
+        // The body's own variables, which hide nothing.
+        self.blocks.borrow_mut().push(Block {
+            names: declared.keys().cloned().collect(),
+            renamed: HashMap::new(),
+        });
+        self.declared.borrow_mut().push(declared);
+        self.deep.borrow_mut().push(deep);
+        self.lower_tails(&items);
+        self.deep.borrow_mut().pop();
+        self.declared.borrow_mut().pop();
+        self.blocks.borrow_mut().pop();
+    }
+
+    fn lower_tails(&self, items: &[Node]) {
         for (k, item) in items.iter().enumerate().rev() {
             if item.kind() != "labeled_statement" {
                 continue;
@@ -1257,8 +1675,33 @@ impl<'s> Lower<'s> {
         }
     }
 
-    /// The variable a reference or fixed pointer stands for (see `aliases`).
+    /// Whether `name` is a reference or fixed pointer standing for another
+    /// variable (see `aliases`).
+    fn is_alias(&self, name: &str) -> bool {
+        !self
+            .blocks
+            .borrow()
+            .iter()
+            .any(|b| b.renamed.contains_key(name))
+            && self
+                .aliases
+                .borrow()
+                .last()
+                .is_some_and(|a| a.contains_key(name))
+    }
+
+    /// The variable a reference or fixed pointer stands for (see
+    /// `aliases`), or that a name declared again in a block names there.
     fn alias_of(&self, name: &str) -> String {
+        if let Some(own) = self
+            .blocks
+            .borrow()
+            .iter()
+            .rev()
+            .find_map(|b| b.renamed.get(name))
+        {
+            return own.clone();
+        }
         let aliases = self.aliases.borrow();
         let mut n = name;
         for _ in 0..4 {
@@ -1485,7 +1928,25 @@ impl<'s> Lower<'s> {
                     return Expr::Other(Vec::new());
                 };
                 let le = self.expr(l);
+                let mark = self.hoisted.borrow().len();
                 let re = self.expr(r);
+                // `!r || (err = r->type)`: what the right side does happens
+                // only when the left side did not decide.
+                if matches!(op, "&&" | "||" | "and" | "or") {
+                    let right = self.hoisted.borrow_mut().split_off(mark);
+                    if !right.is_empty() {
+                        let test = match op {
+                            "&&" | "and" => le.clone(),
+                            _ => Expr::Un(UnOp::Not, Box::new(le.clone())),
+                        };
+                        self.hoisted.borrow_mut().push(Stmt::If {
+                            test,
+                            then: right,
+                            other: Vec::new(),
+                            span: span(node),
+                        });
+                    }
+                }
                 match bin_op(op) {
                     Some(b) => Expr::Bin(b, Box::new(le), Box::new(re)),
                     None => Expr::Other(vec![le, re]),
@@ -1500,7 +1961,15 @@ impl<'s> Lower<'s> {
                     .child_by_field_name("operator")
                     .map(|o| self.text(o))
                     .unwrap_or("");
+                // `!p` of a pointer is `p == NULL`: where it holds, `p` is
+                // NULL, not just zero.
+                let pointer = node
+                    .child_by_field_name("argument")
+                    .is_some_and(|a| a.kind() == "identifier" && self.single_pointer(a));
                 match op {
+                    "!" | "not" if pointer => {
+                        Expr::Bin(BinOp::Eq, Box::new(arg), Box::new(Expr::Lit(Const::None)))
+                    }
                     "!" | "not" => Expr::Un(UnOp::Not, Box::new(arg)),
                     "-" => Expr::Un(UnOp::Neg, Box::new(arg)),
                     "+" => Expr::Un(UnOp::Pos, Box::new(arg)),
@@ -1508,11 +1977,39 @@ impl<'s> Lower<'s> {
                     _ => arg,
                 }
             }
-            // `&x` and `*p` stand for the value itself.
-            "pointer_expression" => node
-                .child_by_field_name("argument")
-                .map(|a| self.expr(a))
-                .unwrap_or(Expr::Other(Vec::new())),
+            // `&x` and `*p` stand for the value itself; `*p` of an integer
+            // pointer is that integer type, so `u_char` reads stay bytes.
+            "pointer_expression" => {
+                let Some(a) = node.child_by_field_name("argument") else {
+                    return Expr::Other(Vec::new());
+                };
+                let op = node.child_by_field_name("operator").map(|o| self.text(o));
+                if op == Some("&") {
+                    // `read(fd, &len, 1)`: what is stored in a `u_char` is a byte.
+                    let small = (a.kind() == "identifier")
+                        .then(|| self.declared_type(self.text(a)))
+                        .flatten()
+                        .filter(|t| small_int_range(t).is_some());
+                    let place = match small {
+                        Some(t) => Expr::Cast(t, Box::new(self.expr(a))),
+                        None => self.place(a),
+                    };
+                    return Expr::Un(UnOp::Addr, Box::new(place));
+                }
+                let v = self.expr(a);
+                // A pointer to a pointer holds what it points to (`&s`
+                // passes `s`), so only a read through the last pointer is
+                // one the program could find NULL.
+                let v = if self.single_pointer(a) {
+                    Expr::Un(UnOp::Deref, Box::new(v))
+                } else {
+                    v
+                };
+                match self.pointee_int(a) {
+                    Some(t) => Expr::Cast(t, Box::new(v)),
+                    None => v,
+                }
+            }
             "field_expression" => {
                 let base = node
                     .child_by_field_name("argument")
@@ -1528,13 +2025,30 @@ impl<'s> Lower<'s> {
                 Expr::Attr(Box::new(base), self.member_name(node, field))
             }
             "subscript_expression" => {
-                let base = node
+                let v = self.place(node);
+                match node
                     .child_by_field_name("argument")
-                    .map(|a| self.expr(a))
-                    .unwrap_or(Expr::Other(Vec::new()));
-                Expr::Index(Box::new(base), Box::new(self.subscript_index(node)))
+                    .and_then(|a| self.pointee_int(a))
+                {
+                    Some(t) => Expr::Cast(t, Box::new(v)),
+                    None => v,
+                }
             }
             "call_expression" => {
+                // `likely(x)` and `expect_true(x)` macros end in
+                // `__builtin_expect(x, 1)`, which is `x`.
+                let builtin = node.child_by_field_name("function").is_some_and(|f| {
+                    matches!(
+                        self.text(f),
+                        "__builtin_expect" | "__builtin_expect_with_probability"
+                    )
+                });
+                let first = node
+                    .child_by_field_name("arguments")
+                    .and_then(|a| named_children(a).into_iter().next());
+                if let (true, Some(first)) = (builtin, first) {
+                    return self.expr(first);
+                }
                 let args: Vec<Arg> = node
                     .child_by_field_name("arguments")
                     .map(|a| {
@@ -1573,10 +2087,38 @@ impl<'s> Lower<'s> {
                     }
                     return call("sizeof", vec![Expr::Lit(Const::Str(ty.to_string()))], sp);
                 }
+                // `sizeof buf` and `sizeof(buf)` of an array declared here.
+                let mut inner = node.child_by_field_name("value");
+                while let Some(n) = inner.filter(|n| n.kind() == "parenthesized_expression") {
+                    inner = named_children(n).into_iter().next();
+                }
+                if let Some(n) = inner.filter(|n| n.kind() == "identifier") {
+                    let name = self.text(n);
+                    let found = self
+                        .arrays
+                        .borrow()
+                        .iter()
+                        .rev()
+                        .find_map(|a| a.get(name).cloned())
+                        .flatten();
+                    if let Some(bytes) = found {
+                        return bytes;
+                    }
+                }
                 let v = node
                     .child_by_field_name("value")
                     .map(|v| self.expr(v))
                     .unwrap_or(Expr::Other(Vec::new()));
+                // `sizeof(*p)`, `sizeof(p[0])`
+                if let Expr::Cast(t, _) = &v {
+                    if let Some(n) = size_of_type(&base_type(t)) {
+                        return Expr::Lit(Const::Int(n));
+                    }
+                }
+                // The operand is not run: `sizeof(p->name)` with `p` NULL.
+                if !matches!(v, Expr::Name(_)) {
+                    return call("sizeof", Vec::new(), sp);
+                }
                 call("sizeof", vec![v], sp)
             }
             "conditional_expression" => {
@@ -1609,7 +2151,18 @@ impl<'s> Lower<'s> {
             "update_expression" => {
                 let mut out = Vec::new();
                 self.expr_stmt(node, &mut out);
-                self.hoisted.borrow_mut().extend(out);
+                let postfix = match (
+                    node.child_by_field_name("argument"),
+                    node.child_by_field_name("operator"),
+                ) {
+                    (Some(a), Some(o)) => a.start_byte() < o.start_byte(),
+                    _ => false,
+                };
+                if postfix {
+                    self.post.borrow_mut().extend(out);
+                } else {
+                    self.hoisted.borrow_mut().extend(out);
+                }
                 node.child_by_field_name("argument")
                     .map(|a| self.expr(a))
                     .unwrap_or(Expr::Other(Vec::new()))
@@ -1744,7 +2297,7 @@ enum Cursor {
 impl Cursor {
     /// `*p`, `p[0]`, `s[i]`
     fn current(&self, e: &Expr) -> bool {
-        match (self, e) {
+        match (self, uncast(e)) {
             (Cursor::Pointer(p), Expr::Name(n)) => n == p,
             (Cursor::Pointer(p), Expr::Index(b, k)) => {
                 is_name(b, p) && matches!(**k, Expr::Lit(Const::Int(0)))
@@ -1756,7 +2309,7 @@ impl Cursor {
 
     /// `*(p + 1)`, `p[1]`, `s[i + 1]`
     fn next(&self, e: &Expr) -> bool {
-        match (self, e) {
+        match (self, uncast(e)) {
             (Cursor::Pointer(p), Expr::Bin(BinOp::Add, b, k)) => {
                 is_name(b, p) && matches!(**k, Expr::Lit(Const::Int(1)))
             }
@@ -1862,6 +2415,15 @@ fn is_place(e: &Expr) -> bool {
     }
 }
 
+/// `e` without the integer type a read through a pointer gives it, and
+/// without the read: `p` for `*p`.
+fn uncast(e: &Expr) -> &Expr {
+    match e {
+        Expr::Cast(_, inner) | Expr::Un(UnOp::Deref, inner) => uncast(inner),
+        e => e,
+    }
+}
+
 fn char_lit(e: &Expr) -> Option<char> {
     match e {
         Expr::Lit(Const::Int(i)) => u32::try_from(*i).ok().and_then(char::from_u32),
@@ -1947,7 +2509,9 @@ fn char_checks(out: &mut Vec<Stmt>, sp: Span) {
     let checks: Vec<&Expr> = body
         .iter()
         .filter_map(|s| match s {
-            Stmt::If { test, then, other } if other.is_empty() && leaves(then) => Some(test),
+            Stmt::If {
+                test, then, other, ..
+            } if other.is_empty() && leaves(then) => Some(test),
             _ => None,
         })
         .collect();
@@ -1996,6 +2560,7 @@ fn char_checks(out: &mut Vec<Stmt>, sp: Span) {
             test,
             then: vec![Stmt::Return(None, sp)],
             other: Vec::new(),
+            span: sp,
         });
     }
 }
@@ -2033,4 +2598,114 @@ fn bin_op(op: &str) -> Option<BinOp> {
         "||" | "or" => BinOp::Or,
         _ => return None,
     })
+}
+
+/// `char **`, `T * const *`: a pointer to a pointer, not an array of them.
+fn is_deep_pointer(ty: &str) -> bool {
+    !ty.contains('[') && ty.matches('*').count() >= 2
+}
+
+/// The values of a small integer type: 0 to 255 for `u_char`.
+pub(crate) fn small_int_range(ty: &str) -> Option<(i64, i64)> {
+    let t = plain_type(ty);
+    Some(match t.as_str() {
+        "char" | "signed char" | "int8_t" | "gint8" | "s8" | "__s8" | "INT8" | "CHAR" => {
+            (-128, 127)
+        }
+        "unsigned char" | "u_char" | "uchar" | "uint8_t" | "u_int8_t" | "guint8" | "guchar"
+        | "u8" | "__u8" | "UINT8" | "UCHAR" | "BYTE" => (0, 255),
+        "short" | "short int" | "signed short" | "signed short int" | "int16_t" | "gint16"
+        | "s16" | "__s16" | "INT16" | "SHORT" => (-32768, 32767),
+        "unsigned short" | "unsigned short int" | "u_short" | "ushort" | "uint16_t"
+        | "u_int16_t" | "guint16" | "u16" | "__u16" | "UINT16" | "USHORT" | "WORD" => (0, 65535),
+        _ => return None,
+    })
+}
+
+/// 32-bit unsigned types: `(unsigned int) ~0` is 4294967295, not -1.
+pub(crate) fn is_unsigned32(ty: &str) -> bool {
+    matches!(
+        plain_type(ty).as_str(),
+        "unsigned"
+            | "unsigned int"
+            | "uint32_t"
+            | "u_int32_t"
+            | "u_int"
+            | "uint"
+            | "guint32"
+            | "u32"
+            | "__u32"
+            | "UINT"
+            | "UINT32"
+            | "DWORD"
+    )
+}
+
+/// Integer types, small or not, whose values a pointer to them reads.
+pub(crate) fn is_int_type(ty: &str) -> bool {
+    if small_int_range(ty).is_some() {
+        return true;
+    }
+    matches!(
+        plain_type(ty).as_str(),
+        "int"
+            | "signed"
+            | "signed int"
+            | "unsigned"
+            | "unsigned int"
+            | "long"
+            | "long int"
+            | "unsigned long"
+            | "unsigned long int"
+            | "long long"
+            | "unsigned long long"
+            | "size_t"
+            | "ssize_t"
+            | "off_t"
+            | "int32_t"
+            | "uint32_t"
+            | "u_int32_t"
+            | "int64_t"
+            | "uint64_t"
+            | "u_int64_t"
+            | "u_int"
+            | "u_long"
+            | "uint"
+            | "ulong"
+            | "intptr_t"
+            | "uintptr_t"
+            | "ptrdiff_t"
+            | "wchar_t"
+    )
+}
+
+/// `const unsigned  char` as `unsigned char`.
+fn plain_type(ty: &str) -> String {
+    ty.split_whitespace()
+        .filter(|w| !matches!(*w, "const" | "volatile" | "static" | "register" | "extern"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// `char *` for `char **` and `char *[4]`, `char[8]` for `char[4][8]`:
+/// the type one pointer or array level down.
+fn deref_type(ty: &str) -> Option<String> {
+    if ty.contains('(') {
+        return None;
+    }
+    if let (Some(open), Some(close)) = (ty.find('['), ty.find(']')) {
+        return (open < close).then(|| format!("{}{}", &ty[..open], &ty[close + 1..]));
+    }
+    let star = ty.rfind('*')?;
+    Some(format!("{}{}", &ty[..star], &ty[star + 1..]))
+}
+
+/// `u_char` for `u_char *` and `u_char[8]`: an integer type one pointer or
+/// array level down.
+fn pointee_int_type(ty: &str) -> Option<String> {
+    if ty.contains(['(', '&']) || ty.matches(['*', '[']).count() != 1 {
+        return None;
+    }
+    let base = plain_type(ty.split(['*', '[']).next()?);
+    is_int_type(&base).then_some(base)
 }

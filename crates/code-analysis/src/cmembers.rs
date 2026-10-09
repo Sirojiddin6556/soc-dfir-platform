@@ -136,7 +136,9 @@ impl<'a> Found<'a> {
             }
             Stmt::Expr(e, _) | Stmt::Raw(e, _) => self.expr(e, func),
             Stmt::Return(Some(e), _) => self.expr(e, func),
-            Stmt::If { test, then, other } => {
+            Stmt::If {
+                test, then, other, ..
+            } => {
                 self.expr(test, func);
                 for s in then.iter().chain(other) {
                     self.stmt(s, func);
@@ -178,7 +180,7 @@ impl<'a> Found<'a> {
             Expr::Call { func: f, args, .. } => {
                 if let Expr::Name(callee) = &**f {
                     for (k, a) in args.iter().enumerate() {
-                        if let Expr::Name(n) = &a.value {
+                        if let Expr::Name(n) = crate::ir::underef(&a.value) {
                             self.calls.push((func, callee.clone(), k, n.clone()));
                         }
                     }

@@ -253,9 +253,49 @@ rule!(
 rule!(
     BUFFER_OVERFLOW,
     "buffer-overflow",
-    120,
+    787,
     Critical,
     "Переполнение буфера",
+    0
+);
+rule!(
+    BUFFER_OVERREAD,
+    "buffer-overread",
+    125,
+    High,
+    "Чтение за границей буфера",
+    0
+);
+rule!(
+    NULL_DEREF,
+    "null-dereference",
+    476,
+    Medium,
+    "Разыменование нулевого указателя",
+    0
+);
+rule!(
+    NULL_RETURN,
+    "unchecked-null",
+    690,
+    Medium,
+    "Результат не проверен на NULL",
+    0
+);
+rule!(
+    USE_AFTER_FREE,
+    "use-after-free",
+    416,
+    High,
+    "Использование памяти после освобождения",
+    0
+);
+rule!(
+    DOUBLE_FREE,
+    "double-free",
+    415,
+    High,
+    "Повторное освобождение памяти",
     0
 );
 rule!(
