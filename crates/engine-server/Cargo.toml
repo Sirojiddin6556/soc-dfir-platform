@@ -47,4 +47,5 @@ tracing-subscriber.workspace = true
 ureq.workspace = true
 
 [dev-dependencies]
+zip.workspace = true
 rusqlite.workspace = true

@@ -7,12 +7,15 @@
 //! Response Center monthly security updates on Windows, the CISA KEV catalog
 //! and FIRST EPSS scores -- and imports them into `<data dir>/vulndb/vuln.db`.
 //! `scan.cve` matches this machine against it: installed dpkg/rpm packages on
-//! Linux, the OS product and build (with UBR) on Windows.
+//! Linux, the OS product and build (with UBR) on Windows. OSV advisories of
+//! application packages (PyPI, npm, Maven ...) are loaded on request for
+//! the dependency check of code analysis.
 //!
 //! With `SOC_VULNDB_OFFLINE_DIR` set the engine never goes online and reads
 //! the same files from that directory instead (air-gapped installs):
-//!   Ubuntu_24.04_LTS.zip (or Ubuntu.zip), 2026-Sep.json (MSRC CVRF documents,
-//!   any number), known_exploited_vulnerabilities.json, epss_scores-current.csv.gz
+//!   Ubuntu_24.04_LTS.zip (or Ubuntu.zip), PyPI.zip, 2026-Sep.json (MSRC CVRF
+//!   documents, any number), known_exploited_vulnerabilities.json,
+//!   epss_scores-current.csv.gz
 
 use chrono::Utc;
 use serde::Serialize;
@@ -22,6 +25,7 @@ use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
+use vulnerability_engine::deps::{self, DependencyCheck, PackageQuery};
 use vulnerability_engine::feeds::{self, FeedSource};
 use vulnerability_engine::msrc::{self, WindowsHostFacts};
 use vulnerability_engine::package_scan::{self, InstalledPackage};
@@ -192,8 +196,12 @@ fn file_stem(ecosystem: &str) -> String {
 }
 
 /// "Debian:12", "Ubuntu:24.04:LTS", "Rocky Linux:9": a supported
-/// distribution, a numeric release and an optional ":LTS".
+/// distribution, a numeric release and an optional ":LTS"; or an
+/// application package ecosystem ("PyPI", "npm" ...).
 fn valid_ecosystem(ecosystem: &str) -> bool {
+    if deps::is_language_ecosystem(ecosystem) {
+        return true;
+    }
     let mut parts = ecosystem.split(':');
     let (Some(base), Some(release)) = (parts.next(), parts.next()) else {
         return false;
@@ -387,6 +395,38 @@ impl VulnDbService {
         })
     }
 
+    /// Advisories for application packages, from the OSV data of their
+    /// ecosystems loaded so far.
+    pub fn check_dependencies(&self, queries: &[PackageQuery]) -> Result<DependencyCheck, String> {
+        let repo = self.repo()?;
+        deps::check_packages(&repo, queries)
+            .map_err(|e| format!("Не удалось проверить зависимости по базе уязвимостей: {e}"))
+    }
+
+    /// When the OSV data of each loaded ecosystem was last imported or
+    /// confirmed current, by ecosystem name.
+    pub fn osv_checked_at(&self) -> std::collections::HashMap<String, String> {
+        let Ok(snapshot) = self
+            .repo()
+            .and_then(|r| r.get_snapshot_info().map_err(|e| e.to_string()))
+        else {
+            return Default::default();
+        };
+        snapshot
+            .feeds
+            .iter()
+            .filter_map(|f| {
+                let eco = f.name.strip_prefix("osv:")?;
+                Some((eco.to_string(), f.imported_at.to_rfc3339()))
+            })
+            .collect()
+    }
+
+    /// Whether a database update is running now.
+    pub fn updating(&self) -> bool {
+        self.job.lock().unwrap_or_else(|p| p.into_inner()).running
+    }
+
     /// Starts a background update of the OSV data for `ecosystems` (the local
     /// distribution when empty), the last `msrc_months` MSRC documents (by
     /// default on Windows only), plus KEV and EPSS.
@@ -411,7 +451,8 @@ impl VulnDbService {
             .collect();
         if let Some(bad) = ecosystems.iter().find(|e| !valid_ecosystem(e)) {
             return Err(format!(
-                "Экосистема '{bad}' не поддерживается: доступны Debian:N, Ubuntu:NN.NN[:LTS], AlmaLinux:N, Rocky Linux:N"
+                "Экосистема '{bad}' не поддерживается: доступны Debian:N, Ubuntu:NN.NN[:LTS], AlmaLinux:N, Rocky Linux:N, {}",
+                deps::LANGUAGE_ECOSYSTEMS.join(", ")
             ));
         }
         if ecosystems.is_empty() && !cfg!(windows) {
@@ -1427,7 +1468,10 @@ mod tests {
         assert!(valid_ecosystem("Ubuntu:24.04:LTS"));
         assert!(valid_ecosystem("Debian:12"));
         assert!(valid_ecosystem("Rocky Linux:9"));
-        assert!(!valid_ecosystem("PyPI"));
+        assert!(valid_ecosystem("PyPI"));
+        assert!(valid_ecosystem("crates.io"));
+        assert!(!valid_ecosystem("pypi"));
+        assert!(!valid_ecosystem("PyPI:1"));
         assert!(!valid_ecosystem("Debian:../../etc"));
         assert!(!valid_ecosystem("Debian:.."));
         assert!(!valid_ecosystem("Debian"));

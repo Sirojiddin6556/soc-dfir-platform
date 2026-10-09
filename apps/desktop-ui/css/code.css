@@ -17,3 +17,10 @@
 .code-issues summary { cursor: pointer; }
 .code-issues div { margin-top: 4px; max-height: 200px; overflow-y: auto; }
 #codeMoreBtn { margin-top: 10px; }
+.code-deps { margin-top: 12px; }
+.code-deps .vuln-chips { margin: 6px 0; }
+#codeDepsLoad { margin: 4px 0 8px; }
+.code-deps-warn { color: var(--accent-warning, var(--text-secondary)); }
+.code-issues .code-deps-list { max-height: 360px; overflow-y: auto; }
+.code-advisories li { margin: 4px 0; }
+.code-advisories .vuln-pkgs { display: inline; margin-left: 6px; }

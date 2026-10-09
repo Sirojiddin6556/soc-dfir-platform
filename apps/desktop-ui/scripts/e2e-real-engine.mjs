@@ -566,6 +566,11 @@ from flask import request
 def check():
     os.system(request.args['cmd'])
 `,
+  // Jinja2 2.10 has published advisories (CVE-2019-10906 and later ones);
+  // flask has no exact version, so it cannot be checked.
+  'requirements.txt': `Jinja2==2.10
+flask>=2.0
+`,
 };
 // The flaws planted above, as "rule file:line".
 const CODE_EXPECTED = [
@@ -591,6 +596,76 @@ const CODE_EXPECTED = [
   'unhandled-parse-error app/contact.py:9',
 ];
 const CODE_EXPECTED_TEST = 'command-injection tests/test_views.py:6';
+const CODE_EXPECTED_DEPENDENCY = 'vulnerable-dependency requirements.txt:1';
+
+/** Orders dotted numeric versions (Jinja2's releases are all of that form). */
+function versionLess(a, b) {
+  const pa = String(a).split('.').map(Number);
+  const pb = String(b).split('.').map(Number);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const d = (pa[i] || 0) - (pb[i] || 0);
+    if (d) return d < 0;
+  }
+  return false;
+}
+
+/**
+ * Loads the PyPI advisories from the code space and checks that the pinned
+ * Jinja2 becomes a finding. Returns whether the advisories could be loaded.
+ */
+async function checkDependencies(page, rpc, report, requireAll) {
+  const deps = report.dependency_check;
+  check(deps.packages === 1 && JSON.stringify(deps.missing) === '["PyPI"]' && deps.unpinned_total === 1
+    && deps.unpinned[0].name === 'flask',
+  `requirements.txt is read: Jinja2 pinned, flask without a version, PyPI not loaded yet (${JSON.stringify(deps.missing)})`);
+  check(!report.findings.some((f) => f.package), 'no dependency finding before the PyPI advisories are loaded');
+  check((await page.textContent('#codeDepsMissing')).includes('PyPI'), 'UI says the PyPI packages are not checked yet');
+  // Filters of the previous checks would hide the new row.
+  await page.fill('#codeSearch', '');
+  await page.selectOption('#codeRule', 'all');
+
+  await page.click('#codeDepsLoad');
+  await page.waitForSelector('#codeDepsProgress', { timeout: 15000 }).catch(() => {});
+  await page.waitForFunction(() => !document.getElementById('codeDepsProgress')
+    && document.getElementById('codeDepsLoad')?.disabled === false, null, { timeout: 600000 });
+  const step = (await rpc('vulndb.status')).result.update.steps.find((st) => st.feed === 'osv:PyPI');
+  console.log(`  ${step?.ok ? 'ok  ' : 'FAIL'} osv:PyPI: ${step?.message}${step?.source ? ` (${step.source})` : ''}`);
+  if (!step?.ok && !requireAll) {
+    console.log('  PyPI advisories are not reachable here: dependency findings not checked');
+    check((await page.textContent('#codeDepsError')).length > 0, 'UI shows why the advisories did not load');
+    return false;
+  }
+  check(step?.ok, 'OSV advisories for PyPI downloaded and imported from the code space');
+
+  const after = (await rpc('code.status')).result.report;
+  const dep = after.findings.find((f) => f.rule === 'vulnerable-dependency');
+  const ids = (dep?.advisories || []).map((a) => a.id);
+  console.log(`  Jinja2 2.10: ${ids.join(', ')}; upgrade to ${dep?.package?.fixed_version}`);
+  check(dep && dep.file === 'requirements.txt' && dep.line === 1 && dep.snippet === 'Jinja2==2.10',
+    'pinned Jinja2 2.10 is a finding on its requirements.txt line');
+  check(ids.includes('CVE-2019-10906') && ids.includes('CVE-2024-22195'),
+    `its known CVEs are listed (${ids.length})`);
+  check(dep.advisories.every((a) => !a.fixed_version || versionLess('2.10', a.fixed_version)),
+    'every advisory is fixed in a release after 2.10');
+  check(dep.advisories.every((a) => !a.fixed_version || !versionLess(dep.package.fixed_version, a.fixed_version)),
+    `the suggested upgrade (${dep.package.fixed_version}) fixes all of them`);
+  check(after.dependency_check.missing.length === 0 && after.dependency_check.vulnerable === 1,
+    'the dependency check now covers PyPI');
+
+  const row = page.locator('#codeTable tr.vuln-row[data-rule="vulnerable-dependency"]');
+  check((await row.count()) === 1 && (await row.textContent()).includes('Jinja2 2.10'),
+    'UI lists the vulnerable package with its version');
+  await row.click();
+  const detail = row.locator('xpath=following-sibling::tr[1]');
+  check((await detail.locator('.code-advisories li').count()) === dep.advisories.length
+    && (await detail.textContent()).includes('CVE-2019-10906'),
+    'the expanded row lists every advisory');
+  const link = await detail.locator('.code-advisories a').first().getAttribute('href');
+  check(/^https:\/\/osv\.dev\/vulnerability\//.test(link || ''), `advisories link to their OSV page (${link})`);
+  check((await page.getAttribute('#codeDepsEcosystems .vuln-chip[data-ecosystem="PyPI"]', 'data-loaded')) === 'true',
+    'UI shows the PyPI advisories as loaded');
+  return true;
+}
 
 async function checkCodeScan(page, base, shot, allowIpcError) {
   const token = await page.evaluate(() => localStorage.getItem('soc_session_token'));
@@ -743,8 +818,13 @@ async function checkCodeScan(page, base, shot, allowIpcError) {
     check(JSON.stringify(searched) === JSON.stringify(['cgi/report.c']), `search narrows to one file (${searched})`);
     await shot('07-code');
 
+    const depsLoaded = await checkDependencies(page, rpc, report, process.env.E2E_REQUIRE_ALL_FEEDS === '1');
+    await shot('07-code-deps');
+
     const withTests = (await scanned(true)).report.findings.map(key);
-    check(withTests.includes(CODE_EXPECTED_TEST) && withTests.length === CODE_EXPECTED.length + 1,
+    const expected = CODE_EXPECTED.length + 1 + (depsLoaded ? 1 : 0);
+    check(withTests.includes(CODE_EXPECTED_TEST) && withTests.length === expected
+      && (!depsLoaded || withTests.includes(CODE_EXPECTED_DEPENDENCY)),
       `including tests adds the flaw in the test file (${withTests.length})`);
     const uiWithTests = await page.locator('#codeTable tr.vuln-row').count();
     check(uiWithTests === withTests.length, `UI shows the new run with filters reset (${uiWithTests})`);

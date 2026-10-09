@@ -114,8 +114,8 @@ impl EngineApp {
             scoring: scoring_engine::ScoringEngine::new(),
             job_engine: core_domain::ctf::LocalJobEngine::new(),
             login_throttle: auth::LoginThrottle::new(),
+            code_scan: Arc::new(code_scan::CodeScanService::new(vulndb.clone())),
             vulndb,
-            code_scan: Arc::new(code_scan::CodeScanService::new()),
         }
     }
 }

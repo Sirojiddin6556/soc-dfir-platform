@@ -440,6 +440,46 @@ await sink('code analysis progress (running path, engine error)', async (v) => {
   return `${running}\n${root.querySelector('#codeProgress').innerHTML}`;
 });
 
+// Package names, versions and advisory text come from the project's
+// files and from the public advisory feeds.
+const depFinding = (v, malicious) => ({
+  rule: v, cwe: v, severity: v, title: v, message: v, file: v, line: v, column: v, snippet: v,
+  source: null, trace: [], other_sources: [{ file: v, line: v, column: v, note: v }],
+  package: { ecosystem: v, name: v, version: v, kind: v, where: v, requirement: v, fixed_version: v },
+  advisories: [{
+    id: v, aliases: [v], summary: v, severity: v, cvss_score: v, fixed_version: v, malicious,
+    url: v, kev: { name: v, date_added: v }
+  }]
+});
+const depCheck = (v) => ({
+  total: v, packages: v, vulnerable: v, advisories: v,
+  ecosystems: [{ ecosystem: v, packages: v, loaded: false, checked_at: v, download_mb: v },
+    { ecosystem: v, packages: v, loaded: true, checked_at: v, download_mb: v }],
+  missing: [v],
+  list: [{ ecosystem: v, name: v, version: v, file: v, line: v, kind: v, places: 2, advisories: v, malicious: false }],
+  unpinned_total: v,
+  unpinned: [{ ecosystem: v, name: v, requirement: v, file: v, line: v, kind: v }],
+  undeclared_python: [{ module: v, file: v, line: v, files: v }],
+  checked_at: v, error: v
+});
+await sink('code analysis dependency findings (package, advisories, places)', async (v) => {
+  const status = codeStatus(v);
+  status.report.findings = [depFinding(v, false), depFinding(v, true)];
+  status.report.dependency_check = depCheck(v);
+  const { root } = await codeSpace(status);
+  return root.querySelector('#codeResultPanel').innerHTML;
+});
+await sink('code analysis dependency block (ecosystems, unpinned, imports, errors, list)', async (v) => {
+  const status = codeStatus(v);
+  status.report.dependency_check = depCheck(v);
+  const { space, root } = await codeSpace(status);
+  space.depsUpdating = true;
+  space.depsCurrent = v;
+  space.depsError = v;
+  space.renderDeps();
+  return `${root.querySelector('#codeDeps').innerHTML}\n${space.packagesTable(status.report.dependency_check)}`;
+});
+
 console.log('\n=== CTF ===');
 await sink('challenge matrix (competition, cards, title attr, points)', (v) => {
   const el = freshEl();

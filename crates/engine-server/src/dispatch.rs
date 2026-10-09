@@ -284,6 +284,15 @@ impl EngineApp {
                 let res = Ok::<_, ProblemDetails>(self.code_scan.status());
                 respond_res(req.request_id, res)
             }
+            "code.deps" => {
+                let code_scan = self.code_scan.clone();
+                let res = tokio::task::spawn_blocking(move || code_scan.recheck_dependencies())
+                    .await
+                    .map_err(|e| e.to_string())
+                    .and_then(|r| r)
+                    .map_err(|e| ProblemDetails::bad_request(&e, vec![]));
+                respond_res(req.request_id, res)
+            }
             "host.overview" => {
                 let host_id = req
                     .params

@@ -10,6 +10,24 @@ const SEVERITIES = ['critical', 'high', 'medium', 'low'];
 
 const LANGUAGE_NAMES = { python: 'Python', java: 'Java', php: 'PHP', c: 'C', cpp: 'C++' };
 
+/** How the project names a package (dependency `kind`). */
+const KIND_LABELS = {
+  manifest: 'файл зависимостей',
+  lockfile: 'lock-файл',
+  bundled: 'копия библиотеки в проекте',
+  cdn: 'загрузка с CDN',
+  installed: 'установлен в окружении проекта'
+};
+/** Advisory ratings (CVSS scale of the vulnerability database). */
+const ADVISORY_SEVERITY = {
+  critical: ['critical', 'критическая'],
+  high: ['high', 'высокая'],
+  medium: ['medium', 'средняя'],
+  low: ['low', 'низкая'],
+  none: ['low', 'низкая'],
+  unknown: ['low', 'без оценки']
+};
+
 const PAGE_SIZE = 200;
 const PATH_KEY = 'soc.code.path';
 
@@ -64,6 +82,11 @@ export class CodeSpace {
     this.query = '';
     this.limit = PAGE_SIZE;
     this.pollTimer = null;
+    // Loading the vulnerability database for the dependencies.
+    this.depsUpdating = false;
+    this.depsCurrent = '';
+    this.depsError = null;
+    this.depsTimer = null;
   }
 
   async render(container) {
@@ -73,7 +96,7 @@ export class CodeSpace {
         <div class="vuln-header">
           <div>
             <h2>⌨ АНАЛИЗ КОДА</h2>
-            <div class="vuln-subtitle">Уязвимости в исходном коде на Python, Java, PHP, C и C++: путь данных от входа (HTTP-запрос, сокет, CGI) до опасного вызова (SQL, команды ОС, файлы, шаблоны, XSS, LDAP, XML, SSRF, перенаправления), а также слабая криптография, секреты в коде и отключённая проверка TLS</div>
+            <div class="vuln-subtitle">Уязвимости в исходном коде на Python, Java, PHP, C и C++: путь данных от входа (HTTP-запрос, сокет, CGI) до опасного вызова (SQL, команды ОС, файлы, шаблоны, XSS, LDAP, XML, SSRF, перенаправления), а также слабая криптография, секреты в коде, отключённая проверка TLS и библиотеки с известными уязвимостями (CVE) или вредоносные пакеты из requirements.txt, package.json, pom.xml, composer.json и других файлов зависимостей</div>
           </div>
         </div>
         <div class="vuln-panel">
@@ -195,7 +218,8 @@ export class CodeSpace {
       if (this.severity !== 'all' && f.severity !== this.severity) return false;
       if (this.rule !== 'all' && f.rule !== this.rule) return false;
       if (!q) return true;
-      return [f.file, f.rule, f.title, f.message, f.snippet, `cwe-${f.cwe}`, f.source?.file]
+      return [f.file, f.rule, f.title, f.message, f.snippet, `cwe-${f.cwe}`, f.source?.file, f.package?.name,
+        ...(f.advisories || []).flatMap(a => [a.id, ...(a.aliases || [])])]
         .some(t => String(t ?? '').toLowerCase().includes(q));
     });
   }
@@ -235,7 +259,7 @@ export class CodeSpace {
     panel.innerHTML = `
       <div class="vuln-panel-title">РЕЗУЛЬТАТ</div>
       <div id="codeStatus" class="vuln-status ${all.length ? 'vuln-status-found' : 'vuln-status-clean'}" data-count="${escapeAttr(String(all.length))}" data-finished="${escapeAttr(s.finished_at || '')}">
-        ${all.length ? `Найдено уязвимостей: ${escapeHtml(String(all.length))}` : 'Путей от входа пользователя до опасных вызовов не найдено'}
+        ${all.length ? `Найдено уязвимостей: ${escapeHtml(String(all.length))}` : 'Уязвимостей не найдено'}
       </div>
       <div class="vuln-chips" id="codeSummary">
         <div class="vuln-chip"><span>${escapeHtml(String(all.length))}</span>всего</div>
@@ -263,6 +287,7 @@ export class CodeSpace {
           <summary>Пропущенные файлы: ${escapeHtml(String(skipped.length))}</summary>
           <div class="vuln-mono">${skipped.slice(0, 100).map(([p, why]) => `${escapeHtml(p)}: ${escapeHtml(why)}`).join('<br>')}</div>
         </details>` : ''}
+      <div id="codeDeps" class="code-deps"></div>
       ${all.length ? `
         <div class="vuln-toolbar">
           ${sevBtn('all', 'Все', all.length)}
@@ -311,9 +336,142 @@ export class CodeSpace {
       const detail = tr.nextElementSibling;
       if (detail?.classList.contains('vuln-detail')) detail.hidden = !detail.hidden;
     }));
+    this.renderDeps();
+  }
+
+  /**
+   * Third-party packages of the project: what was found, whether the
+   * vulnerability database has their ecosystems, and a button to load it.
+   */
+  renderDeps() {
+    const box = this.container?.querySelector('#codeDeps');
+    const dc = this.status?.report?.dependency_check;
+    if (!box || !dc) return;
+    const ecosystems = dc.ecosystems || [];
+    const missing = dc.missing || [];
+    const undeclared = dc.undeclared_python || [];
+    const unpinned = dc.unpinned || [];
+    const list = dc.list || [];
+    const counted = ecosystems.map(e => `${e.ecosystem} ${e.packages}`).join(', ');
+    let html = '<div class="vuln-panel-title">ЗАВИСИМОСТИ</div>';
+    if (!dc.packages && !dc.unpinned_total && !undeclared.length) {
+      html += '<div class="vuln-note" id="codeDepsNone">Файлов зависимостей, встроенных библиотек и ссылок на CDN не найдено.</div>';
+    }
+    if (dc.packages) {
+      html += `<div class="vuln-note" id="codeDepsSummary" data-packages="${escapeAttr(String(dc.packages))}" data-vulnerable="${escapeAttr(String(dc.vulnerable))}">
+        Пакетов с точной версией: ${escapeHtml(String(dc.packages))} (${escapeHtml(counted)}).
+        ${missing.length ? '' : `С известными уязвимостями: ${escapeHtml(String(dc.vulnerable))}, они в таблице ниже.`}</div>`;
+      html += `<div class="vuln-chips" id="codeDepsEcosystems">${ecosystems.map(e => `
+        <div class="vuln-chip ${e.loaded ? 'vuln-chip-ok' : ''}" data-ecosystem="${escapeAttr(e.ecosystem)}" data-loaded="${escapeAttr(String(e.loaded))}">
+          <span>${escapeHtml(String(e.packages))}</span>${escapeHtml(e.ecosystem)}:
+          ${e.loaded ? `база от ${escapeHtml(formatDate(e.checked_at))}` : 'база не загружена'}
+        </div>`).join('')}</div>`;
+    }
+    if (missing.length) {
+      const mb = ecosystems.filter(e => !e.loaded).reduce((n, e) => n + (e.download_mb || 0), 0);
+      html += `<div class="vuln-note" id="codeDepsMissing">Пакеты ${escapeHtml(missing.join(', '))} ещё не проверены: в базе уязвимостей нет данных OSV для этих экосистем. Загрузка нужна один раз, потом базу можно обновлять той же кнопкой.</div>
+        <button id="codeDepsLoad" class="primary-action" data-ecosystems="${escapeAttr(missing.join(','))}" ${this.depsUpdating ? 'disabled' : ''}>Загрузить базу уязвимостей: ${escapeHtml(missing.join(', '))} (около ${escapeHtml(String(mb))} МБ)</button>`;
+    } else if (dc.packages) {
+      html += `<button id="codeDepsLoad" class="ctf-btn ctf-btn-secondary" data-ecosystems="${escapeAttr(ecosystems.map(e => e.ecosystem).join(','))}" ${this.depsUpdating ? 'disabled' : ''}>Обновить базу уязвимостей</button>`;
+    }
+    if (this.depsUpdating) {
+      html += `<div class="vuln-progress" id="codeDepsProgress"><span class="vuln-spinner"></span> ${escapeHtml(this.depsCurrent || 'Загрузка базы...')}</div>`;
+    }
+    if (this.depsError) html += `<div class="vuln-error" id="codeDepsError">${escapeHtml(this.depsError)}</div>`;
+    if (dc.error) html += `<div class="vuln-error">${escapeHtml(dc.error)}</div>`;
+    if (undeclared.length) {
+      const first = undeclared[0];
+      html += `<div class="vuln-note code-deps-warn" id="codeDepsUndeclared">Код на Python импортирует сторонние модули
+        <span class="vuln-mono">${escapeHtml(undeclared.map(m => m.module).join(', '))}</span>
+        (например, ${escapeHtml(first.file)}:${escapeHtml(String(first.line))}), но списка зависимостей нет: ни requirements.txt, ни pyproject.toml, ни Pipfile, ни виртуального окружения в папке.
+        Их версии неизвестны, поэтому на уязвимости они не проверены. Зафиксируйте версии (pip freeze &gt; requirements.txt) или проверьте папку вместе с окружением.</div>`;
+    }
+    if (dc.unpinned_total) {
+      html += `<details class="code-issues" id="codeDepsUnpinned">
+        <summary>Без точной версии: ${escapeHtml(String(dc.unpinned_total))} (какая версия установится, неизвестно, поэтому они не проверены)</summary>
+        <div class="vuln-mono">${unpinned.map(d => `${escapeHtml(d.ecosystem)} ${escapeHtml(d.name)} ${escapeHtml(d.requirement || 'любая версия')}: ${escapeHtml(d.file)}:${escapeHtml(String(d.line))}`).join('<br>')}</div>
+      </details>`;
+    }
+    if (list.length) {
+      html += `<details class="code-issues" id="codeDepsList">
+        <summary>Все пакеты: ${escapeHtml(String(dc.packages))}</summary>
+        <div class="code-deps-list"></div>
+      </details>`;
+    }
+    box.innerHTML = html;
+    box.querySelector('#codeDepsLoad')?.addEventListener('click', (e) => {
+      this.loadDepsDb(e.currentTarget.dataset.ecosystems.split(',').filter(Boolean));
+    });
+    // The full list can run to thousands of rows: built when opened.
+    const details = box.querySelector('#codeDepsList');
+    details?.addEventListener('toggle', () => {
+      const target = details.querySelector('.code-deps-list');
+      if (details.open && !target.childElementCount) target.innerHTML = this.packagesTable(dc);
+    });
+  }
+
+  /** Every package found, with where it is named and what was found for it. */
+  packagesTable(dc) {
+    const list = dc.list || [];
+    const missing = dc.missing || [];
+    return `<table class="vuln-table">
+      <thead><tr><th>Экосистема</th><th>Пакет</th><th>Версия</th><th>Где указан</th><th>Уязвимости</th></tr></thead>
+      <tbody>${list.map(p => `<tr data-name="${escapeAttr(p.name)}">
+        <td>${escapeHtml(p.ecosystem)}</td>
+        <td class="vuln-mono">${escapeHtml(p.name)}</td>
+        <td class="vuln-mono">${escapeHtml(p.version)}</td>
+        <td><span class="vuln-mono">${escapeHtml(p.file)}:${escapeHtml(String(p.line))}</span><div class="vuln-pkgs">${escapeHtml(KIND_LABELS[p.kind] || p.kind)}${p.places > 1 ? `, мест: ${escapeHtml(String(p.places))}` : ''}</div></td>
+        <td>${p.malicious ? '<span class="vuln-badge vuln-sev-critical">ВРЕДОНОСНЫЙ</span>' : p.advisories ? escapeHtml(String(p.advisories)) : (missing.includes(p.ecosystem) ? 'не проверен' : 'нет известных')}</td>
+      </tr>`).join('')}</tbody>
+    </table>${list.length < dc.packages ? `<div class="vuln-note">Показаны первые ${escapeHtml(String(list.length))}.</div>` : ''}`;
+  }
+
+  /** Loads the OSV data of `ecosystems`, then checks the packages again. */
+  async loadDepsDb(ecosystems) {
+    if (this.depsUpdating || !ecosystems.length) return;
+    this.depsError = null;
+    try {
+      await this.ipc.call('vulndb.update', { ecosystems });
+    } catch (e) {
+      this.depsError = `Не удалось начать загрузку: ${e.message}`;
+      this.renderDeps();
+      return;
+    }
+    this.depsUpdating = true;
+    this.depsCurrent = 'Подготовка';
+    this.renderDeps();
+    this.depsTimer = setInterval(async () => {
+      let st;
+      try {
+        st = await this.ipc.call('vulndb.status', {});
+      } catch {
+        return; // the next tick asks again
+      }
+      const update = st?.update || {};
+      if (update.running) {
+        this.depsCurrent = update.current || '';
+        if (this.container?.isConnected) this.renderDeps();
+        return;
+      }
+      clearInterval(this.depsTimer);
+      this.depsTimer = null;
+      const failed = (update.steps || [])
+        .filter(step => !step.ok && ecosystems.some(e => step.feed === `osv:${e}`))
+        .map(step => step.message);
+      try {
+        this.status = await this.ipc.call('code.deps', {});
+        this.error = null;
+      } catch (e) {
+        failed.push(e.message);
+      }
+      this.depsUpdating = false;
+      this.depsError = failed.length ? failed.join('; ') : null;
+      if (this.container?.isConnected) this.renderResult();
+    }, 1000);
   }
 
   findingRow(f, i) {
+    if (f.package) return this.dependencyRow(f, i);
     const sev = SEVERITY_LABELS[f.severity] ? f.severity : 'low';
     const trace = (f.trace || []).map(step => `
       <li><span class="vuln-mono">${escapeHtml(place(step))}</span> ${escapeHtml(step.note)}</li>`).join('');
@@ -336,6 +494,49 @@ export class CodeSpace {
           <div>${escapeHtml(f.message)}</div>
           ${trace ? `<div class="vuln-detail-meta">Путь данных:</div><ol class="code-trace">${trace}</ol>` : ''}
           ${others.length ? `<div class="vuln-detail-meta">Другие входы, доходящие до этого вызова:</div>
+            <ul class="code-trace">${others.map(o => `<li><span class="vuln-mono">${escapeHtml(place(o))}</span> ${escapeHtml(o.note)}</li>`).join('')}</ul>` : ''}
+        </td>
+      </tr>`;
+  }
+
+  /** A vulnerable or malicious package, with the advisories that name it. */
+  dependencyRow(f, i) {
+    const sev = SEVERITY_LABELS[f.severity] ? f.severity : 'low';
+    const pkg = f.package;
+    const others = f.other_sources || [];
+    const slash = String(f.file).lastIndexOf('/');
+    const dir = String(f.file).slice(0, slash + 1);
+    const name = String(f.file).slice(slash + 1);
+    const advisories = (f.advisories || []).map(a => {
+      const [cls, label] = ADVISORY_SEVERITY[a.severity] || ADVISORY_SEVERITY.unknown;
+      // Feed data: only plain web links become clickable.
+      const id = a.url && /^https:\/\//i.test(a.url)
+        ? `<a href="${escapeAttr(a.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(a.id)}</a>`
+        : escapeHtml(a.id);
+      return `<li data-id="${escapeAttr(a.id)}">${id}
+        ${a.malicious ? '<span class="vuln-badge vuln-sev-critical">ВРЕДОНОСНЫЙ</span>' : `<span class="vuln-badge vuln-sev-${escapeAttr(cls)}">${escapeHtml(label)}</span>`}
+        ${a.kev ? `<span class="vuln-badge vuln-kev" title="${escapeAttr(`${a.kev.name}; добавлено ${a.kev.date_added}`)}">KEV</span>` : ''}
+        ${escapeHtml(a.summary || '')}
+        ${a.malicious ? '' : a.fixed_version ? `<span class="vuln-pkgs">исправлено в ${escapeHtml(a.fixed_version)}</span>` : '<span class="vuln-nofix">нет исправления</span>'}
+        ${(a.aliases || []).length ? `<span class="vuln-pkgs">${escapeHtml(a.aliases.join(', '))}</span>` : ''}
+      </li>`;
+    }).join('');
+    return `
+      <tr class="vuln-row" data-index="${escapeAttr(String(i))}" data-rule="${escapeAttr(f.rule)}" data-file="${escapeAttr(f.file)}" data-line="${escapeAttr(String(f.line))}" data-package="${escapeAttr(pkg.name)}">
+        <td><span class="vuln-badge vuln-sev-${escapeAttr(sev)}">${escapeHtml(SEVERITY_LABELS[sev])}</span></td>
+        <td><strong>${escapeHtml(f.title)}</strong><div class="vuln-pkgs">CWE-${escapeHtml(String(f.cwe))} · ${escapeHtml(f.rule)}</div></td>
+        <td class="code-where"><span class="vuln-mono">${escapeHtml(name)}:${escapeHtml(String(f.line))}</span><div class="vuln-pkgs vuln-mono code-dir">${escapeHtml(dir)}</div></td>
+        <td class="code-from">${escapeHtml(pkg.ecosystem)} <span class="vuln-mono">${escapeHtml(pkg.name)} ${escapeHtml(pkg.version)}</span>
+          <div class="vuln-pkgs">${escapeHtml(KIND_LABELS[pkg.kind] || pkg.kind)}; уязвимостей: ${escapeHtml(String((f.advisories || []).length))}</div>
+          ${others.length ? `<div class="vuln-pkgs">и ещё мест: ${escapeHtml(String(others.length))}</div>` : ''}</td>
+        <td class="code-snippet"><code>${escapeHtml(f.snippet)}</code></td>
+      </tr>
+      <tr class="vuln-detail" hidden>
+        <td colspan="5">
+          <div>${escapeHtml(f.message)}</div>
+          <div class="vuln-detail-meta">Известные уязвимости этой версии:</div>
+          <ul class="code-trace code-advisories">${advisories}</ul>
+          ${others.length ? `<div class="vuln-detail-meta">Эта же версия указана ещё здесь:</div>
             <ul class="code-trace">${others.map(o => `<li><span class="vuln-mono">${escapeHtml(place(o))}</span> ${escapeHtml(o.note)}</li>`).join('')}</ul>` : ''}
         </td>
       </tr>`;
