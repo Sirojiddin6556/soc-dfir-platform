@@ -602,3 +602,66 @@ async fn phase3_h20_restart_and_cas_replay_preserve_network_semantics() {
     assert_eq!(pcapng_before, pcapng_after);
     let _ = tokio::fs::remove_dir_all(scratch).await;
 }
+
+/// `code.scan` passes its options through: a C tool that runs its argument
+/// is reported only when command-line input counts as an attacker's.
+#[tokio::test]
+async fn code_scan_reports_findings_with_the_requested_sources() {
+    let temp_dir = std::env::temp_dir().join(format!("engine_code_{}", uuid::Uuid::now_v7()));
+    let project = temp_dir.join("tool");
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::write(
+        project.join("tool.c"),
+        "#include <stdlib.h>\nint main(int argc, char **argv) {\n    system(argv[1]);\n    return 0;\n}\n",
+    )
+    .unwrap();
+    let app = Arc::new(EngineApp::new_in_memory(temp_dir.join("data")));
+
+    let scan = |external: bool| {
+        let params = serde_json::json!({ "path": project, "external_sources": external });
+        format!(
+            r#"{{"api_version": 1, "request_id": "code", "method": "code.scan", "params": {params}}}"#
+        )
+    };
+    let finished = || async {
+        for _ in 0..600 {
+            let resp = app
+                .dispatch_request(
+                    r#"{"api_version": 1, "request_id": "s", "method": "code.status", "params": {}}"#,
+                )
+                .await;
+            let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+            if v["result"]["running"] == false {
+                return v["result"].clone();
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        panic!("code analysis did not finish");
+    };
+
+    let started: serde_json::Value =
+        serde_json::from_str(&app.dispatch_request(&scan(false)).await).unwrap();
+    assert_eq!(started["result"]["running"], true, "{started}");
+    let status = finished().await;
+    assert_eq!(status["external_sources"], false);
+    assert_eq!(
+        status["report"]["findings"].as_array().unwrap().len(),
+        0,
+        "{status}"
+    );
+
+    app.dispatch_request(&scan(true)).await;
+    let status = finished().await;
+    let findings = status["report"]["findings"].as_array().unwrap();
+    assert_eq!(findings.len(), 1, "{status}");
+    assert_eq!(findings[0]["rule"], "command-injection");
+    assert_eq!(findings[0]["file"], "tool.c");
+    assert_eq!(findings[0]["line"], 3);
+
+    let missing =
+        r#"{"api_version": 1, "request_id": "m", "method": "code.scan", "params": {"path": ""}}"#;
+    let resp = app.dispatch_request(missing).await;
+    assert!(resp.contains("\"status\":400"), "{resp}");
+
+    std::fs::remove_dir_all(temp_dir).ok();
+}

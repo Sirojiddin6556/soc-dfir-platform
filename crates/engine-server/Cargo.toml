@@ -29,6 +29,7 @@ platform-linux = { path = "../platform-linux" }
 host-snapshot = { path = "../host-snapshot" }
 scan-engine = { path = "../scan-engine" }
 vulnerability-engine = { path = "../vulnerability-engine" }
+code-analysis = { path = "../code-analysis" }
 
 
 uuid = { workspace = true, features = ["v7"] }

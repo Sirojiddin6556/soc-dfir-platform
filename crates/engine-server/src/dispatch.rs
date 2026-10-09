@@ -262,6 +262,28 @@ impl EngineApp {
                     });
                 respond_res(req.request_id, res)
             }
+            "code.scan" => {
+                let path = req
+                    .params
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default();
+                let flag = |name: &str| {
+                    req.params
+                        .get(name)
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false)
+                };
+                let res = self
+                    .code_scan
+                    .start(path, flag("external_sources"), flag("include_tests"))
+                    .map_err(|e| ProblemDetails::bad_request(&e, vec!["path".to_string()]));
+                respond_res(req.request_id, res)
+            }
+            "code.status" => {
+                let res = Ok::<_, ProblemDetails>(self.code_scan.status());
+                respond_res(req.request_id, res)
+            }
             "host.overview" => {
                 let host_id = req
                     .params

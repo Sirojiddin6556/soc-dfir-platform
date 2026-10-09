@@ -13,6 +13,7 @@ use std::sync::Arc;
 
 pub mod analysis;
 pub mod auth;
+pub mod code_scan;
 pub mod collaboration;
 pub mod ctf_dispatch;
 pub mod dispatch;
@@ -51,6 +52,7 @@ pub struct EngineApp {
     pub job_engine: core_domain::ctf::LocalJobEngine,
     pub login_throttle: auth::LoginThrottle,
     pub vulndb: Arc<vulndb::VulnDbService>,
+    pub code_scan: Arc<code_scan::CodeScanService>,
 }
 
 impl EngineApp {
@@ -113,6 +115,7 @@ impl EngineApp {
             job_engine: core_domain::ctf::LocalJobEngine::new(),
             login_throttle: auth::LoginThrottle::new(),
             vulndb,
+            code_scan: Arc::new(code_scan::CodeScanService::new()),
         }
     }
 }

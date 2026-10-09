@@ -18,6 +18,8 @@ services:
       - SOC_ALLOWED_HOSTS=${SOC_PUBLIC_HOST:-localhost}
     volumes:
       - soc_data:/app/data
+      # Source code for "Анализ кода": mount it read-only, then enter /scan/<project>.
+      # - /home/user/projects:/scan:ro
     networks:
       - internal_net
 

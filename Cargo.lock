@@ -994,6 +994,7 @@ dependencies = [
  "base64 0.22.1",
  "blake3",
  "chrono",
+ "code-analysis",
  "core-domain",
  "correlation-engine",
  "diagram-engine",
