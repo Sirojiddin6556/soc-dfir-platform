@@ -294,7 +294,12 @@ fn webapp_findings(project: &project::Project, options: Options) -> Vec<rules::F
 /// Findings of the checks that read files as text: secrets in code of
 /// every language and in the files no front end reads.
 fn text_findings(project: &project::Project, options: Options) -> Vec<rules::Finding> {
-    let mut out = Vec::new();
+    let mut out: Vec<rules::Finding> = Vec::new();
+    // Identical secrets repeated across files collapse into one finding whose
+    // `other_sources` lists the extra locations, keyed by (rule, secret value).
+    // The key is in-memory only; the raw value never reaches the output.
+    let mut groups: std::collections::HashMap<(&'static str, String), usize> =
+        std::collections::HashMap::new();
     let code = project
         .modules
         .iter()
@@ -341,6 +346,19 @@ fn text_findings(project: &project::Project, options: Options) -> Vec<rules::Fin
                 column: h.column,
                 note: format!("сток: {}", h.what),
             };
+            // Same literal secret seen before → attach this spot to that finding
+            // instead of emitting a duplicate (bounded, like any Finding trace).
+            let secret = line.get(h.hide.0..h.hide.1).unwrap_or("").to_string();
+            if !secret.is_empty() {
+                if let Some(&idx) = groups.get(&(h.rule.id, secret.clone())) {
+                    let f = &mut out[idx];
+                    if f.other_sources.len() < 50 {
+                        f.other_sources.push(at);
+                    }
+                    continue;
+                }
+                groups.insert((h.rule.id, secret), out.len());
+            }
             out.push(rules::Finding {
                 rule: h.rule.id.to_string(),
                 cwe: h.rule.cwe,

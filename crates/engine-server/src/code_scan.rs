@@ -479,6 +479,8 @@ fn dependency_finding(
     let who = format!("{} {} ({})", main.name, query.version, query.ecosystem);
     let malware: Vec<&Advisory> = advisories.iter().filter(|a| a.malicious).collect();
     let flaws: Vec<&Advisory> = advisories.iter().filter(|a| !a.malicious).collect();
+    // Every place this package is listed is a dev/build dependency.
+    let dev_only = places.iter().all(|d| d.dev);
     let upgrade = vdeps::upgrade_target(&query.ecosystem, advisories);
     let (rule, cwe, title, severity, message) = if let Some(m) = malware.first() {
         let mut message = format!(
@@ -509,11 +511,23 @@ fn dependency_finding(
             .map(|a| a.severity)
             .max()
             .unwrap_or(CvssSeverity::Unknown);
-        let severity = match worst {
-            CvssSeverity::Critical => "critical",
-            CvssSeverity::High => "high",
-            CvssSeverity::Medium | CvssSeverity::Unknown => "medium",
-            CvssSeverity::Low | CvssSeverity::None => "low",
+        // A flaw reachable only through dev/build tooling (every place is a
+        // dev dependency) does not ship, so it sits one step below a runtime
+        // flaw of the same rating.
+        let severity = match (worst, dev_only) {
+            (CvssSeverity::Critical, false) => "critical",
+            (CvssSeverity::High, false) | (CvssSeverity::Critical, true) => "high",
+            (CvssSeverity::Medium | CvssSeverity::Unknown, false) | (CvssSeverity::High, true) => {
+                "medium"
+            }
+            (CvssSeverity::Low | CvssSeverity::None, false)
+            | (
+                CvssSeverity::Medium
+                | CvssSeverity::Unknown
+                | CvssSeverity::Low
+                | CvssSeverity::None,
+                true,
+            ) => "low",
         };
         let listed: Vec<String> = flaws
             .iter()
@@ -546,6 +560,11 @@ fn dependency_finding(
             None => message.push_str(
                 " Исправленной версии нет хотя бы для одной из них: замените библиотеку или закройте уязвимость по её описанию.",
             ),
+        }
+        if dev_only {
+            message.push_str(
+                " Только dev-зависимость (не попадает в сборку) — риск ниже; важно для CI и машин разработчиков.",
+            );
         }
         (
             "vulnerable-dependency",
@@ -597,6 +616,7 @@ fn dependency_finding(
             "where": kind_label(main.kind),
             "requirement": main.requirement,
             "fixed_version": upgrade,
+            "dev": dev_only,
         },
         "advisories": advisories,
     })

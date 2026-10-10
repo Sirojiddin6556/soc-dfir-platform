@@ -526,7 +526,7 @@ export class CodeSpace {
         <td><span class="vuln-badge vuln-sev-${escapeAttr(sev)}">${escapeHtml(SEVERITY_LABELS[sev])}</span></td>
         <td><strong>${escapeHtml(f.title)}</strong><div class="vuln-pkgs">CWE-${escapeHtml(String(f.cwe))} · ${escapeHtml(f.rule)}</div></td>
         <td class="code-where"><span class="vuln-mono">${escapeHtml(name)}:${escapeHtml(String(f.line))}</span><div class="vuln-pkgs vuln-mono code-dir">${escapeHtml(dir)}</div></td>
-        <td class="code-from">${escapeHtml(pkg.ecosystem)} <span class="vuln-mono">${escapeHtml(pkg.name)} ${escapeHtml(pkg.version)}</span>
+        <td class="code-from">${escapeHtml(pkg.ecosystem)} <span class="vuln-mono">${escapeHtml(pkg.name)} ${escapeHtml(pkg.version)}</span>${pkg.dev ? ' <span class="vuln-badge vuln-dev" title="Только dev-зависимость: не попадает в сборку">dev</span>' : ''}
           <div class="vuln-pkgs">${escapeHtml(KIND_LABELS[pkg.kind] || pkg.kind)}; уязвимостей: ${escapeHtml(String((f.advisories || []).length))}</div>
           ${others.length ? `<div class="vuln-pkgs">и ещё мест: ${escapeHtml(String(others.length))}</div>` : ''}</td>
         <td class="code-snippet"><code>${escapeHtml(f.snippet)}</code></td>
