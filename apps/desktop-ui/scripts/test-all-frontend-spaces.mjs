@@ -208,372 +208,105 @@ globalThis.document = {
   body: body
 };
 
+globalThis.requestAnimationFrame = globalThis.requestAnimationFrame || ((cb) => setTimeout(cb, 0));
+globalThis.cancelAnimationFrame = globalThis.cancelAnimationFrame || ((id) => clearTimeout(id));
+
+const jsRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'js');
+
 globalThis.window = {
-  location: { hash: '#ctf-competitions' },
+  location: { hash: '' },
   addEventListener: () => {},
   removeEventListener: () => {},
-  prompt: (msg, def) => def || 'Test Case',
+  prompt: (msg, def) => def || '',
   confirm: () => true,
   requestAnimationFrame: globalThis.requestAnimationFrame,
-  cancelAnimationFrame: globalThis.cancelAnimationFrame
+  cancelAnimationFrame: globalThis.cancelAnimationFrame,
+  localStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {} }
 };
+globalThis.localStorage = globalThis.window.localStorage;
 
-// Mock index.html structure
-const htmlFixture = `
+// Minimal shell fixture: the app renders each space into #spaceContainer.
+body.innerHTML = `
 <div id="socApp" class="soc-app">
-  <header class="topbar">
-    <strong id="caseId">CASE-1337</strong>
-    <span id="caseMode">LIVE</span>
-    <span id="caseTimer">00:00:00</span>
-    <div id="teamPresence"></div>
-    <span id="unreadCount">0</span>
-    <input id="globalSearch">
-    <button id="startCollection">▶ Запустить сбор</button>
-  </header>
+  <header class="topbar"><span id="currentUserName">—</span></header>
   <div class="workspace-layout">
     <nav class="global-nav">
-      <button data-space="operations">Операции</button>
-      <button data-space="investigation" class="active">Расследование</button>
-      <button data-space="evidence">Улики</button>
-      <button data-space="range">Range</button>
-      <button id="nav-ctf-workspace" data-space="ctf">CTF Workspace</button>
-      <button data-space="system">Система</button>
+      <button data-space="system" class="active">Система</button>
+      <button data-space="vulns">Уязвимости</button>
+      <button data-space="code">Анализ кода</button>
+      <button data-space="web">Запущенный сайт</button>
     </nav>
-    <main id="investigationWorkspace" class="investigation-workspace">
-      <section class="layer-toolbar">
-        <button data-layer="environment">Среда</button>
-        <button data-layer="attack" class="active danger">Атака</button>
-        <button data-layer="processes">Процессы</button>
-        <button data-layer="network">Сеть</button>
-        <button data-layer="mitre">ATT&CK</button>
-        <button id="zoomOut">−</button>
-        <span id="zoomLabel">100%</span>
-        <button id="zoomIn">+</button>
-        <button id="fitGraph">⌗</button>
-      </section>
-      <section class="investigation-canvas">
-        <canvas id="investigationGraph"></canvas>
-        <div id="graphEmptyState"></div>
-        <div id="graphTooltip"></div>
-        <canvas id="minimapCanvas"></canvas>
-        <div id="minimapViewRect"></div>
-      </section>
-      <section class="forensic-bottom">
-        <select id="timelineFilter">
-          <option value="all">Все события</option>
-          <option value="process">Процессы</option>
-          <option value="network">Сеть</option>
-          <option value="persistence">Закрепление</option>
-          <option value="security">Безопасность</option>
-        </select>
-        <div id="timelineEvents"></div>
-        <div id="eventDetails"></div>
-      </section>
-    </main>
-    <aside class="context-panel">
-      <div id="entityInspector"></div>
-      <div id="discussionMessages"></div>
-      <input id="discussionText">
-      <button id="sendDiscussion">➤</button>
-      <span id="discussionCount">0</span>
-    </aside>
-    <div id="view-ctf" class="view-panel hidden"></div>
+    <main id="spaceContainer" class="space-container"></main>
   </div>
-  <footer class="statusbar">
-    <strong id="riskLevel">LOW</strong>
-    <strong id="findingCount">0</strong>
-    <strong id="evidenceCount">0</strong>
-    <strong id="affectedHosts">0</strong>
-    <span id="teamSyncState">Team: OFFLINE</span>
-  </footer>
-</div>
-`;
-body.innerHTML = htmlFixture;
+</div>`;
 
-// Mock IPC
+// Permissive IPC: every space calls its own status/list RPC on render; return
+// benign empty-but-shaped values so render() never throws.
 class MockIpc {
-  async call(method, params) {
-    if (method === 'cases.list') {
-      return [{ id: 'CASE-1337', case_id: 'CASE-1337', title: 'Расследование инцидента APT-29', status: 'ACTIVE', created_at: '2026-09-25T12:00:00Z' }];
+  async call(method) {
+    switch (method) {
+      case 'cases.list': return [];
+      case 'vulndb.status': return { ready: false, feeds: [], last_update: null };
+      case 'code.status': return { running: false };
+      case 'web.status': return { running: false };
+      default: return {};
     }
-    if (method === 'cases.create') {
-      return { id: 'CASE-2026', case_id: 'CASE-2026', title: params.title, status: 'ACTIVE', created_at: '2026-09-25T12:00:00Z' };
-    }
-    if (method === 'investigation.snapshot') {
-      return {
-        assets: [{ id: 'host-1', name: 'DC-01' }],
-        graph: { nodes: [{ id: 'n1', label: 'lsass.exe', in_attack_path: true }], edges: [] },
-        timeline: [{ event_id: 'e1', timestamp: '2026-09-25T12:00:00Z', title: 'Suspicious logon' }]
-      };
-    }
-    if (method === 'auth.login') {
-      return { session: { token: 'mock-token' } };
-    }
-    if (method === 'evidence.list') {
-      return [{ id: 'art-1', name: 'sysmon.evtx', size: 1048576, hash_blake3: 'abcdef1234567890', method: 'Sysmon Dump', acquired_at: '2026-09-25T12:00:00Z' }];
-    }
-    if (method === 'ctf.competitions.list') {
-      return [{ id: 'comp-1', name: 'DefCamp CTF 2026', flag_format: '^flag\\{.*\\}$' }];
-    }
-    if (method === 'ctf.challenges.list') {
-      return [{ id: 'crypto-101', competition_id: 'comp-1', title: 'Crypto 101', category: 'Crypto', points: 100, status: 'open' }];
-    }
-    if (method === 'ctf.challenges.get') {
-      return { id: 'crypto-101', competition_id: 'comp-1', title: 'Crypto 101', category: 'Crypto', points: 100, status: 'open', flag_format: 'flag{.*}', files: [] };
-    }
-    if (method === 'ctf.writeups.get') {
-      return { challenge_id: 'crypto-101', title: 'Crypto 101 Writeup', markdown_body: '# Solution' };
-    }
-    if (method === 'ctf.notes.get') {
-      return { challenge_id: 'crypto-101', content: 'Notes' };
-    }
-    if (method === 'ctf.artifacts.list') {
-      return [{ id: 'art-101', challenge_id: 'crypto-101', filename: 'crackme.bin', size: 4096 }];
-    }
-    if (method === 'ctf.recipes.list') {
-      return [{ id: 'rcp-1', challenge_id: 'crypto-101', name: 'XOR Decoder', steps_json: '[]' }];
-    }
-    if (method === 'ctf.flags.list' || method === 'ctf.jobs.list') {
-      return [];
-    }
-    return {};
   }
 }
+const ipc = new MockIpc();
 
-const defaultIpc = new MockIpc();
-
-// Hermetic Fetch Mock for CtfIpcClient
-globalThis.fetch = async (url, options = {}) => {
-  let body = {};
-  try { body = JSON.parse(options.body || '{}'); } catch {}
-  const { method, params } = body;
-  const result = await defaultIpc.call(method, params);
-  return {
-    ok: true,
-    status: 200,
-    json: async () => ({ jsonrpc: '2.0', id: body.id || '1', result })
-  };
-};
-
-// --- Import All Space Modules ---
-const jsRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'js');
-const { InvestigationWorkspace } = await import(pathToFileURL(path.join(jsRoot, 'investigation/workspace.js')).href);
-const { OperationsSpace } = await import(pathToFileURL(path.join(jsRoot, 'operations/operations.js')).href);
-const { EvidenceSpace } = await import(pathToFileURL(path.join(jsRoot, 'evidence/evidence.js')).href);
-const { RangeSpace } = await import(pathToFileURL(path.join(jsRoot, 'range/range.js')).href);
 const { SystemSpace } = await import(pathToFileURL(path.join(jsRoot, 'system/system.js')).href);
-const { CtfApp } = await import(pathToFileURL(path.join(jsRoot, 'ctf/ctf_app.js')).href);
+const { VulnerabilitySpace } = await import(pathToFileURL(path.join(jsRoot, 'vulns/vulns.js')).href);
+const { CodeSpace } = await import(pathToFileURL(path.join(jsRoot, 'code/code.js')).href);
+const { WebSpace } = await import(pathToFileURL(path.join(jsRoot, 'web/web.js')).href);
 
 let passed = 0;
 let failed = 0;
-
 function assert(condition, message) {
-  if (condition) {
-    console.log(`  [PASS] ${message}`);
-    passed++;
-  } else {
-    console.error(`  [FAIL] ${message}`);
-    failed++;
-  }
+  if (condition) { console.log(`  [PASS] ${message}`); passed++; }
+  else { console.error(`  [FAIL] ${message}`); failed++; }
 }
 
 console.log('\n======================================================');
-console.log('   SOC/DFIR PLATFORM — ALL FRONTEND SPACES TEST SUITE');
+console.log('   SOC/DFIR PLATFORM — FRONTEND SPACES TEST SUITE');
 console.log('======================================================\n');
 
-const ipc = new MockIpc();
-
 // ----------------------------------------------------
-// 1. Investigation Workspace Test
+// 1. System Space (strict)
 // ----------------------------------------------------
-console.log('[SPACE 1] Investigation Workspace (Расследование)');
-try {
-  const invWorkspace = new InvestigationWorkspace(ipc);
-  await invWorkspace.init();
-  assert(invWorkspace.graph !== null, 'InvestigationGraph initialized');
-  assert(invWorkspace.timeline !== null, 'InvestigationTimeline initialized');
-  assert(invWorkspace.inspector !== null, 'EntityInspector initialized');
-
-  // Test Layer controls
-  const netBtn = document.querySelector('[data-layer="network"]');
-  if (netBtn) {
-    await netBtn.dispatchEvent({ type: 'click' });
-    assert(invWorkspace.store.activeLayer === 'network', 'Layer switched to network via button click');
-  } else {
-    invWorkspace.store.setLayer('network');
-    assert(invWorkspace.store.activeLayer === 'network', 'Layer switched to network');
-  }
-
-  const atkBtn = document.querySelector('[data-layer="attack"]');
-  if (atkBtn) {
-    await atkBtn.dispatchEvent({ type: 'click' });
-    assert(invWorkspace.store.activeLayer === 'attack', 'Layer switched to attack via button click');
-  } else {
-    invWorkspace.store.setLayer('attack');
-    assert(invWorkspace.store.activeLayer === 'attack', 'Layer switched to attack');
-  }
-
-  // Test Timeline filter
-  const filterSel = document.getElementById('timelineFilter');
-  if (filterSel) {
-    filterSel.value = 'process';
-    await filterSel.dispatchEvent({ type: 'change', target: filterSel });
-    assert(invWorkspace.timeline.filter === 'process', 'Timeline filtered by process via select control');
-    filterSel.value = 'all';
-    await filterSel.dispatchEvent({ type: 'change', target: filterSel });
-    assert(invWorkspace.timeline.filter === 'all', 'Timeline filter reset to all via select control');
-  } else {
-    invWorkspace.timeline.filter = 'process';
-    invWorkspace.timeline.renderEvents();
-    assert(invWorkspace.timeline.filter === 'process', 'Timeline filtered by process');
-  }
-
-  // Test Zoom controls
-  const initZoom = invWorkspace.graph.zoom;
-  const zoomInBtn = document.getElementById('zoomIn');
-  if (zoomInBtn) {
-    await zoomInBtn.dispatchEvent({ type: 'click' });
-    assert(invWorkspace.graph.zoom > initZoom, 'Zoom in increased scale');
-  } else {
-    invWorkspace.graph.setZoom(invWorkspace.graph.zoom * 1.15);
-    assert(invWorkspace.graph.zoom > initZoom, 'Zoom in increased scale');
-  }
-
-  const zoomedInScale = invWorkspace.graph.zoom;
-  const zoomOutBtn = document.getElementById('zoomOut');
-  if (zoomOutBtn) {
-    await zoomOutBtn.dispatchEvent({ type: 'click' });
-    assert(invWorkspace.graph.zoom < zoomedInScale, 'Zoom out decreased scale');
-  } else {
-    invWorkspace.graph.setZoom(invWorkspace.graph.zoom * 0.85);
-    assert(invWorkspace.graph.zoom < zoomedInScale, 'Zoom out decreased scale');
-  }
-
-  const fitBtn = document.getElementById('fitGraph');
-  if (fitBtn) {
-    await fitBtn.dispatchEvent({ type: 'click' });
-    assert(invWorkspace.graph.zoom === 1.0, 'Fit graph reset scale to 100%');
-  } else {
-    invWorkspace.graph.resetView();
-    assert(invWorkspace.graph.zoom === 1.0, 'Fit graph reset scale to 100%');
-  }
-} catch (e) {
-  assert(false, `Investigation workspace threw error: ${e.message}`);
-}
-
-// ----------------------------------------------------
-// 2. Operations Space Test
-// ----------------------------------------------------
-console.log('\n[SPACE 2] Operations Space (Операции)');
-try {
-  let selectedCase = null;
-  const opsSpace = new OperationsSpace(ipc, (id) => { selectedCase = id; });
-  const opsContainer = new MockElement('div');
-  await opsSpace.render(opsContainer);
-
-  assert(opsContainer.innerHTML.includes('ОПЕРАЦИИ И АКТИВНЫЕ ИНЦИДЕНТЫ'), 'Operations header rendered');
-  const newCaseBtn = opsContainer.querySelector('#opsNewCaseBtn');
-  assert(newCaseBtn !== null, 'New case button rendered');
-  const grid = opsContainer.querySelector('#opsCaseGrid');
-  assert(grid !== null, 'Operations case grid container rendered');
-
-  // Simulate create case click
-  if (newCaseBtn) {
-    await newCaseBtn.dispatchEvent({ type: 'click' });
-    assert(selectedCase === 'CASE-2026', 'Create case triggered selection callback');
-  }
-} catch (e) {
-  assert(false, `Operations space threw error: ${e.message}`);
-}
-
-// ----------------------------------------------------
-// 3. Evidence Space Test
-// ----------------------------------------------------
-console.log('\n[SPACE 3] Evidence Space (Улики)');
-try {
-  const evidenceSpace = new EvidenceSpace(ipc);
-  const evidenceContainer = new MockElement('div');
-  evidenceSpace.render(evidenceContainer);
-
-  assert(evidenceContainer.innerHTML.includes('ХРАНИЛИЩЕ УЛИК'), 'Evidence header rendered');
-  const uploadBtn = evidenceContainer.querySelector('#evidenceUploadBtn');
-  assert(uploadBtn !== null, 'Upload evidence button rendered');
-
-  const tabs = evidenceContainer.querySelectorAll('.tab-btn');
-  assert(tabs.length === 3, 'Evidence tabs rendered (Artifacts, Facts, Custody)');
-
-  // Test tab switching
-  evidenceSpace._switchTab('facts');
-  assert(evidenceSpace.activeTab === 'facts', 'Switched to Facts tab');
-  evidenceSpace._switchTab('custody');
-  assert(evidenceSpace.activeTab === 'custody', 'Switched to Chain of Custody tab');
-  evidenceSpace._switchTab('artifacts');
-  assert(evidenceSpace.activeTab === 'artifacts', 'Switched back to Artifacts tab');
-} catch (e) {
-  assert(false, `Evidence space threw error: ${e.message}`);
-}
-
-// ----------------------------------------------------
-// 4. Cyber Range Space Test
-// ----------------------------------------------------
-console.log('\n[SPACE 4] Cyber Range Space (Киберполигон)');
-try {
-  const rangeSpace = new RangeSpace(ipc, () => {});
-  const rangeContainer = new MockElement('div');
-  rangeSpace.render(rangeContainer);
-
-  assert(rangeContainer.innerHTML.includes('Cyber Range — сценарии'), 'Cyber Range header and description rendered');
-  assert(rangeContainer.innerHTML.includes('scenario.evaluate'), 'Cyber Range clearly describes the available scenario evaluation API');
-  assert(rangeContainer.innerHTML.includes('Запуск учебных миссий ещё не подключён'), 'Cyber Range does not imply missions can already be launched');
-} catch (e) {
-  assert(false, `Cyber Range space threw error: ${e.message}`);
-}
-
-// ----------------------------------------------------
-// 5. CTF Unified Workspace Space Test
-// ----------------------------------------------------
-console.log('\n[SPACE 5] CTF Unified Workspace (Соревнования & Воркспейс)');
-try {
-  const ctfView = document.getElementById('view-ctf');
-  const ctfApp = new CtfApp({ ipc, onNavigateLegacy: () => {} });
-  await ctfApp.mount(ctfView);
-
-  assert(ctfApp.container !== null, 'CtfApp mounted into container');
-  assert(ctfApp.challengeMatrix !== null, 'Challenge Matrix component active on default route');
-
-  // Test Challenge navigation
-  await ctfApp.navigate('#ctf-challenge/crypto-101');
-  assert(ctfApp.currentRoute === '#ctf-challenge/:id', 'Navigated to Challenge Workspace');
-  assert(ctfApp.routeParams.id === 'crypto-101', 'Challenge ID parameter correctly bound');
-
-  // Test Writeup navigation
-  await ctfApp.navigate('#ctf-writeup/crypto-101');
-  assert(ctfApp.currentRoute === '#ctf-writeup/:id', 'Navigated to Writeup Studio route');
-
-  // Test Matrix return
-  await ctfApp.navigate('#ctf-competitions');
-  assert(ctfApp.currentRoute === '#ctf-competitions', 'Returned to Competitions Matrix route');
-
-  ctfApp.destroy();
-  assert(ctfApp.challengeMatrix === null && !ctfApp.isMounted && ctfApp.container === null, 'CtfApp cleanly destroyed without memory leaks');
-} catch (e) {
-  assert(false, `CTF Workspace space threw error: ${e.message}`);
-}
-
-// ----------------------------------------------------
-// 6. System Diagnostics Space Test
-// ----------------------------------------------------
-console.log('\n[SPACE 6] System Space (Система & Диагностика)');
+console.log('[SPACE 1] System Space (Система & Диагностика)');
 try {
   const sysSpace = new SystemSpace(ipc);
   const sysContainer = new MockElement('div');
   sysSpace.render(sysContainer);
-
   assert(sysContainer.innerHTML.includes('СИСТЕМНЫЙ УЗЕЛ И ДИАГНОСТИКА'), 'System header rendered');
-  assert(sysContainer.innerHTML.includes('127.0.0.1:8080'), 'Engine status card rendered with online badge');
-  assert(sysContainer.innerHTML.includes('SQLite 3 with WAL'), 'Database diagnostic card rendered with WAL info');
+  assert(sysContainer.innerHTML.includes('127.0.0.1:8080'), 'Engine status card rendered');
+  assert(sysContainer.innerHTML.includes('SQLite 3 with WAL'), 'Database diagnostic card rendered');
 } catch (e) {
   assert(false, `System space threw error: ${e.message}`);
+}
+
+// ----------------------------------------------------
+// 2–4. Smoke-render the scanner spaces (Уязвимости, Анализ кода, Запущенный сайт)
+// ----------------------------------------------------
+const smokeSpaces = [
+  ['Vulnerability Space (Уязвимости)', VulnerabilitySpace],
+  ['Code Analysis Space (Анализ кода)', CodeSpace],
+  ['Web / DAST Space (Запущенный сайт)', WebSpace],
+];
+let n = 1;
+for (const [label, Space] of smokeSpaces) {
+  n++;
+  console.log(`\n[SPACE ${n}] ${label}`);
+  try {
+    const space = new Space(ipc);
+    const container = new MockElement('div');
+    await space.render(container);
+    assert(container.innerHTML.trim().length > 0, `${label} rendered non-empty HTML`);
+    if (typeof space.stopPolling === 'function') space.stopPolling();
+  } catch (e) {
+    assert(false, `${label} threw error: ${e.message}`);
+  }
 }
 
 // ----------------------------------------------------
@@ -588,6 +321,6 @@ console.log('======================================================\n');
 if (failed > 0) {
   process.exit(1);
 } else {
-  console.log('>>> 100% OF FRONTEND SPACES AND VIEWS ARE FULLY OPERATIONAL! <<<\n');
+  console.log('>>> ALL KEPT FRONTEND SPACES RENDER CLEANLY <<<\n');
   process.exit(0);
 }
