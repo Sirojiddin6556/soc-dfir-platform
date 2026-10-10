@@ -15,6 +15,8 @@ pub struct Crawl {
     pub pages: usize,
     pub forms: usize,
     pub points: Vec<InjectionPoint>,
+    /// Every GET page actually fetched, for a stored-XSS re-read later.
+    pub page_urls: Vec<Url>,
 }
 
 /// A benign value for a form field with no default, so the request is well
@@ -71,6 +73,7 @@ pub fn crawl(
     let mut seen_pages: HashSet<String> = HashSet::new();
     let mut point_keys: HashSet<String> = HashSet::new();
     let mut points: Vec<InjectionPoint> = Vec::new();
+    let mut page_urls: Vec<Url> = Vec::new();
     let mut pages = 0usize;
     let mut forms_found = 0usize;
 
@@ -94,6 +97,7 @@ pub fn crawl(
             }
         };
         pages += 1;
+        page_urls.push(url.clone());
 
         // Only parse HTML for links and forms.
         let is_html = resp
@@ -175,6 +179,7 @@ pub fn crawl(
         pages,
         forms: forms_found,
         points,
+        page_urls,
     }
 }
 

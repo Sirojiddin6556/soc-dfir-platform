@@ -341,6 +341,7 @@ pub fn scan(target: &str, options: &Options) -> Result<Report, ScanError> {
 
     let crawl = crawl::crawl(&client, &base, &seeds, options, &mut notes);
     let mut points = crawl.points;
+    let page_urls = crawl.page_urls;
     let mut keys: std::collections::HashSet<String> = points.iter().map(|p| p.key()).collect();
 
     // OpenAPI / Swagger: documented endpoints and their parameters, including
@@ -371,6 +372,11 @@ pub fn scan(target: &str, options: &Options) -> Result<Report, ScanError> {
                 notes.push("Достигнут предел числа запросов: проверены не все места".into());
                 break;
             }
+        }
+        // Stored XSS plants marked payloads through every input, then re-reads
+        // the crawled GET pages to see whether any was saved and served back.
+        if client.remaining() > 0 {
+            checks::stored::check(&client, &points, &page_urls, &mut findings);
         }
     }
 

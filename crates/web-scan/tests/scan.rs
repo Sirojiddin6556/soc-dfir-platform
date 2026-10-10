@@ -100,6 +100,13 @@ fn html_escape(s: &str) -> String {
         .replace('"', "&quot;")
 }
 
+/// A process-wide store for the stored-XSS endpoints: `/comment` appends to it,
+/// `/comments` prints it back without escaping.
+fn comment_store() -> &'static std::sync::Mutex<Vec<String>> {
+    static STORE: std::sync::OnceLock<std::sync::Mutex<Vec<String>>> = std::sync::OnceLock::new();
+    STORE.get_or_init(|| std::sync::Mutex::new(Vec::new()))
+}
+
 fn respond(stream: &mut TcpStream, status: &str, headers: &[(&str, &str)], body: &str) {
     let mut out = format!("HTTP/1.1 {status}\r\n");
     out.push_str("Connection: close\r\n");
@@ -189,6 +196,8 @@ fn handle(mut stream: TcpStream) {
               <a href="/page?file=home.txt">page</a>
               <a href="/go?next=/dashboard">go</a>
               <a href="/safe?q=hi">safe</a>
+              <a href="/comments">comments</a>
+              <form action="/comment" method="post"><input name="text" value=""><input type="submit" value="post"></form>
               <form action="/login" method="post">
                 <input name="username" value=""><input type="password" name="password">
                 <input type="submit" value="in">
@@ -243,6 +252,36 @@ fn handle(mut stream: TcpStream) {
                 std::thread::sleep(Duration::from_secs(secs));
             }
             respond(&mut stream, "200 OK", &[], "<html><body>ok</body></html>");
+        }
+        // Saves whatever is posted; /comments then prints it unescaped, so a
+        // payload stored here surfaces there -> stored XSS.
+        "/comment" => {
+            let text = param(&params_src, "text").unwrap_or_default();
+            if !text.is_empty() {
+                let mut store = comment_store().lock().unwrap_or_else(|p| p.into_inner());
+                if store.len() < 500 {
+                    store.push(text);
+                }
+            }
+            respond(
+                &mut stream,
+                "200 OK",
+                &[],
+                "<html><body>saved</body></html>",
+            );
+        }
+        "/comments" => {
+            let store = comment_store().lock().unwrap_or_else(|p| p.into_inner());
+            let items = store
+                .iter()
+                .map(|c| format!("<li>{c}</li>"))
+                .collect::<String>();
+            respond(
+                &mut stream,
+                "200 OK",
+                &[],
+                &format!("<html><body><ul>{items}</ul></body></html>"),
+            );
         }
         // A path climb returns a system file -> path traversal.
         "/page" => {
@@ -406,6 +445,19 @@ fn finds_the_planted_vulnerabilities_and_spares_the_safe_endpoint() {
     assert!(
         sqli.iter().any(|u| u.contains("/blind")),
         "time-based blind SQLi on /blind: {sqli:?}"
+    );
+
+    // A payload posted to /comment is served unescaped by /comments -> stored
+    // XSS, surfaced on a page the payload was never sent to.
+    let stored: Vec<&str> = report
+        .findings
+        .iter()
+        .filter(|f| f.rule == "stored-xss")
+        .map(|f| f.url.as_str())
+        .collect();
+    assert!(
+        stored.iter().any(|u| u.contains("/comments")),
+        "stored XSS surfaced on /comments: {stored:?}"
     );
 
     // Each finding keeps a reproducible request.

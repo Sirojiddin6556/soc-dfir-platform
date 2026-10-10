@@ -7,6 +7,7 @@
 pub mod passive;
 pub mod redirect;
 pub mod sqli;
+pub mod stored;
 pub mod traversal;
 pub mod xss;
 
