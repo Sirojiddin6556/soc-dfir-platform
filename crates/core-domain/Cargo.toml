@@ -22,15 +22,4 @@ flate2.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
-tool-adapters = { path = "../tool-adapters" }
-normalization-engine = { path = "../normalization-engine" }
-correlation-engine = { path = "../correlation-engine" }
-evidence-engine = { path = "../evidence-engine" }
-graph-engine = { path = "../graph-engine" }
-taxonomy-projection = { path = "../taxonomy-projection" }
-diagram-engine = { path = "../diagram-engine" }
-scenario-verifier = { path = "../scenario-verifier" }
-scoring-engine = { path = "../scoring-engine" }
-storage-cas = { path = "../storage-cas" }
-storage-sqlite = { path = "../storage-sqlite" }
 tokio = { workspace = true, features = ["full"] }

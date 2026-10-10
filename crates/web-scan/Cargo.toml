@@ -1,0 +1,17 @@
+[package]
+name = "web-scan"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+regex = { workspace = true }
+thiserror = { workspace = true }
+ureq = { workspace = true }
+url = "2.5"
+percent-encoding = "2.3"
+
+[dev-dependencies]
+uuid = { workspace = true }

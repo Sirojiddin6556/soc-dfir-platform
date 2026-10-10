@@ -7,6 +7,7 @@ pub mod cmem;
 pub mod cnull;
 pub mod common;
 pub mod java;
+pub mod js;
 pub mod php;
 pub mod python;
 
@@ -17,6 +18,7 @@ static PYTHON: python::Python = python::Python;
 static JAVA: java::Java = java::Java;
 static PHP: php::Php = php::Php;
 static C: c::C = c::C;
+static JS: js::Js = js::Js;
 
 /// The library model for code in `lang`.
 pub fn for_language(lang: Language) -> &'static dyn Model {
@@ -25,5 +27,6 @@ pub fn for_language(lang: Language) -> &'static dyn Model {
         Language::Java => &JAVA,
         Language::Php => &PHP,
         Language::C | Language::Cpp => &C,
+        Language::JavaScript | Language::TypeScript | Language::Tsx => &JS,
     }
 }

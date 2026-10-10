@@ -139,8 +139,14 @@
 .workspace-layout {
   min-height: 0;
   display: grid;
-  grid-template-columns: 184px minmax(0, 1fr) 400px;
+  grid-template-columns: 184px minmax(0, 1fr);
   overflow: hidden;
+}
+
+.space-container {
+  min-height: 0;
+  overflow: auto;
+  background: var(--bg-canvas);
 }
 
 .global-nav {

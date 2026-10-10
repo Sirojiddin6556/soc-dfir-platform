@@ -1,4 +1,5 @@
 import { escapeAttr, escapeHtml } from '../util/html.js';
+import { buildReportHtml, downloadReport, reportFilename } from '../report/report.js';
 
 const SEVERITY_LABELS = {
   critical: 'КРИТИЧЕСКИЙ',
@@ -8,7 +9,7 @@ const SEVERITY_LABELS = {
 };
 const SEVERITIES = ['critical', 'high', 'medium', 'low'];
 
-const LANGUAGE_NAMES = { python: 'Python', java: 'Java', php: 'PHP', c: 'C', cpp: 'C++' };
+const LANGUAGE_NAMES = { python: 'Python', java: 'Java', php: 'PHP', c: 'C', cpp: 'C++', javascript: 'JavaScript', typescript: 'TypeScript', tsx: 'TypeScript (TSX)' };
 
 /** How the project names a package (dependency `kind`). */
 const KIND_LABELS = {
@@ -63,7 +64,7 @@ function savePath(path) {
 
 /**
  * Code analysis space: runs the engine's taint analysis on a project folder
- * (Python, Java, PHP, C, C++) and lists the flaws where user input reaches a
+ * (Python, Java, PHP, C/C++, JavaScript/TypeScript) and lists the flaws where user input reaches a
  * dangerous call, each with the path the data took from source to sink.
  * The code being scanned is untrusted: every value from the report is
  * escaped before it reaches the page.
@@ -96,7 +97,7 @@ export class CodeSpace {
         <div class="vuln-header">
           <div>
             <h2>⌨ АНАЛИЗ КОДА</h2>
-            <div class="vuln-subtitle">Уязвимости в исходном коде на Python, Java, PHP, C и C++: путь данных от входа (HTTP-запрос, сокет, CGI) до опасного вызова (SQL, команды ОС, файлы, шаблоны, XSS, LDAP, XML, SSRF, перенаправления), а также слабая криптография, секреты в коде, отключённая проверка TLS и библиотеки с известными уязвимостями (CVE) или вредоносные пакеты из requirements.txt, package.json, pom.xml, composer.json и других файлов зависимостей</div>
+            <div class="vuln-subtitle">Уязвимости в исходном коде на Python, Java, PHP, C/C++ и JavaScript/TypeScript: путь данных от входа (HTTP-запрос, сокет, CGI) до опасного вызова (SQL, команды ОС, файлы, шаблоны, XSS, LDAP, XML, SSRF, перенаправления), а также слабая криптография, секреты в коде, отключённая проверка TLS и библиотеки с известными уязвимостями (CVE) или вредоносные пакеты из requirements.txt, package.json, pom.xml, composer.json и других файлов зависимостей</div>
           </div>
         </div>
         <div class="vuln-panel">
@@ -297,6 +298,7 @@ export class CodeSpace {
             ${rules.map(r => `<option value="${escapeAttr(r.rule)}" ${this.rule === r.rule ? 'selected' : ''}>${escapeHtml(r.title)} (${escapeHtml(String(r.n))})</option>`).join('')}
           </select>
           <input id="codeSearch" type="text" placeholder="Файл, CWE или код..." value="${escapeAttr(this.query)}">
+          <button id="codeExport" class="ctf-btn ctf-btn-secondary" title="Сохранить отчёт в HTML-файл">Экспорт в HTML</button>
         </div>
         <table class="vuln-table" id="codeTable">
           <thead><tr>
@@ -331,6 +333,17 @@ export class CodeSpace {
     panel.querySelector('#codeMoreBtn')?.addEventListener('click', () => {
       this.limit += PAGE_SIZE;
       this.renderResult();
+    });
+    panel.querySelector('#codeExport')?.addEventListener('click', () => {
+      const html = buildReportHtml(
+        {
+          title: 'Анализ кода',
+          target: s.path,
+          generatedAt: formatDate(s.finished_at),
+        },
+        all
+      );
+      downloadReport(reportFilename('code'), html);
     });
     panel.querySelectorAll('tr.vuln-row').forEach(tr => tr.addEventListener('click', () => {
       const detail = tr.nextElementSibling;
@@ -526,7 +539,7 @@ export class CodeSpace {
         <td><span class="vuln-badge vuln-sev-${escapeAttr(sev)}">${escapeHtml(SEVERITY_LABELS[sev])}</span></td>
         <td><strong>${escapeHtml(f.title)}</strong><div class="vuln-pkgs">CWE-${escapeHtml(String(f.cwe))} · ${escapeHtml(f.rule)}</div></td>
         <td class="code-where"><span class="vuln-mono">${escapeHtml(name)}:${escapeHtml(String(f.line))}</span><div class="vuln-pkgs vuln-mono code-dir">${escapeHtml(dir)}</div></td>
-        <td class="code-from">${escapeHtml(pkg.ecosystem)} <span class="vuln-mono">${escapeHtml(pkg.name)} ${escapeHtml(pkg.version)}</span>
+        <td class="code-from">${escapeHtml(pkg.ecosystem)} <span class="vuln-mono">${escapeHtml(pkg.name)} ${escapeHtml(pkg.version)}</span>${pkg.dev ? ' <span class="vuln-badge vuln-dev" title="Только dev-зависимость: не попадает в сборку">dev</span>' : ''}
           <div class="vuln-pkgs">${escapeHtml(KIND_LABELS[pkg.kind] || pkg.kind)}; уязвимостей: ${escapeHtml(String((f.advisories || []).length))}</div>
           ${others.length ? `<div class="vuln-pkgs">и ещё мест: ${escapeHtml(String(others.length))}</div>` : ''}</td>
         <td class="code-snippet"><code>${escapeHtml(f.snippet)}</code></td>

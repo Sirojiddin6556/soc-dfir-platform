@@ -29,6 +29,7 @@
 .vuln-sev-medium { color: var(--accent-warning); border-color: var(--accent-warning); }
 .vuln-sev-low { color: var(--accent-info); border-color: var(--accent-info); }
 .vuln-kev { color: #fff; background: var(--accent-purple); border-color: var(--accent-purple); }
+.vuln-dev { color: var(--text-muted, var(--text-secondary)); border-color: var(--border-muted); text-transform: lowercase; }
 .vuln-exploited { color: #fff; background: var(--accent-critical); border-color: var(--accent-critical); }
 .vuln-chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
 .vuln-chip { border: 1px solid var(--border-muted); border-radius: 6px; padding: 6px 10px; font-size: 11px; color: var(--text-secondary); background: var(--bg-canvas); }

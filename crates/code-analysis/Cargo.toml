@@ -3,7 +3,7 @@ name = "code-analysis"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Static analysis of Python, PHP, Java and C/C++ source code for security defects"
+description = "Static analysis of Python, PHP, Java, C/C++ and JavaScript/TypeScript source code for security defects"
 
 [dependencies]
 serde.workspace = true
@@ -16,3 +16,5 @@ tree-sitter-php = "0.24"
 tree-sitter-java = "0.23"
 tree-sitter-c = "0.24"
 tree-sitter-cpp = "0.23"
+tree-sitter-javascript = "0.25"
+tree-sitter-typescript = "0.23"

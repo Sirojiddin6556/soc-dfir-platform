@@ -96,6 +96,9 @@ pub fn language_of(path: &Path) -> Option<Language> {
         "java" => Language::Java,
         "c" | "h" => Language::C,
         "cc" | "cpp" | "cxx" | "hpp" | "hh" | "hxx" => Language::Cpp,
+        "js" | "jsx" | "mjs" | "cjs" => Language::JavaScript,
+        "ts" | "mts" | "cts" => Language::TypeScript,
+        "tsx" => Language::Tsx,
         _ => return None,
     })
 }
@@ -505,10 +508,20 @@ fn first_error(root: tree_sitter::Node) -> Option<u32> {
 pub fn is_test_path(path: &str) -> bool {
     let mut parts: Vec<&str> = path.split('/').collect();
     let file = parts.pop().unwrap_or("");
-    if parts
-        .iter()
-        .any(|d| matches!(*d, "test" | "tests" | "__tests__"))
-    {
+    if parts.iter().any(|d| {
+        matches!(
+            *d,
+            "test"
+                | "tests"
+                | "__tests__"
+                | "__mocks__"
+                | "e2e"
+                | "spec"
+                | "specs"
+                | "cypress"
+                | "fixtures"
+        )
+    }) {
         return true;
     }
     match file.rsplit_once('.') {
@@ -522,6 +535,20 @@ pub fn is_test_path(path: &str) -> bool {
                 || stem.ends_with("Tests")
                 || stem.ends_with("TestCase")
                 || stem.ends_with("IT")
+        }
+        // JavaScript / TypeScript: `foo.test.ts`, `foo.spec.js`, smoke and
+        // dev scripts (`smoke-users.mjs`), and common harness file names.
+        Some((stem, "js" | "jsx" | "mjs" | "cjs" | "ts" | "tsx" | "mts" | "cts")) => {
+            stem.ends_with(".test")
+                || stem.ends_with(".spec")
+                || stem.ends_with("-test")
+                || stem.ends_with("-spec")
+                || stem.starts_with("smoke-")
+                || stem.starts_with("smoke_")
+                || matches!(
+                    stem,
+                    "setupTests" | "jest.config" | "jest.setup" | "vitest.config"
+                )
         }
         _ => false,
     }

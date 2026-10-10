@@ -7,13 +7,9 @@
   <link rel="icon" href="data:,">
   <link rel="stylesheet" href="css/theme.css">
   <link rel="stylesheet" href="css/shell.css">
-  <link rel="stylesheet" href="css/investigation.css">
-  <link rel="stylesheet" href="css/graph.css">
-  <link rel="stylesheet" href="css/inspector.css">
-  <link rel="stylesheet" href="css/timeline.css">
-  <link rel="stylesheet" href="css/ctf.css">
   <link rel="stylesheet" href="css/vulns.css">
   <link rel="stylesheet" href="css/code.css">
+  <link rel="stylesheet" href="css/web.css">
 </head>
 <body>
 
@@ -28,21 +24,9 @@
         <span class="product-icon">⬡</span>
         <strong>SOC/DFIR ПЛАТФОРМА</strong>
       </div>
-      <div class="case-context">
-        <span>Кейс:</span>
-        <strong id="caseId">—</strong>
-        <span id="caseMode" class="status-live">LIVE</span>
-        <span id="caseTimer">00:00:00</span>
-      </div>
     </div>
 
     <div class="topbar-right">
-      <div id="teamPresence" class="team-presence"></div>
-      <button id="openDiscussion" class="icon-button">
-        💬 <span id="unreadCount">0</span>
-      </button>
-      <input id="globalSearch" class="global-search" placeholder="Поиск (Ctrl+K)...">
-      <button id="startCollection" class="primary-action">▶ Запустить сбор</button>
       <button id="logoutButton" class="icon-button" title="Выйти">⎋ <span id="currentUserName">—</span></button>
     </div>
   </header>
@@ -54,14 +38,8 @@
 
     <!-- GLOBAL NAVIGATION -->
     <nav class="global-nav">
-      <button data-space="operations">
-        ◈ <span>Операции</span>
-      </button>
-      <button data-space="investigation" class="active">
-        ⎔ <span>Расследование</span>
-      </button>
-      <button data-space="evidence">
-        ◉ <span>Улики</span>
+      <button data-space="system" class="active">
+        ⚙ <span>Система</span>
       </button>
       <button data-space="vulns">
         ⛨ <span>Уязвимости</span>
@@ -69,129 +47,22 @@
       <button data-space="code">
         ⌨ <span>Анализ кода</span>
       </button>
-      <button data-space="range">
-        <span>Cyber Range</span>
-      </button>
-      <button id="nav-ctf-workspace" data-space="ctf">
-        <span>CTF-тренажёр</span>
-      </button>
-      <button data-space="system">
-        ⚙ <span>Система</span>
+      <button data-space="web">
+        🌐 <span>Запущенный сайт</span>
       </button>
     </nav>
 
-    <!-- ================================================= -->
-    <!-- MAIN INVESTIGATION                                -->
-    <!-- ================================================= -->
-    <main id="investigationWorkspace" class="investigation-workspace">
-
-      <!-- LAYERS -->
-      <section class="layer-toolbar">
-        <button data-layer="environment">◎ Среда</button>
-        <button data-layer="attack" class="active danger">⎔ Атака</button>
-        <button data-layer="processes">⚙ Процессы</button>
-        <button data-layer="network">⛓ Сеть</button>
-        <button data-layer="mitre">◈ ATT&CK</button>
-
-        <div class="toolbar-spacer"></div>
-
-        <button id="zoomOut">−</button>
-        <span id="zoomLabel">100%</span>
-        <button id="zoomIn">+</button>
-        <button id="fitGraph">⌗</button>
-      </section>
-
-      <!-- INVESTIGATION CANVAS -->
-      <section class="investigation-canvas">
-        <canvas id="investigationGraph"></canvas>
-        <div id="graphEmptyState" class="canvas-empty">
-          <strong>Расследование пока пустое</strong>
-          <span>Запустите сбор данных или загрузите артефакт.</span>
-        </div>
-        <!-- Cyber HUD Overlay -->
-        <div id="graphTooltip" class="graph-tooltip"></div>
-        <div class="graph-legend">
-          <div class="legend-item"><span class="legend-dot" style="color: var(--accent-info); background: var(--accent-info);"></span><span>Хост</span></div>
-          <div class="legend-item"><span class="legend-dot" style="color: var(--accent-success); background: var(--accent-success);"></span><span>Процесс</span></div>
-          <div class="legend-item"><span class="legend-dot" style="color: var(--accent-critical); background: var(--accent-critical);"></span><span>Атака / TTP</span></div>
-          <div class="legend-item"><span class="legend-dot" style="color: var(--accent-purple); background: var(--accent-purple);"></span><span>Сеть</span></div>
-        </div>
-        <div class="graph-minimap">
-          <canvas id="minimapCanvas" class="minimap-canvas"></canvas>
-          <div id="minimapViewRect" class="minimap-viewrect"></div>
-        </div>
-      </section>
-
-      <!-- BOTTOM FORENSIC WORKSPACE -->
-      <section class="forensic-bottom">
-        <div class="timeline-panel">
-          <header>
-            <strong>Хронология</strong>
-            <select id="timelineFilter">
-              <option value="all">Все события</option>
-              <option value="process">Процессы</option>
-              <option value="network">Сеть</option>
-              <option value="persistence">Закрепление</option>
-              <option value="security">Безопасность</option>
-            </select>
-          </header>
-          <div id="timelineEvents" class="timeline-events"></div>
-        </div>
-
-        <div id="eventDetails" class="event-details">
-          <div class="empty-panel">Выберите событие в хронологии</div>
-        </div>
-      </section>
-    </main>
-
-    <!-- ================================================= -->
-    <!-- CONTEXT INSPECTOR                                 -->
-    <!-- ================================================= -->
-    <aside class="context-panel">
-      <div class="context-tabs">
-        <button data-context-tab="context" class="active">Контекст</button>
-        <button data-context-tab="evidence">Улики</button>
-        <button data-context-tab="relations">Связи</button>
-      </div>
-
-      <div id="entityInspector" class="entity-inspector">
-        <div class="empty-panel">
-          Выберите объект на карте, таймлайне или в графе.
-        </div>
-      </div>
-
-      <!-- CONTEXT DISCUSSION -->
-      <section class="context-discussion">
-        <header>
-          <strong>Обсуждение</strong>
-          <span id="discussionCount">0</span>
-        </header>
-        <div id="discussionMessages" class="discussion-messages"></div>
-        <div class="discussion-input">
-          <input id="discussionText" placeholder="Сообщение...">
-          <button id="sendDiscussion">➤</button>
-        </div>
-      </section>
-    </aside>
-
-    <!-- ================================================= -->
-    <!-- CTF UNIFIED WORKSPACE                             -->
-    <!-- ================================================= -->
-    <div id="view-ctf" class="view-panel hidden"></div>
+    <!-- ACTIVE SPACE -->
+    <main id="spaceContainer" class="space-container"></main>
   </div>
 
   <!-- ===================================================== -->
   <!-- STATUS BAR                                            -->
   <!-- ===================================================== -->
   <footer class="statusbar">
-    <span style="display: inline-flex; align-items: center;"><span class="status-beacon"></span>Расследование активно</span>
-    <span>Риск: <strong id="riskLevel">LOW</strong></span>
-    <span>Находки: <strong id="findingCount">0</strong></span>
-    <span>Улики: <strong id="evidenceCount">0</strong></span>
-    <span>Хосты: <strong id="affectedHosts">0</strong></span>
+    <span style="display: inline-flex; align-items: center;"><span class="status-beacon"></span>SOC/DFIR</span>
     <span class="statusbar-spacer"></span>
     <span>Engine: <strong>LOCAL</strong></span>
-    <span id="teamSyncState">Team: OFFLINE</span>
   </footer>
 </div>
 

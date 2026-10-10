@@ -43,6 +43,13 @@ pub struct Dependency {
     pub file: String,
     pub line: u32,
     pub kind: DepKind,
+    /// Only used while building or testing, not shipped to users: a
+    /// `devDependencies`/`optionalDependencies` entry, or a lock-file entry
+    /// marked `dev`. A flaw in one of these is less exposed than in a
+    /// runtime dependency. Known for npm today; `false` where a manifest
+    /// draws no dev/runtime line.
+    #[serde(default)]
+    pub dev: bool,
 }
 
 /// Lock files of big projects run to tens of megabytes.
@@ -73,6 +80,9 @@ struct Collector<'a> {
     root: &'a Path,
     out: Vec<Dependency>,
     seen: HashSet<(String, String, Option<String>, String, u32)>,
+    /// One-shot flag for the next `add`: set it right before a dev-scoped
+    /// `add`, and it clears itself so the following `add` is runtime again.
+    dev: bool,
 }
 
 impl Collector<'_> {
@@ -108,6 +118,7 @@ impl Collector<'_> {
             file.to_string(),
             line,
         );
+        let dev = std::mem::take(&mut self.dev);
         if !self.seen.insert(key) {
             return;
         }
@@ -119,6 +130,7 @@ impl Collector<'_> {
             file: file.to_string(),
             line,
             kind,
+            dev,
         });
     }
 }
@@ -129,6 +141,7 @@ pub fn collect(root: &Path) -> Vec<Dependency> {
         root,
         out: Vec::new(),
         seen: HashSet::new(),
+        dev: false,
     };
     walk(&mut c, root, 0);
     let mut out = c.out;
@@ -718,6 +731,7 @@ fn package_json(c: &mut Collector, file: &str, text: &str) {
                 .find(&format!("\"{name}\""))
                 .map(|o| line_at(text, section_at + o))
                 .unwrap_or(1);
+            c.dev = section != "dependencies";
             c.add(
                 "npm",
                 pkg,
@@ -774,6 +788,8 @@ fn package_lock_with(c: &mut Collector, file: &str, text: &str, kind: DepKind) {
                 continue;
             };
             let line = lines.get(key.as_str()).copied().unwrap_or(1);
+            c.dev = info.get("dev").and_then(Value::as_bool) == Some(true)
+                || info.get("devOptional").and_then(Value::as_bool) == Some(true);
             c.add("npm", name, Some(exact), version, file, line, kind);
         }
         return;
@@ -794,6 +810,7 @@ fn package_lock_with(c: &mut Collector, file: &str, text: &str, kind: DepKind) {
             if let Some(version) = info.get("version").and_then(Value::as_str) {
                 if let Some(exact) = exact_semver(version) {
                     let line = lines.get(name.as_str()).copied().unwrap_or(1);
+                    c.dev = info.get("dev").and_then(Value::as_bool) == Some(true);
                     c.add("npm", name, Some(exact), version, file, line, kind);
                 }
             }
@@ -2249,6 +2266,7 @@ mod tests {
             root,
             out: Vec::new(),
             seen: HashSet::new(),
+            dev: false,
         };
         f(&mut c, "f", text);
         c.out.sort_by_key(|d| d.line);
@@ -2256,6 +2274,41 @@ mod tests {
             .into_iter()
             .map(|d| (d.name, d.version, d.line))
             .collect()
+    }
+
+    fn parse_dev(f: fn(&mut Collector, &str, &str), text: &str) -> Vec<(String, bool)> {
+        let root = Path::new("/");
+        let mut c = Collector {
+            root,
+            out: Vec::new(),
+            seen: HashSet::new(),
+            dev: false,
+        };
+        f(&mut c, "f", text);
+        c.out.sort_by_key(|d| d.line);
+        c.out.into_iter().map(|d| (d.name, d.dev)).collect()
+    }
+
+    #[test]
+    fn npm_dev_dependencies_are_marked() {
+        // devDependencies and optionalDependencies are dev; dependencies are not.
+        let pkg = "{\n  \"dependencies\": {\n    \"express\": \"4.18.0\"\n  },\n  \"devDependencies\": {\n    \"jest\": \"29.0.0\"\n  },\n  \"optionalDependencies\": {\n    \"fsevents\": \"2.3.2\"\n  }\n}\n";
+        assert_eq!(
+            parse_dev(package_json, pkg),
+            vec![
+                ("express".to_string(), false),
+                ("jest".to_string(), true),
+                ("fsevents".to_string(), true),
+            ]
+        );
+        // Lock-file v3 carries the dev marker per installed package.
+        let lock = "{\n  \"lockfileVersion\": 3,\n  \"packages\": {\n    \"\": {\"name\": \"app\"},\n    \"node_modules/express\": {\"version\": \"4.18.0\"},\n    \"node_modules/jest\": {\"version\": \"29.0.0\", \"dev\": true}\n  }\n}\n";
+        let mut got = parse_dev(package_lock, lock);
+        got.sort();
+        assert_eq!(
+            got,
+            vec![("express".to_string(), false), ("jest".to_string(), true),]
+        );
     }
 
     fn pinned(name: &str, v: &str, line: u32) -> (String, Option<String>, u32) {
@@ -2366,6 +2419,7 @@ mod tests {
             root: Path::new("/"),
             out: Vec::new(),
             seen: HashSet::new(),
+            dev: false,
         };
         bundled_script(
             &mut c,

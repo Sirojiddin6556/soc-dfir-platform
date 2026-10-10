@@ -31,7 +31,6 @@ const repoRoot = path.resolve(here, '..', '..', '..');
 const uiDir = path.resolve(here, '..');
 const exe = process.platform === 'win32' ? 'engine-server.exe' : 'engine-server';
 const engineBin = process.env.ENGINE_BIN || path.join(repoRoot, 'target', 'debug', exe);
-const fixture = path.join(repoRoot, 'tests', 'fixtures', 'forensics', 'security_real.evtx');
 const shotsDir = process.env.E2E_SCREENSHOTS || null;
 
 async function loadPlaywright() {
@@ -43,38 +42,6 @@ async function loadPlaywright() {
     } catch (_) { /* try next */ }
   }
   throw new Error('playwright is not installed: npm i --no-save playwright (or set PLAYWRIGHT_MODULE)');
-}
-
-/** Copies a harmless system binary into a world-writable dir and runs it. */
-function plantSuspiciousProcess() {
-  const win = process.platform === 'win32';
-  const bases = win ? ['C:\\Users\\Public'] : ['/tmp', '/var/tmp', '/dev/shm'];
-  const sources = win ? ['C:\\Windows\\System32\\PING.EXE'] : ['/bin/sleep', '/usr/bin/sleep'];
-  const args = win ? ['-n', '300', '127.0.0.1'] : ['300'];
-  const source = sources.find((s) => fs.existsSync(s));
-  if (!source) throw new Error('no harmless system binary to copy');
-  for (const base of bases) {
-    const dir = path.join(base, `soc-e2e-${process.pid}-${Date.now()}`);
-    try {
-      fs.mkdirSync(dir, { recursive: true });
-      const exe = path.join(dir, win ? 'ping.exe' : 'sleep');
-      fs.copyFileSync(source, exe);
-      fs.chmodSync(exe, 0o755);
-      const child = spawn(exe, args, { stdio: 'ignore' });
-      if (!child.pid) throw new Error('spawn failed');
-      return {
-        pid: child.pid,
-        exe,
-        cleanup() {
-          child.kill();
-          setTimeout(() => fs.rmSync(dir, { recursive: true, force: true }), 500);
-        },
-      };
-    } catch (_) {
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
-  }
-  throw new Error('could not run a binary from a world-writable directory');
 }
 
 let passed = 0;
@@ -833,6 +800,209 @@ async function checkCodeScan(page, base, shot, allowIpcError) {
   }
 }
 
+/** A tiny, deliberately vulnerable site the scanner is pointed at. */
+async function startVulnerableSite() {
+  const http = await import('node:http');
+  const decode = (s) => { try { return decodeURIComponent(s.replace(/\+/g, ' ')); } catch { return s; } };
+  const param = (query, name) => {
+    for (const pair of query.split('&')) {
+      const [k, v] = pair.split('=');
+      if (k === name) return decode(v || '');
+    }
+    return '';
+  };
+  const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  const server = http.createServer((req, res) => {
+    const [pathname, query = ''] = req.url.split('?');
+    const html = (body, headers = {}) => {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', ...headers });
+      res.end(body);
+    };
+    switch (pathname) {
+      case '/':
+        return html(
+          `<html><body>
+            <a href="/search?q=hi">search</a>
+            <a href="/item?id=1">item</a>
+            <a href="/page?file=home.txt">page</a>
+            <a href="/go?next=/dashboard">go</a>
+            <a href="/safe?q=hi">safe</a>
+          </body></html>`,
+          { 'Set-Cookie': 'session=abc; Path=/', Server: 'nginx/1.18.0' }
+        );
+      case '/search':
+        return html(`<html><body>Нашли: ${param(query, 'q')}</body></html>`); // unescaped -> XSS
+      case '/safe':
+        return html(`<html><body>Safe: ${esc(param(query, 'q'))}</body></html>`); // escaped -> clean
+      case '/item': {
+        const id = param(query, 'id');
+        if (id.includes("'")) { res.writeHead(500); return res.end('sqlite3.OperationalError: near "\'" : syntax error'); }
+        return html('<html><body>item</body></html>');
+      }
+      case '/page': {
+        const file = param(query, 'file');
+        if (file.includes('etc/passwd')) { res.writeHead(200, { 'Content-Type': 'text/plain' }); return res.end('root:x:0:0:root:/root:/bin/bash\n'); }
+        return html('<html><body>home</body></html>');
+      }
+      case '/go':
+        res.writeHead(302, { Location: param(query, 'next') });
+        return res.end('redirecting');
+      default:
+        res.writeHead(404);
+        return res.end('nope');
+    }
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address();
+  return { url: `http://127.0.0.1:${port}/`, close: () => new Promise((r) => server.close(r)) };
+}
+
+// A single-page app with a JSON API behind a token login and an OpenAPI
+// description — the shape that defeats a link-following crawler, to prove
+// discovery, OpenAPI import and JSON login work end to end.
+async function startApiSite() {
+  const http = await import('node:http');
+  const spec = JSON.stringify({
+    openapi: '3.0.0',
+    paths: {
+      '/api/login': { post: { requestBody: { content: { 'application/json': {
+        schema: { type: 'object', properties: { email: { type: 'string' }, password: { type: 'string' } } } } } } } },
+      '/api/item': { get: { parameters: [{ name: 'id', in: 'query', schema: { type: 'integer' } }] } },
+      '/api/note': { post: { requestBody: { content: { 'application/json': {
+        schema: { type: 'object', properties: { text: { type: 'string' } } } } } } } },
+    },
+  });
+  const server = http.createServer((req, res) => {
+    const [pathname, query = ''] = req.url.split('?');
+    let body = '';
+    req.on('data', (c) => { body += c; });
+    req.on('end', () => {
+      const json = (status, obj) => { res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(obj)); };
+      const dbError = () => { res.writeHead(500, { 'Content-Type': 'application/json' }); res.end('{"detail":"sqlite3.OperationalError: near \\"\'\\": syntax error"}'); };
+      const authed = req.headers['authorization'] === 'Bearer tok-123';
+      if (req.method === 'GET' && pathname === '/') {
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        return res.end('<html><body><div id="app"></div><script src="/app.js"></script></body></html>');
+      }
+      if (req.method === 'GET' && pathname === '/openapi.json') { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end(spec); }
+      if (req.method === 'GET' && pathname === '/admin') return json(200, { panel: true });
+      if (req.method === 'POST' && pathname === '/api/login') {
+        return body.includes('admin@test') ? json(200, { access_token: 'tok-123' }) : json(401, { detail: 'no' });
+      }
+      if (req.method === 'GET' && pathname === '/api/item') {
+        if (!authed) return json(401, { detail: 'auth' });
+        const id = (query.split('&').find((p) => p.startsWith('id=')) || '').slice(3);
+        return decodeURIComponent(id).includes("'") ? dbError() : json(200, { item: 1 });
+      }
+      if (req.method === 'POST' && pathname === '/api/note') {
+        if (!authed) return json(401, { detail: 'auth' });
+        return body.includes("'") ? dbError() : json(200, { saved: true });
+      }
+      return json(404, { detail: 'not found' });
+    });
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address();
+  return { url: `http://127.0.0.1:${port}/`, close: () => new Promise((r) => server.close(r)) };
+}
+
+async function checkWebScanApi(page, base, shot) {
+  const token = await page.evaluate(() => localStorage.getItem('soc_session_token'));
+  const rpc = async (method, params = {}) => {
+    const r = await fetch(`${base}/rpc`, {
+      method: 'POST',
+      body: JSON.stringify({ api_version: 1, request_id: 't', method, params: { ...params, token } }),
+    });
+    return r.json();
+  };
+  const site = await startApiSite();
+  try {
+    await page.click('.global-nav button[data-space="web"]');
+    await page.waitForSelector('#webUrl');
+    await page.fill('#webUrl', site.url);
+    // Sign in through the JSON API so the token reaches the protected endpoints.
+    if (!(await page.isChecked('#webUseLogin'))) await page.click('#webUseLogin');
+    await page.waitForSelector('#webLoginJson', { state: 'visible' });
+    if (!(await page.isChecked('#webLoginJson'))) await page.click('#webLoginJson');
+    await page.fill('#webLoginUrl', '/api/login');
+    await page.fill('#webLoginUser', 'admin@test');
+    await page.fill('#webLoginPass', 'pw');
+    await page.click('#webScanBtn');
+    await page.waitForFunction(() => {
+      const btn = document.getElementById('webScanBtn');
+      return btn && !btn.disabled && document.getElementById('webSummary');
+    }, null, { timeout: 120000 });
+
+    const status = (await rpc('web.status')).result;
+    check(!status.running && !status.error, `API scan finished (${status.error || 'no error'})`);
+    const r = status.report;
+    console.log(`  engine(api): authenticated=${r.authenticated}, discovered=${r.paths_discovered}, openapi=${r.api_endpoints}, points=${r.points_tested}`);
+    check(r.authenticated, 'JSON token login authenticated the API scan');
+    check(r.paths_discovered >= 1, 'path discovery found an unlinked endpoint');
+    check(r.api_endpoints >= 2, 'OpenAPI description yielded endpoints to test');
+    const sqli = r.findings.filter((f) => f.rule === 'sql-injection').map((f) => f.url);
+    check(sqli.some((u) => u.includes('/api/item')), 'SQLi found in a documented GET query parameter');
+    check(sqli.some((u) => u.includes('/api/note')), 'SQLi found in a documented JSON request body');
+    await shot('08b-web-api');
+  } finally {
+    await site.close();
+  }
+}
+
+async function checkWebScan(page, base, shot) {
+  const token = await page.evaluate(() => localStorage.getItem('soc_session_token'));
+  const rpc = async (method, params = {}) => {
+    const r = await fetch(`${base}/rpc`, {
+      method: 'POST',
+      body: JSON.stringify({ api_version: 1, request_id: 't', method, params: { ...params, token } }),
+    });
+    return r.json();
+  };
+  const anon = await fetch(`${base}/rpc`, {
+    method: 'POST',
+    body: JSON.stringify({ api_version: 1, request_id: 't', method: 'web.scan', params: { url: 'http://127.0.0.1:1/' } }),
+  });
+  check(anon.status === 401, 'web.scan without a session is refused (it makes requests from the engine machine)');
+
+  const site = await startVulnerableSite();
+  try {
+    await page.click('.global-nav button[data-space="web"]');
+    await page.waitForSelector('#webUrl');
+    const empty = await page.waitForSelector('#webEmpty', { timeout: 15000 }).then(() => true, () => false);
+    check(empty, 'running-site space opens with no scan yet');
+
+    await page.fill('#webUrl', site.url);
+    await page.click('#webScanBtn');
+    await page.waitForFunction(() => {
+      const btn = document.getElementById('webScanBtn');
+      return btn && !btn.disabled && document.getElementById('webSummary');
+    }, null, { timeout: 120000 });
+
+    const status = (await rpc('web.status')).result;
+    check(!status.running && !status.error, `scan finished (${status.error || 'no error'})`);
+    const rules = [...new Set(status.report.findings.map((f) => f.rule))].sort();
+    console.log(`  engine: ${rules.join(', ')} across ${status.report.pages_crawled} pages, ${status.report.requests_made} requests`);
+    for (const rule of ['reflected-xss', 'sql-injection', 'path-traversal', 'open-redirect', 'clickjacking', 'cookie-flags', 'version-disclosure']) {
+      check(rules.includes(rule), `engine finds ${rule} on the running site`);
+    }
+    check(!status.report.findings.some((f) => f.rule === 'reflected-xss' && f.url.includes('/safe')),
+      'the escaped endpoint is not a false XSS');
+    check(status.report.findings.every((f) => f.request.startsWith('curl')), 'every finding carries a repro request');
+    check(status.report.findings.every((f) => f.url.includes('127.0.0.1')), 'the scan stays on the target origin');
+
+    const cards = await page.locator('.web-finding').count();
+    check(cards > 0, `UI shows finding cards (${cards})`);
+    const xssCard = page.locator('.web-finding', { hasText: 'Отражённый XSS' }).first();
+    check((await xssCard.locator('.web-finding-repro pre').textContent()).includes('curl'),
+      'a finding card shows how to repeat the request');
+    // The reflected payload is shown as text, not run as markup.
+    check((await page.locator('.web-finding svg').count()) === 0, 'the reflected payload is escaped in the UI');
+    await shot('08-web');
+  } finally {
+    await site.close();
+  }
+}
+
 async function main() {
   if (!fs.existsSync(engineBin)) throw new Error(`engine binary not found: ${engineBin} (cargo build -p engine-server)`);
   const { chromium } = await loadPlaywright();
@@ -875,8 +1045,8 @@ async function main() {
     await page.click('#authSubmit');
     await page.waitForSelector('#authOverlay', { state: 'hidden' });
     check(true, 'setup completes and the app opens');
-    await page.waitForFunction(() => /^[0-9a-f-]{36}$/.test(document.getElementById('caseId').textContent.trim()), null, { timeout: 15000 });
-    check(true, 'a real case is created and selected');
+    await page.waitForFunction(() => (document.getElementById('spaceContainer')?.children.length || 0) > 0, null, { timeout: 15000 });
+    check(true, 'the default space renders after setup');
     check((await page.textContent('#currentUserName')).trim().length > 0, 'logged-in user name is shown');
 
     console.log('\n[2] API is closed without a session');
@@ -894,89 +1064,27 @@ async function main() {
     const traversal = await fetch(`${base}/%2e%2e/%2e%2e/%2e%2e/%2e%2e/%2e%2e/%2e%2e/etc/hosts`);
     check(traversal.status === 404, 'path traversal outside the UI directory is refused');
 
-    console.log('\n[3] Evidence ingest of a real EVTX file');
-    await page.click('.global-nav button[data-space="evidence"]');
-    await page.waitForSelector('#evidenceFileInput', { state: 'attached' });
-    await page.setInputFiles('#evidenceFileInput', fixture);
-    await page.waitForFunction(() => /✓|✗/.test(document.getElementById('uploadStatus')?.textContent || ''), null, { timeout: 60000 });
-    const status = await page.textContent('#uploadStatus');
-    check(status.includes('✓'), `EVTX ingested: ${status.trim()}`);
-    const events = Number((status.match(/(\d+) событий/) || [])[1] || 0);
-    check(events > 0, 'ingest extracted events from the file');
-    await page.waitForFunction(() => document.body.innerText.includes('security_real.evtx'), null, { timeout: 15000 });
-    check(true, 'artifact appears in the evidence list');
-    await shot('02-evidence');
-
-    console.log('\n[4] Every space opens without errors');
-    for (const space of ['operations', 'investigation', 'evidence', 'vulns', 'code', 'range', 'ctf', 'system']) {
+    console.log('\n[3] Every space opens without errors');
+    for (const space of ['system', 'vulns', 'code', 'web']) {
       await page.click(`.global-nav button[data-space="${space}"]`);
       await page.waitForTimeout(1200);
       await shot(`03-${space}`);
       check(true, `space "${space}" opened`);
     }
 
-    console.log('\n[5] Live host collection detects a real suspicious process');
-    // A harmless binary copied into a world-writable directory and started:
-    // exactly what CORR-LIN-001b / CORR-WIN-001f exist to catch.
-    const planted = plantSuspiciousProcess();
-    try {
-      await page.click('.global-nav button[data-space="investigation"]');
-      await page.click('#startCollection');
-      await page.waitForFunction(() => {
-        const b = document.getElementById('startCollection');
-        return b && !b.disabled && b.textContent.includes('Запустить сбор');
-      }, null, { timeout: 120000 });
-      const token = await page.evaluate(() => localStorage.getItem('soc_session_token'));
-      const caseId = (await page.textContent('#caseId')).trim();
-      const rpcCall = async (method, params) => {
-        const r = await fetch(`${base}/rpc`, {
-          method: 'POST',
-          body: JSON.stringify({ api_version: 1, request_id: 't', method, params: { ...params, token } }),
-        });
-        return (await r.json()).result;
-      };
-      const overview = await rpcCall('host.overview', {});
-      check(overview && overview.counts && overview.counts.processes > 0,
-        `host snapshot has real processes (${overview?.counts?.processes}), os: ${overview?.os}`);
-      const procs = await rpcCall('host.processes', {});
-      const seen = (procs?.processes || []).find((p) => p.pid === planted.pid);
-      check(Boolean(seen), `snapshot contains the planted process pid ${planted.pid} (${seen?.executable_path})`);
-      const facts = await rpcCall('facts.list', { case_id: caseId });
-      const needle = JSON.stringify(planted.exe).slice(1, -1);
-      const hit = (facts || []).find((f) => JSON.stringify(f).includes(needle));
-      check(Boolean(hit), `correlation raised a finding for ${planted.exe}`);
-      await page.waitForFunction(() => Number(document.getElementById('findingCount')?.textContent || 0) > 0,
-        null, { timeout: 15000 }).catch(() => {});
-      const shown = Number(await page.textContent('#findingCount'));
-      check(shown > 0, `UI status bar shows findings (${shown})`);
-      const snap = await rpcCall('investigation.snapshot', { case_id: caseId });
-      check(shown === snap.findings.length,
-        `status bar findings (${shown}) match the engine (${snap.findings.length})`);
-      const evidenceShown = Number(await page.textContent('#evidenceCount'));
-      check(evidenceShown === snap.metrics.evidence && evidenceShown > 0,
-        `status bar evidence (${evidenceShown}) is the ingested artifact count (${snap.metrics.evidence})`);
-      const panel = await page.textContent('#entityInspector');
-      const panelFindings = Number((panel.match(/Находки:\s*(\d+)/) || [])[1]);
-      check(panelFindings === snap.findings.length,
-        `context panel is refreshed after collection (findings ${panelFindings})`);
-      check(panel.includes(`Риск: ${snap.case.risk}`), `context panel shows the real risk (${snap.case.risk})`);
-      const plantedNode = snap.graph.nodes.find((n) => n.id === `proc-${planted.pid}`);
-      check(Boolean(plantedNode && plantedNode.in_attack_path),
-        'planted process is on the attack path in the graph');
-      await shot('04-collection');
-    } finally {
-      planted.cleanup();
-    }
-
-    console.log('\n[6] Vulnerability database update and package CVE scan');
+    console.log('\n[4] Vulnerability database update and package CVE scan');
     await checkVulnerabilityScan(page, base, shot);
 
-    console.log('\n[7] Source code analysis of a project folder');
+    console.log('\n[5] Source code analysis of a project folder');
     await checkCodeScan(page, base, shot, (on) => { allowIpcError = on; });
 
-    console.log('\n[8] Session survives reload, logout and login work');
+    console.log('\n[6] Dynamic scan of a running web application');
+    await checkWebScan(page, base, shot);
+    await checkWebScanApi(page, base, shot);
+
+    console.log('\n[7] Session survives reload, logout and login work');
     await page.reload();
-    await page.waitForFunction(() => /^[0-9a-f-]{36}$/.test(document.getElementById('caseId').textContent.trim()), null, { timeout: 15000 });
+    await page.waitForFunction(() => (document.getElementById('spaceContainer')?.children.length || 0) > 0, null, { timeout: 15000 });
     check(await page.isHidden('#authOverlay'), 'reload keeps the session');
     // Let the app finish loading first: a call still in flight when the
     // session ends comes back 401, which is not what this step tests.
@@ -997,7 +1105,7 @@ async function main() {
     check(true, 'correct password logs in');
     await page.waitForTimeout(1500);
 
-    console.log('\n[9] No page errors, console errors or failed requests');
+    console.log('\n[8] No page errors, console errors or failed requests');
     check(problems.length === 0, problems.length ? `problems:\n    ${problems.join('\n    ')}` : 'clean run');
   } finally {
     await browser.close();
