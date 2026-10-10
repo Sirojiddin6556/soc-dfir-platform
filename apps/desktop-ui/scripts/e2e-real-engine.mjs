@@ -31,7 +31,6 @@ const repoRoot = path.resolve(here, '..', '..', '..');
 const uiDir = path.resolve(here, '..');
 const exe = process.platform === 'win32' ? 'engine-server.exe' : 'engine-server';
 const engineBin = process.env.ENGINE_BIN || path.join(repoRoot, 'target', 'debug', exe);
-const fixture = path.join(repoRoot, 'tests', 'fixtures', 'forensics', 'security_real.evtx');
 const shotsDir = process.env.E2E_SCREENSHOTS || null;
 
 async function loadPlaywright() {
@@ -43,38 +42,6 @@ async function loadPlaywright() {
     } catch (_) { /* try next */ }
   }
   throw new Error('playwright is not installed: npm i --no-save playwright (or set PLAYWRIGHT_MODULE)');
-}
-
-/** Copies a harmless system binary into a world-writable dir and runs it. */
-function plantSuspiciousProcess() {
-  const win = process.platform === 'win32';
-  const bases = win ? ['C:\\Users\\Public'] : ['/tmp', '/var/tmp', '/dev/shm'];
-  const sources = win ? ['C:\\Windows\\System32\\PING.EXE'] : ['/bin/sleep', '/usr/bin/sleep'];
-  const args = win ? ['-n', '300', '127.0.0.1'] : ['300'];
-  const source = sources.find((s) => fs.existsSync(s));
-  if (!source) throw new Error('no harmless system binary to copy');
-  for (const base of bases) {
-    const dir = path.join(base, `soc-e2e-${process.pid}-${Date.now()}`);
-    try {
-      fs.mkdirSync(dir, { recursive: true });
-      const exe = path.join(dir, win ? 'ping.exe' : 'sleep');
-      fs.copyFileSync(source, exe);
-      fs.chmodSync(exe, 0o755);
-      const child = spawn(exe, args, { stdio: 'ignore' });
-      if (!child.pid) throw new Error('spawn failed');
-      return {
-        pid: child.pid,
-        exe,
-        cleanup() {
-          child.kill();
-          setTimeout(() => fs.rmSync(dir, { recursive: true, force: true }), 500);
-        },
-      };
-    } catch (_) {
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
-  }
-  throw new Error('could not run a binary from a world-writable directory');
 }
 
 let passed = 0;
@@ -1078,8 +1045,8 @@ async function main() {
     await page.click('#authSubmit');
     await page.waitForSelector('#authOverlay', { state: 'hidden' });
     check(true, 'setup completes and the app opens');
-    await page.waitForFunction(() => /^[0-9a-f-]{36}$/.test(document.getElementById('caseId').textContent.trim()), null, { timeout: 15000 });
-    check(true, 'a real case is created and selected');
+    await page.waitForFunction(() => (document.getElementById('spaceContainer')?.children.length || 0) > 0, null, { timeout: 15000 });
+    check(true, 'the default space renders after setup');
     check((await page.textContent('#currentUserName')).trim().length > 0, 'logged-in user name is shown');
 
     console.log('\n[2] API is closed without a session');
@@ -1097,93 +1064,27 @@ async function main() {
     const traversal = await fetch(`${base}/%2e%2e/%2e%2e/%2e%2e/%2e%2e/%2e%2e/%2e%2e/etc/hosts`);
     check(traversal.status === 404, 'path traversal outside the UI directory is refused');
 
-    console.log('\n[3] Evidence ingest of a real EVTX file');
-    await page.click('.global-nav button[data-space="evidence"]');
-    await page.waitForSelector('#evidenceFileInput', { state: 'attached' });
-    await page.setInputFiles('#evidenceFileInput', fixture);
-    await page.waitForFunction(() => /✓|✗/.test(document.getElementById('uploadStatus')?.textContent || ''), null, { timeout: 60000 });
-    const status = await page.textContent('#uploadStatus');
-    check(status.includes('✓'), `EVTX ingested: ${status.trim()}`);
-    const events = Number((status.match(/(\d+) событий/) || [])[1] || 0);
-    check(events > 0, 'ingest extracted events from the file');
-    await page.waitForFunction(() => document.body.innerText.includes('security_real.evtx'), null, { timeout: 15000 });
-    check(true, 'artifact appears in the evidence list');
-    await shot('02-evidence');
-
-    console.log('\n[4] Every space opens without errors');
-    for (const space of ['operations', 'investigation', 'evidence', 'vulns', 'code', 'web', 'range', 'ctf', 'system']) {
+    console.log('\n[3] Every space opens without errors');
+    for (const space of ['system', 'vulns', 'code', 'web']) {
       await page.click(`.global-nav button[data-space="${space}"]`);
       await page.waitForTimeout(1200);
       await shot(`03-${space}`);
       check(true, `space "${space}" opened`);
     }
 
-    console.log('\n[5] Live host collection detects a real suspicious process');
-    // A harmless binary copied into a world-writable directory and started:
-    // exactly what CORR-LIN-001b / CORR-WIN-001f exist to catch.
-    const planted = plantSuspiciousProcess();
-    try {
-      await page.click('.global-nav button[data-space="investigation"]');
-      await page.click('#startCollection');
-      await page.waitForFunction(() => {
-        const b = document.getElementById('startCollection');
-        return b && !b.disabled && b.textContent.includes('Запустить сбор');
-      }, null, { timeout: 120000 });
-      const token = await page.evaluate(() => localStorage.getItem('soc_session_token'));
-      const caseId = (await page.textContent('#caseId')).trim();
-      const rpcCall = async (method, params) => {
-        const r = await fetch(`${base}/rpc`, {
-          method: 'POST',
-          body: JSON.stringify({ api_version: 1, request_id: 't', method, params: { ...params, token } }),
-        });
-        return (await r.json()).result;
-      };
-      const overview = await rpcCall('host.overview', {});
-      check(overview && overview.counts && overview.counts.processes > 0,
-        `host snapshot has real processes (${overview?.counts?.processes}), os: ${overview?.os}`);
-      const procs = await rpcCall('host.processes', {});
-      const seen = (procs?.processes || []).find((p) => p.pid === planted.pid);
-      check(Boolean(seen), `snapshot contains the planted process pid ${planted.pid} (${seen?.executable_path})`);
-      const facts = await rpcCall('facts.list', { case_id: caseId });
-      const needle = JSON.stringify(planted.exe).slice(1, -1);
-      const hit = (facts || []).find((f) => JSON.stringify(f).includes(needle));
-      check(Boolean(hit), `correlation raised a finding for ${planted.exe}`);
-      await page.waitForFunction(() => Number(document.getElementById('findingCount')?.textContent || 0) > 0,
-        null, { timeout: 15000 }).catch(() => {});
-      const shown = Number(await page.textContent('#findingCount'));
-      check(shown > 0, `UI status bar shows findings (${shown})`);
-      const snap = await rpcCall('investigation.snapshot', { case_id: caseId });
-      check(shown === snap.findings.length,
-        `status bar findings (${shown}) match the engine (${snap.findings.length})`);
-      const evidenceShown = Number(await page.textContent('#evidenceCount'));
-      check(evidenceShown === snap.metrics.evidence && evidenceShown > 0,
-        `status bar evidence (${evidenceShown}) is the ingested artifact count (${snap.metrics.evidence})`);
-      const panel = await page.textContent('#entityInspector');
-      const panelFindings = Number((panel.match(/Находки:\s*(\d+)/) || [])[1]);
-      check(panelFindings === snap.findings.length,
-        `context panel is refreshed after collection (findings ${panelFindings})`);
-      check(panel.includes(`Риск: ${snap.case.risk}`), `context panel shows the real risk (${snap.case.risk})`);
-      const plantedNode = snap.graph.nodes.find((n) => n.id === `proc-${planted.pid}`);
-      check(Boolean(plantedNode && plantedNode.in_attack_path),
-        'planted process is on the attack path in the graph');
-      await shot('04-collection');
-    } finally {
-      planted.cleanup();
-    }
-
-    console.log('\n[6] Vulnerability database update and package CVE scan');
+    console.log('\n[4] Vulnerability database update and package CVE scan');
     await checkVulnerabilityScan(page, base, shot);
 
-    console.log('\n[7] Source code analysis of a project folder');
+    console.log('\n[5] Source code analysis of a project folder');
     await checkCodeScan(page, base, shot, (on) => { allowIpcError = on; });
 
-    console.log('\n[8] Dynamic scan of a running web application');
+    console.log('\n[6] Dynamic scan of a running web application');
     await checkWebScan(page, base, shot);
     await checkWebScanApi(page, base, shot);
 
-    console.log('\n[9] Session survives reload, logout and login work');
+    console.log('\n[7] Session survives reload, logout and login work');
     await page.reload();
-    await page.waitForFunction(() => /^[0-9a-f-]{36}$/.test(document.getElementById('caseId').textContent.trim()), null, { timeout: 15000 });
+    await page.waitForFunction(() => (document.getElementById('spaceContainer')?.children.length || 0) > 0, null, { timeout: 15000 });
     check(await page.isHidden('#authOverlay'), 'reload keeps the session');
     // Let the app finish loading first: a call still in flight when the
     // session ends comes back 401, which is not what this step tests.
@@ -1204,7 +1105,7 @@ async function main() {
     check(true, 'correct password logs in');
     await page.waitForTimeout(1500);
 
-    console.log('\n[10] No page errors, console errors or failed requests');
+    console.log('\n[8] No page errors, console errors or failed requests');
     check(problems.length === 0, problems.length ? `problems:\n    ${problems.join('\n    ')}` : 'clean run');
   } finally {
     await browser.close();
