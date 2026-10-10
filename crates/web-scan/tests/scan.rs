@@ -198,6 +198,7 @@ fn handle(mut stream: TcpStream) {
               <a href="/safe?q=hi">safe</a>
               <a href="/comments">comments</a>
               <form action="/comment" method="post"><input name="text" value=""><input type="submit" value="post"></form>
+              <form action="/profile" method="post"><input type="hidden" name="csrf_token" value="xyz"><input name="bio" value=""><input type="submit" value="save"></form>
               <form action="/login" method="post">
                 <input name="username" value=""><input type="password" name="password">
                 <input type="submit" value="in">
@@ -268,6 +269,15 @@ fn handle(mut stream: TcpStream) {
                 "200 OK",
                 &[],
                 "<html><body>saved</body></html>",
+            );
+        }
+        // A POST form that carries a CSRF token -> must NOT be flagged.
+        "/profile" => {
+            respond(
+                &mut stream,
+                "200 OK",
+                &[],
+                "<html><body>profile</body></html>",
             );
         }
         "/comments" => {
@@ -458,6 +468,23 @@ fn finds_the_planted_vulnerabilities_and_spares_the_safe_endpoint() {
     assert!(
         stored.iter().any(|u| u.contains("/comments")),
         "stored XSS surfaced on /comments: {stored:?}"
+    );
+
+    // CSRF: the tokenless POST forms are flagged; the one with a csrf_token is
+    // not. (The site sets a cookie without SameSite, so nothing is suppressed.)
+    let csrf: Vec<&str> = report
+        .findings
+        .iter()
+        .filter(|f| f.rule == "csrf")
+        .map(|f| f.url.as_str())
+        .collect();
+    assert!(
+        csrf.iter().any(|u| u.contains("/comment")),
+        "CSRF on the tokenless /comment form: {csrf:?}"
+    );
+    assert!(
+        !csrf.iter().any(|u| u.contains("/profile")),
+        "no CSRF finding on the token-bearing /profile form: {csrf:?}"
     );
 
     // Each finding keeps a reproducible request.

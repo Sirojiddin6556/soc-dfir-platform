@@ -4,6 +4,7 @@
 //! response back. Passive checks judge a response the scan already has. Each
 //! check appends [`Finding`]s and respects the client's request budget.
 
+pub mod csrf;
 pub mod passive;
 pub mod redirect;
 pub mod sqli;

@@ -364,6 +364,9 @@ pub fn scan(target: &str, options: &Options) -> Result<Report, ScanError> {
         checks::passive::check(&base, &resp, &client, &mut findings);
     }
 
+    // CSRF: a passive read of the crawled POST forms for a missing token.
+    checks::csrf::check(&points, &client.set_cookie_headers(), &mut findings);
+
     let points_tested = points.len();
     if options.active {
         for point in &points {
