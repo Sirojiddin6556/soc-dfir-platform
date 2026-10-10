@@ -69,6 +69,30 @@ fn param(query: &str, name: &str) -> Option<String> {
         .map(|(_, v)| pct_decode(v))
 }
 
+/// Seconds a SQL sleep payload asks for: `SLEEP(n)`, `PG_SLEEP(n)` or
+/// `WAITFOR DELAY '0:0:n'`. Zero when there is no such token (so the stray
+/// quote of the error-based probe and the zero-second control stay fast).
+fn requested_sleep(s: &str) -> u64 {
+    let up = s.to_uppercase();
+    for marker in ["SLEEP(", "PG_SLEEP("] {
+        if let Some(pos) = up.find(marker) {
+            let rest = &up[pos + marker.len()..];
+            let num: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+            if let Ok(n) = num.parse::<u64>() {
+                return n;
+            }
+        }
+    }
+    if let Some(pos) = up.find("0:0:") {
+        let rest = &up[pos + 4..];
+        let num: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if let Ok(n) = num.parse::<u64>() {
+            return n;
+        }
+    }
+    0
+}
+
 fn html_escape(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
@@ -161,6 +185,7 @@ fn handle(mut stream: TcpStream) {
             r#"<html><body>
               <a href="/search?q=hello">search</a>
               <a href="/item?id=1">item</a>
+              <a href="/blind?id=1">blind</a>
               <a href="/page?file=home.txt">page</a>
               <a href="/go?next=/dashboard">go</a>
               <a href="/safe?q=hi">safe</a>
@@ -208,6 +233,16 @@ fn handle(mut stream: TcpStream) {
                     "<html><body>item 1</body></html>",
                 );
             }
+        }
+        // Sleeps when a payload asks the "database" to, and never shows an
+        // error or reflects input -> only a time-based blind check can find it.
+        "/blind" => {
+            let id = param(&params_src, "id").unwrap_or_default();
+            let secs = requested_sleep(&id).min(5);
+            if secs > 0 {
+                std::thread::sleep(Duration::from_secs(secs));
+            }
+            respond(&mut stream, "200 OK", &[], "<html><body>ok</body></html>");
         }
         // A path climb returns a system file -> path traversal.
         "/page" => {
@@ -354,6 +389,23 @@ fn finds_the_planted_vulnerabilities_and_spares_the_safe_endpoint() {
     assert!(
         !xss.iter().any(|u| u.contains("/safe")),
         "false XSS on /safe: {xss:?}"
+    );
+
+    // SQL injection is found both by the database error on /item and, with no
+    // error at all, by the response-time delay on /blind.
+    let sqli: Vec<&str> = report
+        .findings
+        .iter()
+        .filter(|f| f.rule == "sql-injection")
+        .map(|f| f.url.as_str())
+        .collect();
+    assert!(
+        sqli.iter().any(|u| u.contains("/item")),
+        "error-based SQLi on /item: {sqli:?}"
+    );
+    assert!(
+        sqli.iter().any(|u| u.contains("/blind")),
+        "time-based blind SQLi on /blind: {sqli:?}"
     );
 
     // Each finding keeps a reproducible request.
