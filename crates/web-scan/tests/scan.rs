@@ -100,6 +100,61 @@ fn html_escape(s: &str) -> String {
         .replace('"', "&quot;")
 }
 
+/// Seconds a shell wait payload asks for, as a command-injected value would:
+/// `sleep N` after a shell metacharacter, or `ping -n N` (which waits ~N-1).
+/// Zero when there is no such token, so the zero-wait control stays fast.
+fn shell_wait_seconds(s: &str) -> u64 {
+    if let Some(pos) = s.find("sleep ") {
+        let rest = &s[pos + "sleep ".len()..];
+        let num: String = rest
+            .chars()
+            .skip_while(|c| c.is_whitespace())
+            .take_while(|c| c.is_ascii_digit())
+            .collect();
+        if let Ok(n) = num.parse::<u64>() {
+            return n;
+        }
+    }
+    if let Some(pos) = s.find("-n ") {
+        let rest = &s[pos + "-n ".len()..];
+        let num: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if let Ok(n) = num.parse::<u64>() {
+            return n.saturating_sub(1);
+        }
+    }
+    0
+}
+
+/// The text between the first `open` and the next `close` after it.
+fn between<'a>(s: &'a str, open: &str, close: &str) -> Option<&'a str> {
+    let start = s.find(open)? + open.len();
+    let end = s[start..].find(close)? + start;
+    Some(&s[start..end])
+}
+
+/// A crude template engine: if `name` carries an `A*B` expression inside a
+/// known delimiter, return the product; otherwise echo the input escaped (so
+/// it is neither evaluated nor an XSS sink). This stands in for a real engine
+/// evaluating injected template syntax.
+fn render_template(name: &str) -> String {
+    for (open, close) in [
+        ("${{", "}}"),
+        ("<%=", "%>"),
+        ("{{", "}}"),
+        ("#{", "}"),
+        ("${", "}"),
+    ] {
+        if let Some(expr) = between(name, open, close) {
+            if let Some((a, b)) = expr.trim().split_once('*') {
+                if let (Ok(a), Ok(b)) = (a.trim().parse::<u64>(), b.trim().parse::<u64>()) {
+                    return format!("Результат: {}", a * b);
+                }
+            }
+        }
+    }
+    html_escape(name)
+}
+
 /// A process-wide store for the stored-XSS endpoints: `/comment` appends to it,
 /// `/comments` prints it back without escaping.
 fn comment_store() -> &'static std::sync::Mutex<Vec<String>> {
@@ -197,6 +252,9 @@ fn handle(mut stream: TcpStream) {
               <a href="/page?file=home.txt">page</a>
               <a href="/go?next=/dashboard">go</a>
               <a href="/safe?q=hi">safe</a>
+              <a href="/render?name=Guest">render</a>
+              <a href="/render_safe?name=Guest">render_safe</a>
+              <a href="/ping?host=127.0.0.1">ping</a>
               <a href="/comments">comments</a>
               <form action="/comment" method="post"><input name="text" value=""><input type="submit" value="post"></form>
               <form action="/profile" method="post"><input type="hidden" name="csrf_token" value="xyz"><input name="bio" value=""><input type="submit" value="save"></form>
@@ -225,6 +283,42 @@ fn handle(mut stream: TcpStream) {
                 &[],
                 &format!("<html><body>Safe: {}</body></html>", html_escape(&q)),
             );
+        }
+        // Renders name through a template engine that evaluates injected
+        // expressions -> server-side template injection.
+        "/render" => {
+            let name = param(&params_src, "name").unwrap_or_default();
+            respond(
+                &mut stream,
+                "200 OK",
+                &[],
+                &format!(
+                    "<html><body>Привет, {}</body></html>",
+                    render_template(&name)
+                ),
+            );
+        }
+        // Echoes name as plain text, never evaluating it -> must NOT be flagged
+        // as SSTI (nor, being escaped, as reflected XSS).
+        "/render_safe" => {
+            let name = param(&params_src, "name").unwrap_or_default();
+            respond(
+                &mut stream,
+                "200 OK",
+                &[],
+                &format!("<html><body>Привет, {}</body></html>", html_escape(&name)),
+            );
+        }
+        // Passes host to a shell `ping`; a wait payload makes it sleep and
+        // never reflects or errors -> only the time-based cmd-injection check
+        // can find it.
+        "/ping" => {
+            let host = param(&params_src, "host").unwrap_or_default();
+            let secs = shell_wait_seconds(&host).min(5);
+            if secs > 0 {
+                std::thread::sleep(Duration::from_secs(secs));
+            }
+            respond(&mut stream, "200 OK", &[], "<html><body>ok</body></html>");
         }
         // A stray quote in id yields a database error -> SQL injection.
         "/item" => {
@@ -436,6 +530,8 @@ fn finds_the_planted_vulnerabilities_and_spares_the_safe_endpoint() {
         "sql-injection",
         "path-traversal",
         "open-redirect",
+        "template-injection",
+        "command-injection",
         "clickjacking",
         "missing-csp",
         "cookie-flags",
@@ -482,6 +578,36 @@ fn finds_the_planted_vulnerabilities_and_spares_the_safe_endpoint() {
     assert!(
         sqli.iter().any(|u| u.contains("/bool")),
         "boolean-based blind SQLi on /bool: {sqli:?}"
+    );
+
+    // SSTI: the template engine on /render evaluates the injected expression;
+    // /render_safe echoes it as text and must not be flagged.
+    let ssti: Vec<&str> = report
+        .findings
+        .iter()
+        .filter(|f| f.rule == "template-injection")
+        .map(|f| f.url.as_str())
+        .collect();
+    assert!(
+        ssti.iter().any(|u| u.contains("/render")),
+        "SSTI on /render: {ssti:?}"
+    );
+    assert!(
+        !ssti.iter().any(|u| u.contains("/render_safe")),
+        "false SSTI on the escaping /render_safe: {ssti:?}"
+    );
+
+    // Command injection is found only by the response-time delay on /ping,
+    // with no error or reflection to go on.
+    let cmdi: Vec<&str> = report
+        .findings
+        .iter()
+        .filter(|f| f.rule == "command-injection")
+        .map(|f| f.url.as_str())
+        .collect();
+    assert!(
+        cmdi.iter().any(|u| u.contains("/ping")),
+        "time-based command injection on /ping: {cmdi:?}"
     );
 
     // A payload posted to /comment is served unescaped by /comments -> stored

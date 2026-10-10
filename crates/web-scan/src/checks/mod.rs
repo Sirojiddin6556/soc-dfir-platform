@@ -4,10 +4,12 @@
 //! response back. Passive checks judge a response the scan already has. Each
 //! check appends [`Finding`]s and respects the client's request budget.
 
+pub mod cmdi;
 pub mod csrf;
 pub mod passive;
 pub mod redirect;
 pub mod sqli;
+pub mod ssti;
 pub mod stored;
 pub mod traversal;
 pub mod xss;
@@ -25,6 +27,8 @@ pub fn run_active(client: &Client, point: &InjectionPoint, findings: &mut Vec<Fi
         sqli::check(client, point, index, findings);
         traversal::check(client, point, index, findings);
         redirect::check(client, point, index, findings);
+        ssti::check(client, point, index, findings);
+        cmdi::check(client, point, index, findings);
     }
 }
 
