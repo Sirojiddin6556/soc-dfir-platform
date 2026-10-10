@@ -193,6 +193,7 @@ fn handle(mut stream: TcpStream) {
               <a href="/search?q=hello">search</a>
               <a href="/item?id=1">item</a>
               <a href="/blind?id=1">blind</a>
+              <a href="/bool?id=1">bool</a>
               <a href="/page?file=home.txt">page</a>
               <a href="/go?next=/dashboard">go</a>
               <a href="/safe?q=hi">safe</a>
@@ -253,6 +254,28 @@ fn handle(mut stream: TcpStream) {
                 std::thread::sleep(Duration::from_secs(secs));
             }
             respond(&mut stream, "200 OK", &[], "<html><body>ok</body></html>");
+        }
+        // Simulates a WHERE clause: a false condition returns a short "no
+        // records" page, a true one the full record. No error, no reflection,
+        // no delay -> only the boolean-based blind check can tell them apart.
+        "/bool" => {
+            let id = param(&params_src, "id").unwrap_or_default();
+            let false_cond = id.contains("1=2") || id.contains("'1'='2");
+            if false_cond {
+                respond(
+                    &mut stream,
+                    "200 OK",
+                    &[],
+                    "<html><body>нет записей</body></html>",
+                );
+            } else {
+                respond(
+                    &mut stream,
+                    "200 OK",
+                    &[],
+                    "<html><body>Запись найдена: пользователь admin, профиль активен, последний вход вчера, роль администратор, отдел ИБ.</body></html>",
+                );
+            }
         }
         // Saves whatever is posted; /comments then prints it unescaped, so a
         // payload stored here surfaces there -> stored XSS.
@@ -455,6 +478,10 @@ fn finds_the_planted_vulnerabilities_and_spares_the_safe_endpoint() {
     assert!(
         sqli.iter().any(|u| u.contains("/blind")),
         "time-based blind SQLi on /blind: {sqli:?}"
+    );
+    assert!(
+        sqli.iter().any(|u| u.contains("/bool")),
+        "boolean-based blind SQLi on /bool: {sqli:?}"
     );
 
     // A payload posted to /comment is served unescaped by /comments -> stored

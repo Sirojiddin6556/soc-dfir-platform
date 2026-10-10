@@ -43,6 +43,12 @@ pub fn check(client: &Client, point: &InjectionPoint, index: usize, findings: &m
         findings.push(f);
         return;
     }
+    // Boolean-based next: it is cheap (no waiting) and often enough, so the
+    // slow time-based probe runs only when it too comes up empty.
+    if let Some(f) = boolean_based(client, point, index) {
+        findings.push(f);
+        return;
+    }
     if let Some(f) = time_based(client, point, index) {
         findings.push(f);
     }
@@ -83,6 +89,75 @@ fn error_based(client: &Client, point: &InjectionPoint, index: usize) -> Option<
         request: record.as_curl(),
         request_detail: record,
     })
+}
+
+/// Pairs of (true, false) conditions appended to the baseline value. Each
+/// relies on the query's own closing quote (string context) or needs none
+/// (numeric), so no comment terminator is required.
+fn boolean_pairs(base: &str) -> [(String, String); 2] {
+    [
+        (format!("{base}' AND '1'='1"), format!("{base}' AND '1'='2")),
+        (format!("{base} AND 1=1"), format!("{base} AND 1=2")),
+    ]
+}
+
+/// Two responses are "close" when the server answered the same way and the
+/// bodies are within 2% in length — tolerant of small volatility, strict
+/// enough that a true/false branch with different content reads as "far".
+fn close(a: &Response, b: &Response) -> bool {
+    if a.status != b.status {
+        return false;
+    }
+    let (la, lb) = (a.body.len(), b.body.len());
+    let (lo, hi) = (la.min(lb), la.max(lb));
+    hi == 0 || lo as f64 / hi as f64 >= 0.98
+}
+
+/// Reports injection shown by the parameter steering a boolean condition: a
+/// true condition answers like the baseline, a false one answers differently.
+fn boolean_based(client: &Client, point: &InjectionPoint, index: usize) -> Option<Finding> {
+    let base = point.params[index].1.clone();
+    let (baseline, _) = point.send(client, Some(index), &base).ok()?;
+    for (true_cond, false_cond) in boolean_pairs(&base) {
+        if client.remaining() < 4 {
+            return None;
+        }
+        let (t, _) = point.send(client, Some(index), &true_cond).ok()?;
+        let (f, _) = point.send(client, Some(index), &false_cond).ok()?;
+        // The true branch must track the baseline while the false branch
+        // diverges from both — the signature of a condition we control.
+        if !(close(&baseline, &t) && !close(&baseline, &f) && !close(&t, &f)) {
+            continue;
+        }
+        // Confirm the same relationship a second time, so a one-off difference
+        // (a rotating ad, a timestamp) does not masquerade as injection.
+        let (t2, _) = point.send(client, Some(index), &true_cond).ok()?;
+        let (f2, record) = point.send(client, Some(index), &false_cond).ok()?;
+        if !(close(&baseline, &t2) && !close(&baseline, &f2) && !close(&t2, &f2)) {
+            continue;
+        }
+        let name = point.params[index].0.clone();
+        return Some(Finding {
+            rule: "sql-injection".into(),
+            cwe: 89,
+            severity: Severity::Critical,
+            title: "SQL-инъекция".into(),
+            message: format!(
+                "Параметр «{name}» управляет логическим условием в SQL-запросе: при истинном условии ответ совпадает с обычным, при ложном — отличается. Значит, значение попадает в запрос без параметризации, даже если ошибка и задержка не видны (слепая инъекция по ответу). Так можно по одному биту вытащить чужие данные. Используйте подготовленные выражения (параметры запроса)."
+            ),
+            url: record.url.clone(),
+            method: point.method.as_str().into(),
+            param: Some(name),
+            evidence: format!(
+                "Условие по ответу: истинное «AND 1=1» дало {} байт (как обычный ответ), ложное «AND 1=2» — {} байт.",
+                t2.body.len(),
+                f2.body.len()
+            ),
+            request: record.as_curl(),
+            request_detail: record,
+        });
+    }
+    None
 }
 
 /// Seconds the probe asks the database to sleep.
@@ -182,6 +257,27 @@ mod tests {
         assert!(first_match("org.postgresql.util.PSQLException: ERROR").is_some());
         assert!(first_match("ORA-00933: SQL command not properly ended").is_some());
         assert!(first_match("a normal page about SQL databases").is_none());
+    }
+
+    #[test]
+    fn boolean_pairs_balance_the_quote() {
+        let p = boolean_pairs("1");
+        assert_eq!(p[0], ("1' AND '1'='1".into(), "1' AND '1'='2".into()));
+        assert_eq!(p[1], ("1 AND 1=1".into(), "1 AND 1=2".into()));
+    }
+
+    #[test]
+    fn close_compares_status_and_length() {
+        let mk = |status, body: String| Response {
+            status,
+            headers: Vec::new(),
+            body,
+            url: "x".into(),
+        };
+        let a = mk(200, "x".repeat(100));
+        assert!(close(&a, &mk(200, "x".repeat(99)))); // within 2%
+        assert!(!close(&a, &mk(200, "x".repeat(50)))); // far shorter
+        assert!(!close(&a, &mk(404, "x".repeat(100)))); // different status
     }
 
     #[test]
