@@ -1,4 +1,5 @@
 import { escapeAttr, escapeHtml } from '../util/html.js';
+import { buildReportHtml, downloadReport, reportFilename } from '../report/report.js';
 
 const SEVERITY_LABELS = {
   critical: 'КРИТИЧЕСКИЙ',
@@ -250,7 +251,9 @@ export class WebSpace {
         Страниц: ${escapeHtml(String(report.pages_crawled))}, форм: ${escapeHtml(String(report.forms_found))}, путей по словарю: ${escapeHtml(String(report.paths_discovered ?? 0))}, эндпоинтов из OpenAPI: ${escapeHtml(String(report.api_endpoints ?? 0))}, проверено мест: ${escapeHtml(String(report.points_tested ?? 0))}, запросов: ${escapeHtml(String(report.requests_made))} (${escapeHtml(auth)}).
       </div>
       ${notes ? `<ul class="web-notes" id="webNotesList">${notes}</ul>` : ''}
-      <div class="vuln-toolbar" id="webSevFilter">${filter}</div>
+      <div class="vuln-toolbar" id="webSevFilter">${filter}
+        <button id="webExport" class="ctf-btn ctf-btn-secondary" title="Сохранить отчёт в HTML-файл">Экспорт в HTML</button>
+      </div>
       <div class="web-findings" id="webFindings">
         ${shown.length ? shown.map((f) => this.findingCard(f)).join('') : '<div class="vuln-note">Находок этого уровня нет.</div>'}
       </div>
@@ -261,6 +264,13 @@ export class WebSpace {
         this.severity = btn.dataset.sev;
         this.renderResult();
       });
+    });
+    panel.querySelector('#webExport')?.addEventListener('click', () => {
+      const html = buildReportHtml(
+        { title: 'Запущенный сайт', target: report.target || this.url },
+        all
+      );
+      downloadReport(reportFilename('web'), html);
     });
   }
 

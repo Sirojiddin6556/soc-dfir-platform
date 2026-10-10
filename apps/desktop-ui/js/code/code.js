@@ -1,4 +1,5 @@
 import { escapeAttr, escapeHtml } from '../util/html.js';
+import { buildReportHtml, downloadReport, reportFilename } from '../report/report.js';
 
 const SEVERITY_LABELS = {
   critical: 'КРИТИЧЕСКИЙ',
@@ -297,6 +298,7 @@ export class CodeSpace {
             ${rules.map(r => `<option value="${escapeAttr(r.rule)}" ${this.rule === r.rule ? 'selected' : ''}>${escapeHtml(r.title)} (${escapeHtml(String(r.n))})</option>`).join('')}
           </select>
           <input id="codeSearch" type="text" placeholder="Файл, CWE или код..." value="${escapeAttr(this.query)}">
+          <button id="codeExport" class="ctf-btn ctf-btn-secondary" title="Сохранить отчёт в HTML-файл">Экспорт в HTML</button>
         </div>
         <table class="vuln-table" id="codeTable">
           <thead><tr>
@@ -331,6 +333,17 @@ export class CodeSpace {
     panel.querySelector('#codeMoreBtn')?.addEventListener('click', () => {
       this.limit += PAGE_SIZE;
       this.renderResult();
+    });
+    panel.querySelector('#codeExport')?.addEventListener('click', () => {
+      const html = buildReportHtml(
+        {
+          title: 'Анализ кода',
+          target: s.path,
+          generatedAt: formatDate(s.finished_at),
+        },
+        all
+      );
+      downloadReport(reportFilename('code'), html);
     });
     panel.querySelectorAll('tr.vuln-row').forEach(tr => tr.addEventListener('click', () => {
       const detail = tr.nextElementSibling;
