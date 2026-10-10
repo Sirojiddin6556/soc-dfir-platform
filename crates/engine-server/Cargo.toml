@@ -7,27 +7,12 @@ license.workspace = true
 
 [dependencies]
 core-domain = { path = "../core-domain" }
-storage-cas = { path = "../storage-cas" }
 storage-sqlite = { path = "../storage-sqlite" }
-workflow-dag = { path = "../workflow-dag" }
-normalization-engine = { path = "../normalization-engine" }
 correlation-engine = { path = "../correlation-engine" }
-evidence-engine = { path = "../evidence-engine" }
-tool-adapters = { path = "../tool-adapters" }
-graph-engine = { path = "../graph-engine" }
-timeline-engine = { path = "../timeline-engine" }
-taxonomy-projection = { path = "../taxonomy-projection" }
-scenario-engine = { path = "../scenario-engine" }
-scenario-verifier = { path = "../scenario-verifier" }
-scoring-engine = { path = "../scoring-engine" }
-diagram-engine = { path = "../diagram-engine" }
-report-engine = { path = "../report-engine" }
-privilege-broker = { path = "../privilege-broker" }
 ipc-protocol = { path = "../ipc-protocol" }
 platform-windows = { path = "../platform-windows" }
 platform-linux = { path = "../platform-linux" }
 host-snapshot = { path = "../host-snapshot" }
-scan-engine = { path = "../scan-engine" }
 vulnerability-engine = { path = "../vulnerability-engine" }
 code-analysis = { path = "../code-analysis" }
 web-scan = { path = "../web-scan" }
