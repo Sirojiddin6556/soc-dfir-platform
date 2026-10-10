@@ -1,7 +1,8 @@
 //! Source code analysis of a project directory on the engine's machine.
 //!
 //! `code.scan` starts `code_analysis` on a directory in the background: it
-//! looks for flaws in Python, Java, PHP, C and C++ where user input reaches
+//! looks for flaws in Python, Java, PHP, C/C++ and JavaScript/TypeScript
+//! where user input reaches
 //! a dangerous call (SQL, command, path, template, LDAP ...). `code.status`
 //! reports whether it is running and, once done, the findings with the path
 //! the data took from its source to the sink.
@@ -229,7 +230,7 @@ impl CodeScanService {
     pub fn status(&self) -> Value {
         let job = self.job.lock().unwrap_or_else(|p| p.into_inner());
         json!({
-            "languages": ["python", "java", "php", "c", "cpp"],
+            "languages": ["python", "java", "php", "c", "cpp", "javascript", "typescript"],
             "running": job.running,
             "path": job.path,
             "external_sources": job.external_sources,

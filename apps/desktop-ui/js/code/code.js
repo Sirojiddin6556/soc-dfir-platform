@@ -8,7 +8,7 @@ const SEVERITY_LABELS = {
 };
 const SEVERITIES = ['critical', 'high', 'medium', 'low'];
 
-const LANGUAGE_NAMES = { python: 'Python', java: 'Java', php: 'PHP', c: 'C', cpp: 'C++' };
+const LANGUAGE_NAMES = { python: 'Python', java: 'Java', php: 'PHP', c: 'C', cpp: 'C++', javascript: 'JavaScript', typescript: 'TypeScript', tsx: 'TypeScript (TSX)' };
 
 /** How the project names a package (dependency `kind`). */
 const KIND_LABELS = {
@@ -63,7 +63,7 @@ function savePath(path) {
 
 /**
  * Code analysis space: runs the engine's taint analysis on a project folder
- * (Python, Java, PHP, C, C++) and lists the flaws where user input reaches a
+ * (Python, Java, PHP, C/C++, JavaScript/TypeScript) and lists the flaws where user input reaches a
  * dangerous call, each with the path the data took from source to sink.
  * The code being scanned is untrusted: every value from the report is
  * escaped before it reaches the page.
@@ -96,7 +96,7 @@ export class CodeSpace {
         <div class="vuln-header">
           <div>
             <h2>⌨ АНАЛИЗ КОДА</h2>
-            <div class="vuln-subtitle">Уязвимости в исходном коде на Python, Java, PHP, C и C++: путь данных от входа (HTTP-запрос, сокет, CGI) до опасного вызова (SQL, команды ОС, файлы, шаблоны, XSS, LDAP, XML, SSRF, перенаправления), а также слабая криптография, секреты в коде, отключённая проверка TLS и библиотеки с известными уязвимостями (CVE) или вредоносные пакеты из requirements.txt, package.json, pom.xml, composer.json и других файлов зависимостей</div>
+            <div class="vuln-subtitle">Уязвимости в исходном коде на Python, Java, PHP, C/C++ и JavaScript/TypeScript: путь данных от входа (HTTP-запрос, сокет, CGI) до опасного вызова (SQL, команды ОС, файлы, шаблоны, XSS, LDAP, XML, SSRF, перенаправления), а также слабая криптография, секреты в коде, отключённая проверка TLS и библиотеки с известными уязвимостями (CVE) или вредоносные пакеты из requirements.txt, package.json, pom.xml, composer.json и других файлов зависимостей</div>
           </div>
         </div>
         <div class="vuln-panel">

@@ -25,6 +25,10 @@ pub enum Language {
     Java,
     C,
     Cpp,
+    JavaScript,
+    TypeScript,
+    /// TypeScript with JSX (`.tsx`): its own grammar, same model.
+    Tsx,
 }
 
 impl Language {
@@ -35,6 +39,9 @@ impl Language {
             Language::Java => tree_sitter_java::LANGUAGE.into(),
             Language::C => tree_sitter_c::LANGUAGE.into(),
             Language::Cpp => tree_sitter_cpp::LANGUAGE.into(),
+            Language::JavaScript => tree_sitter_javascript::LANGUAGE.into(),
+            Language::TypeScript => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
+            Language::Tsx => tree_sitter_typescript::LANGUAGE_TSX.into(),
         }
     }
 }
@@ -52,6 +59,9 @@ pub fn lower_tree(lang: Language, tree: &tree_sitter::Tree, src: &str) -> Option
         Language::Java => Some(lower::java::lower(tree.root_node(), src)),
         Language::Php => Some(lower::php::lower(tree.root_node(), src)),
         Language::C | Language::Cpp => Some(lower::c::lower(tree.root_node(), src)),
+        Language::JavaScript | Language::TypeScript | Language::Tsx => {
+            Some(lower::js::lower(tree.root_node(), src))
+        }
     }
 }
 
@@ -75,6 +85,9 @@ impl Language {
             Language::Java => "java",
             Language::C => "c",
             Language::Cpp => "cpp",
+            Language::JavaScript => "javascript",
+            Language::TypeScript => "typescript",
+            Language::Tsx => "tsx",
         }
     }
 }
@@ -359,6 +372,9 @@ mod tests {
             Language::Java,
             Language::C,
             Language::Cpp,
+            Language::JavaScript,
+            Language::TypeScript,
+            Language::Tsx,
         ] {
             let tree = parse_tree(lang, "").expect("grammar loads");
             assert!(!tree.root_node().has_error());
