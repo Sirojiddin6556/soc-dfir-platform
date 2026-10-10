@@ -129,6 +129,14 @@ fn parse_options(params: &Value) -> Options {
             .get("submit_forms")
             .and_then(|v| v.as_bool())
             .unwrap_or(true),
+        discover_paths: params
+            .get("discover_paths")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true),
+        use_openapi: params
+            .get("use_openapi")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true),
         ..Options::default()
     };
     if let Some(n) = params.get("max_pages").and_then(|v| v.as_u64()) {
@@ -202,6 +210,7 @@ fn parse_login(value: Option<&Value>) -> Option<Login> {
             .and_then(|v| v.as_str())
             .map(str::to_string)
             .filter(|s| !s.is_empty()),
+        json: login.get("json").and_then(|v| v.as_bool()).unwrap_or(false),
     })
 }
 

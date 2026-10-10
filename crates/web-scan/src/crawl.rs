@@ -46,7 +46,7 @@ fn page_key(url: &Url) -> String {
 
 /// A key that identifies an injection point by where it sends and which
 /// parameters it carries, so duplicates across pages are dropped.
-fn point_key(method: Method, url: &Url, params: &[(String, String)]) -> String {
+fn point_key(method: &Method, url: &Url, params: &[(String, String)]) -> String {
     let names: BTreeSet<&str> = params.iter().map(|(k, _)| k.as_str()).collect();
     let names: Vec<&str> = names.into_iter().collect();
     format!(
@@ -59,7 +59,14 @@ fn point_key(method: Method, url: &Url, params: &[(String, String)]) -> String {
     )
 }
 
-pub fn crawl(client: &Client, base: &Url, options: &Options, notes: &mut Vec<String>) -> Crawl {
+/// Walks the site starting from `base` and any `seeds` from content discovery.
+pub fn crawl(
+    client: &Client,
+    base: &Url,
+    seeds: &[Url],
+    options: &Options,
+    notes: &mut Vec<String>,
+) -> Crawl {
     let mut queue: VecDeque<Url> = VecDeque::new();
     let mut seen_pages: HashSet<String> = HashSet::new();
     let mut point_keys: HashSet<String> = HashSet::new();
@@ -69,6 +76,11 @@ pub fn crawl(client: &Client, base: &Url, options: &Options, notes: &mut Vec<Str
 
     queue.push_back(base.clone());
     seen_pages.insert(page_key(base));
+    for seed in seeds {
+        if client.same_origin(seed) && seen_pages.insert(page_key(seed)) {
+            queue.push_back(seed.clone());
+        }
+    }
 
     while let Some(url) = queue.pop_front() {
         if pages >= options.max_pages || client.remaining() == 0 {
@@ -147,7 +159,7 @@ pub fn crawl(client: &Client, base: &Url, options: &Options, notes: &mut Vec<Str
             if method == Method::Get {
                 target.set_query(None);
             }
-            let key = point_key(method, &target, &params);
+            let key = point_key(&method, &target, &params);
             if point_keys.insert(key) {
                 points.push(InjectionPoint {
                     url: target,
@@ -184,7 +196,7 @@ fn add_get_point(
     let mut bare = url.clone();
     bare.set_query(None);
     bare.set_fragment(None);
-    let key = point_key(Method::Get, &bare, &params);
+    let key = point_key(&Method::Get, &bare, &params);
     if point_keys.insert(key) {
         points.push(InjectionPoint {
             url: bare,
@@ -212,12 +224,12 @@ mod tests {
     fn point_key_ignores_values_and_order() {
         let url = Url::parse("http://h/s").unwrap();
         let a = point_key(
-            Method::Get,
+            &Method::Get,
             &url,
             &[("b".into(), "1".into()), ("a".into(), "2".into())],
         );
         let b = point_key(
-            Method::Get,
+            &Method::Get,
             &url,
             &[("a".into(), "9".into()), ("b".into(), "8".into())],
         );

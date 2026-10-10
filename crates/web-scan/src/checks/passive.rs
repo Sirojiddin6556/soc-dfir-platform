@@ -13,6 +13,7 @@ pub fn check(base: &Url, resp: &Response, client: &Client, findings: &mut Vec<Fi
         method: "GET".into(),
         url: base.to_string(),
         body: String::new(),
+        content_type: None,
     };
     let one = |rule: &str,
                cwe: u32,

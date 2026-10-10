@@ -260,7 +260,7 @@ fn handle(mut stream: TcpStream) {
     }
 }
 
-fn start() -> MockServer {
+fn start_with(handler: fn(TcpStream)) -> MockServer {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     listener.set_nonblocking(true).unwrap();
@@ -269,7 +269,7 @@ fn start() -> MockServer {
     let handle = std::thread::spawn(move || {
         while !stop_thread.load(Ordering::Relaxed) {
             match listener.accept() {
-                Ok((stream, _)) => handle(stream),
+                Ok((stream, _)) => handler(stream),
                 Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                     std::thread::sleep(Duration::from_millis(2));
                 }
@@ -282,6 +282,10 @@ fn start() -> MockServer {
         stop,
         handle: Some(handle),
     }
+}
+
+fn start() -> MockServer {
+    start_with(handle)
 }
 
 fn rules(report: &web_scan::Report) -> Vec<String> {
@@ -304,7 +308,11 @@ fn finds_the_planted_vulnerabilities_and_spares_the_safe_endpoint() {
                     ("password".into(), "admin".into()),
                 ],
                 success_text: Some("Welcome admin".into()),
+                json: false,
             }),
+            // Keep this test about crawling and checks, not discovery.
+            discover_paths: false,
+            use_openapi: false,
             ..Options::default()
         },
     )
@@ -375,4 +383,206 @@ fn stays_on_the_target_origin() {
         );
     }
     assert!(report.pages_crawled >= 4, "should crawl linked pages");
+}
+
+// ---------------------------------------------------------------------------
+// A JSON API behind a single-page shell: no links to crawl, a login that
+// returns a bearer token, an OpenAPI description, and injectable endpoints
+// reachable only once authenticated. This exercises discovery, OpenAPI import,
+// JSON login and JSON-body checks together.
+// ---------------------------------------------------------------------------
+
+const OPENAPI: &str = r#"{
+  "openapi": "3.0.0",
+  "paths": {
+    "/api/login": {"post": {"requestBody": {"content": {"application/json":
+      {"schema": {"type": "object", "properties":
+        {"email": {"type": "string"}, "password": {"type": "string"}}}}}}}},
+    "/api/item": {"get": {"parameters": [
+      {"name": "id", "in": "query", "schema": {"type": "integer"}}]}},
+    "/api/note": {"post": {"requestBody": {"content": {"application/json":
+      {"schema": {"type": "object", "properties": {"text": {"type": "string"}}}}}}}}
+  }
+}"#;
+
+fn header<'a>(head: &'a str, name: &str) -> Option<&'a str> {
+    head.lines()
+        .find(|l| {
+            l.split_once(':')
+                .map(|(k, _)| k.trim().eq_ignore_ascii_case(name))
+                .unwrap_or(false)
+        })
+        .and_then(|l| l.split_once(':'))
+        .map(|(_, v)| v.trim())
+}
+
+fn handle_api(mut stream: TcpStream) {
+    stream.set_nonblocking(false).ok();
+    stream
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .ok();
+    let mut buf = [0u8; 8192];
+    let mut data = Vec::new();
+    loop {
+        match stream.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                data.extend_from_slice(&buf[..n]);
+                let text = String::from_utf8_lossy(&data);
+                if let Some(h_end) = text.find("\r\n\r\n") {
+                    let head = &text[..h_end];
+                    let len = head
+                        .lines()
+                        .find_map(|l| {
+                            let l = l.to_lowercase();
+                            l.strip_prefix("content-length:")
+                                .map(|v| v.trim().parse::<usize>().unwrap_or(0))
+                        })
+                        .unwrap_or(0);
+                    if data.len() >= h_end + 4 + len {
+                        break;
+                    }
+                }
+            }
+            Err(_) => break,
+        }
+    }
+    let text = String::from_utf8_lossy(&data);
+    let (head, body) = match text.split_once("\r\n\r\n") {
+        Some((h, b)) => (h, b),
+        None => (text.as_ref(), ""),
+    };
+    let request_line = head.lines().next().unwrap_or("");
+    let mut parts = request_line.split_whitespace();
+    let method = parts.next().unwrap_or("GET").to_string();
+    let target = parts.next().unwrap_or("/").to_string();
+    let path = target.split('?').next().unwrap_or("/").to_string();
+    let query = target
+        .split_once('?')
+        .map(|(_, q)| q.to_string())
+        .unwrap_or_default();
+    let authed = header(head, "authorization") == Some("Bearer tok-123");
+    let json = &[("Content-Type", "application/json")];
+
+    let db_error = |stream: &mut TcpStream| {
+        respond(
+            stream,
+            "500 Internal Server Error",
+            json,
+            r#"{"detail":"sqlite3.OperationalError: near \"'\": syntax error"}"#,
+        );
+    };
+
+    match (method.as_str(), path.as_str()) {
+        ("GET", "/") => respond(
+            &mut stream,
+            "200 OK",
+            &[],
+            "<html><body><div id=\"app\"></div><script src=\"/app.js\"></script></body></html>",
+        ),
+        ("GET", "/openapi.json") => respond(&mut stream, "200 OK", json, OPENAPI),
+        // A path nothing links to, for content discovery to find.
+        ("GET", "/admin") => respond(&mut stream, "200 OK", json, r#"{"panel":true}"#),
+        ("POST", "/api/login") => {
+            if body.contains("admin@test") {
+                respond(&mut stream, "200 OK", json, r#"{"access_token":"tok-123"}"#)
+            } else {
+                respond(&mut stream, "401 Unauthorized", json, r#"{"detail":"no"}"#)
+            }
+        }
+        ("GET", "/api/item") => {
+            if !authed {
+                respond(
+                    &mut stream,
+                    "401 Unauthorized",
+                    json,
+                    r#"{"detail":"auth"}"#,
+                );
+            } else if param(&query, "id").unwrap_or_default().contains('\'') {
+                db_error(&mut stream);
+            } else {
+                respond(&mut stream, "200 OK", json, r#"{"item":1}"#);
+            }
+        }
+        ("POST", "/api/note") => {
+            if !authed {
+                respond(
+                    &mut stream,
+                    "401 Unauthorized",
+                    json,
+                    r#"{"detail":"auth"}"#,
+                );
+            } else if body.contains('\'') {
+                db_error(&mut stream);
+            } else {
+                respond(&mut stream, "200 OK", json, r#"{"saved":true}"#);
+            }
+        }
+        _ => respond(
+            &mut stream,
+            "404 Not Found",
+            json,
+            r#"{"detail":"not found"}"#,
+        ),
+    }
+}
+
+fn start_api() -> MockServer {
+    start_with(handle_api)
+}
+
+#[test]
+fn covers_a_json_api_via_discovery_openapi_and_token_login() {
+    let server = start_api();
+    let report = scan(
+        &server.base,
+        &Options {
+            login: Some(Login {
+                url: "/api/login".into(),
+                fields: vec![
+                    ("email".into(), "admin@test".into()),
+                    ("password".into(), "pw".into()),
+                ],
+                success_text: None,
+                json: true,
+            }),
+            ..Options::default()
+        },
+    )
+    .expect("scan runs");
+
+    assert!(
+        report.authenticated,
+        "JSON token login should authenticate: {:?}",
+        report.notes
+    );
+    assert!(
+        report.paths_discovered >= 1,
+        "discovery should find the unlinked /admin path: {:?}",
+        report.notes
+    );
+    assert!(
+        report.api_endpoints >= 2,
+        "OpenAPI should yield endpoints: {:?}",
+        report.notes
+    );
+
+    let sqli_urls: Vec<&str> = report
+        .findings
+        .iter()
+        .filter(|f| f.rule == "sql-injection")
+        .map(|f| f.url.as_str())
+        .collect();
+    assert!(
+        sqli_urls.iter().any(|u| u.contains("/api/item")),
+        "SQLi in the query parameter of a documented GET endpoint: {sqli_urls:?}"
+    );
+    assert!(
+        sqli_urls.iter().any(|u| u.contains("/api/note")),
+        "SQLi in the JSON body of a documented POST endpoint: {sqli_urls:?}"
+    );
+
+    for f in &report.findings {
+        assert!(f.request.starts_with("curl"), "no repro for {}", f.rule);
+    }
 }

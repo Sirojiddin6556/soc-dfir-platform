@@ -890,6 +890,98 @@ async function startVulnerableSite() {
   return { url: `http://127.0.0.1:${port}/`, close: () => new Promise((r) => server.close(r)) };
 }
 
+// A single-page app with a JSON API behind a token login and an OpenAPI
+// description — the shape that defeats a link-following crawler, to prove
+// discovery, OpenAPI import and JSON login work end to end.
+async function startApiSite() {
+  const http = await import('node:http');
+  const spec = JSON.stringify({
+    openapi: '3.0.0',
+    paths: {
+      '/api/login': { post: { requestBody: { content: { 'application/json': {
+        schema: { type: 'object', properties: { email: { type: 'string' }, password: { type: 'string' } } } } } } } },
+      '/api/item': { get: { parameters: [{ name: 'id', in: 'query', schema: { type: 'integer' } }] } },
+      '/api/note': { post: { requestBody: { content: { 'application/json': {
+        schema: { type: 'object', properties: { text: { type: 'string' } } } } } } } },
+    },
+  });
+  const server = http.createServer((req, res) => {
+    const [pathname, query = ''] = req.url.split('?');
+    let body = '';
+    req.on('data', (c) => { body += c; });
+    req.on('end', () => {
+      const json = (status, obj) => { res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(obj)); };
+      const dbError = () => { res.writeHead(500, { 'Content-Type': 'application/json' }); res.end('{"detail":"sqlite3.OperationalError: near \\"\'\\": syntax error"}'); };
+      const authed = req.headers['authorization'] === 'Bearer tok-123';
+      if (req.method === 'GET' && pathname === '/') {
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        return res.end('<html><body><div id="app"></div><script src="/app.js"></script></body></html>');
+      }
+      if (req.method === 'GET' && pathname === '/openapi.json') { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end(spec); }
+      if (req.method === 'GET' && pathname === '/admin') return json(200, { panel: true });
+      if (req.method === 'POST' && pathname === '/api/login') {
+        return body.includes('admin@test') ? json(200, { access_token: 'tok-123' }) : json(401, { detail: 'no' });
+      }
+      if (req.method === 'GET' && pathname === '/api/item') {
+        if (!authed) return json(401, { detail: 'auth' });
+        const id = (query.split('&').find((p) => p.startsWith('id=')) || '').slice(3);
+        return decodeURIComponent(id).includes("'") ? dbError() : json(200, { item: 1 });
+      }
+      if (req.method === 'POST' && pathname === '/api/note') {
+        if (!authed) return json(401, { detail: 'auth' });
+        return body.includes("'") ? dbError() : json(200, { saved: true });
+      }
+      return json(404, { detail: 'not found' });
+    });
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address();
+  return { url: `http://127.0.0.1:${port}/`, close: () => new Promise((r) => server.close(r)) };
+}
+
+async function checkWebScanApi(page, base, shot) {
+  const token = await page.evaluate(() => localStorage.getItem('soc_session_token'));
+  const rpc = async (method, params = {}) => {
+    const r = await fetch(`${base}/rpc`, {
+      method: 'POST',
+      body: JSON.stringify({ api_version: 1, request_id: 't', method, params: { ...params, token } }),
+    });
+    return r.json();
+  };
+  const site = await startApiSite();
+  try {
+    await page.click('.global-nav button[data-space="web"]');
+    await page.waitForSelector('#webUrl');
+    await page.fill('#webUrl', site.url);
+    // Sign in through the JSON API so the token reaches the protected endpoints.
+    if (!(await page.isChecked('#webUseLogin'))) await page.click('#webUseLogin');
+    await page.waitForSelector('#webLoginJson', { state: 'visible' });
+    if (!(await page.isChecked('#webLoginJson'))) await page.click('#webLoginJson');
+    await page.fill('#webLoginUrl', '/api/login');
+    await page.fill('#webLoginUser', 'admin@test');
+    await page.fill('#webLoginPass', 'pw');
+    await page.click('#webScanBtn');
+    await page.waitForFunction(() => {
+      const btn = document.getElementById('webScanBtn');
+      return btn && !btn.disabled && document.getElementById('webSummary');
+    }, null, { timeout: 120000 });
+
+    const status = (await rpc('web.status')).result;
+    check(!status.running && !status.error, `API scan finished (${status.error || 'no error'})`);
+    const r = status.report;
+    console.log(`  engine(api): authenticated=${r.authenticated}, discovered=${r.paths_discovered}, openapi=${r.api_endpoints}, points=${r.points_tested}`);
+    check(r.authenticated, 'JSON token login authenticated the API scan');
+    check(r.paths_discovered >= 1, 'path discovery found an unlinked endpoint');
+    check(r.api_endpoints >= 2, 'OpenAPI description yielded endpoints to test');
+    const sqli = r.findings.filter((f) => f.rule === 'sql-injection').map((f) => f.url);
+    check(sqli.some((u) => u.includes('/api/item')), 'SQLi found in a documented GET query parameter');
+    check(sqli.some((u) => u.includes('/api/note')), 'SQLi found in a documented JSON request body');
+    await shot('08b-web-api');
+  } finally {
+    await site.close();
+  }
+}
+
 async function checkWebScan(page, base, shot) {
   const token = await page.evaluate(() => localStorage.getItem('soc_session_token'));
   const rpc = async (method, params = {}) => {
@@ -1087,6 +1179,7 @@ async function main() {
 
     console.log('\n[8] Dynamic scan of a running web application');
     await checkWebScan(page, base, shot);
+    await checkWebScanApi(page, base, shot);
 
     console.log('\n[9] Session survives reload, logout and login work');
     await page.reload();

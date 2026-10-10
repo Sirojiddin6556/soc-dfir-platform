@@ -34,10 +34,13 @@ fn main() {
             })
             .collect(),
         success_text: value("--success"),
+        json: args.iter().any(|a| a == "--login-json"),
     });
     let options = Options {
         active: !args.iter().any(|a| a == "--no-active"),
         submit_forms: !args.iter().any(|a| a == "--no-forms"),
+        discover_paths: !args.iter().any(|a| a == "--no-discover"),
+        use_openapi: !args.iter().any(|a| a == "--no-openapi"),
         max_pages: value("--max-pages")
             .and_then(|v| v.parse().ok())
             .unwrap_or(200),

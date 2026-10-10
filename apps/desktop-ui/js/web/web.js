@@ -41,7 +41,10 @@ export class WebSpace {
     this.url = savedUrl();
     this.active = true;
     this.submitForms = true;
+    this.discover = true;
+    this.useOpenapi = true;
     this.useLogin = false;
+    this.loginJson = false;
     this.severity = 'all';
     this.pollTimer = null;
   }
@@ -66,15 +69,21 @@ export class WebSpace {
             Активные проверки (отправлять тестовые запросы). Без них — только обход и проверка заголовков</label>
           <label class="code-option"><input id="webForms" type="checkbox" ${this.submitForms ? 'checked' : ''}>
             Отправлять формы (может изменить данные приложения)</label>
+          <label class="code-option"><input id="webDiscover" type="checkbox" ${this.discover ? 'checked' : ''}>
+            Перебирать пути по словарю (искать страницы и эндпоинты, на которые нет ссылок — для одностраничных приложений)</label>
+          <label class="code-option"><input id="webOpenapi" type="checkbox" ${this.useOpenapi ? 'checked' : ''}>
+            Искать описание API (OpenAPI/Swagger) и проверять найденные эндпоинты, включая JSON-запросы</label>
           <label class="code-option"><input id="webUseLogin" type="checkbox" ${this.useLogin ? 'checked' : ''}>
-            Сначала войти по форме</label>
+            Сначала войти</label>
           <div id="webLoginFields" class="web-login" style="display:${this.useLogin ? 'grid' : 'none'}">
-            <input id="webLoginUrl" type="text" spellcheck="false" placeholder="адрес формы входа, напр. /login">
-            <input id="webLoginUser" type="text" spellcheck="false" placeholder="логин">
+            <input id="webLoginUrl" type="text" spellcheck="false" placeholder="адрес входа, напр. /login или /api/login">
+            <input id="webLoginUser" type="text" spellcheck="false" placeholder="логин или почта">
             <input id="webLoginPass" type="password" placeholder="пароль">
-            <input id="webLoginUserField" type="text" spellcheck="false" placeholder="имя поля логина (username)">
+            <input id="webLoginUserField" type="text" spellcheck="false" placeholder="имя поля логина (username / email)">
             <input id="webLoginPassField" type="text" spellcheck="false" placeholder="имя поля пароля (password)">
             <input id="webLoginSuccess" type="text" spellcheck="false" placeholder="текст на странице после входа (необязательно)">
+            <label class="code-option web-login-json"><input id="webLoginJson" type="checkbox" ${this.loginJson ? 'checked' : ''}>
+              Вход через JSON-API (отправить логин как JSON и запомнить токен) — для одностраничных приложений</label>
           </div>
           <div class="vuln-note">Проверка идёт с машины, где работает движок, и только в пределах указанного адреса.</div>
           <div id="webProgress"></div>
@@ -88,6 +97,9 @@ export class WebSpace {
     });
     container.querySelector('#webActive').addEventListener('change', (e) => { this.active = e.target.checked; });
     container.querySelector('#webForms').addEventListener('change', (e) => { this.submitForms = e.target.checked; });
+    container.querySelector('#webDiscover').addEventListener('change', (e) => { this.discover = e.target.checked; });
+    container.querySelector('#webOpenapi').addEventListener('change', (e) => { this.useOpenapi = e.target.checked; });
+    container.querySelector('#webLoginJson').addEventListener('change', (e) => { this.loginJson = e.target.checked; });
     container.querySelector('#webUseLogin').addEventListener('change', (e) => {
       this.useLogin = e.target.checked;
       const fields = this.container.querySelector('#webLoginFields');
@@ -119,9 +131,10 @@ export class WebSpace {
       url,
       username: val('#webLoginUser'),
       password: val('#webLoginPass'),
-      user_field: val('#webLoginUserField') || 'username',
+      user_field: val('#webLoginUserField') || (this.loginJson ? 'email' : 'username'),
       pass_field: val('#webLoginPassField') || 'password',
-      success_text: val('#webLoginSuccess')
+      success_text: val('#webLoginSuccess'),
+      json: this.loginJson
     };
   }
 
@@ -142,6 +155,8 @@ export class WebSpace {
         url,
         active: this.active,
         submit_forms: this.submitForms,
+        discover_paths: this.discover,
+        use_openapi: this.useOpenapi,
         login: this.login()
       });
       this.error = null;
@@ -232,7 +247,7 @@ export class WebSpace {
         <div class="vuln-chip vuln-sev-low"><span>${escapeHtml(String(count('low')))}</span>низких</div>
       </div>
       <div class="vuln-host" id="webScanSummary">
-        Страниц: ${escapeHtml(String(report.pages_crawled))}, форм: ${escapeHtml(String(report.forms_found))}, запросов: ${escapeHtml(String(report.requests_made))} (${escapeHtml(auth)}).
+        Страниц: ${escapeHtml(String(report.pages_crawled))}, форм: ${escapeHtml(String(report.forms_found))}, путей по словарю: ${escapeHtml(String(report.paths_discovered ?? 0))}, эндпоинтов из OpenAPI: ${escapeHtml(String(report.api_endpoints ?? 0))}, проверено мест: ${escapeHtml(String(report.points_tested ?? 0))}, запросов: ${escapeHtml(String(report.requests_made))} (${escapeHtml(auth)}).
       </div>
       ${notes ? `<ul class="web-notes" id="webNotesList">${notes}</ul>` : ''}
       <div class="vuln-toolbar" id="webSevFilter">${filter}</div>

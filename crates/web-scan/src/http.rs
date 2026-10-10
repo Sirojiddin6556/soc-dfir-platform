@@ -61,22 +61,29 @@ pub enum HttpError {
 pub struct RequestRecord {
     pub method: String,
     pub url: String,
-    /// Form body for a POST, as sent (already encoded), empty for a GET.
+    /// Request body as sent (form-encoded or JSON), empty for a bodyless verb.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub body: String,
+    /// The body's `Content-Type`, when a body was sent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content_type: Option<String>,
 }
 
 impl RequestRecord {
     /// A `curl` command that reproduces the request, for the report.
     pub fn as_curl(&self) -> String {
-        if self.method == "GET" {
-            format!("curl -i '{}'", self.url)
-        } else {
-            format!(
-                "curl -i -X {} --data '{}' '{}'",
-                self.method, self.body, self.url
-            )
+        if self.body.is_empty() && self.method == "GET" {
+            return format!("curl -i '{}'", self.url);
         }
+        let mut cmd = format!("curl -i -X {}", self.method);
+        if let Some(ct) = &self.content_type {
+            cmd.push_str(&format!(" -H 'Content-Type: {ct}'"));
+        }
+        if !self.body.is_empty() {
+            cmd.push_str(&format!(" --data '{}'", self.body));
+        }
+        cmd.push_str(&format!(" '{}'", self.url));
+        cmd
     }
 }
 
@@ -87,6 +94,9 @@ pub struct Client {
     cookies: Mutex<BTreeMap<String, String>>,
     /// Raw `Set-Cookie` header values seen, for the cookie-flag check.
     set_cookies: Mutex<Vec<String>>,
+    /// An `Authorization` header value (e.g. `Bearer …`) sent on every
+    /// request once a login captured a token, for API auth.
+    auth: Mutex<Option<String>>,
     budget: AtomicU32,
     body_limit: usize,
 }
@@ -114,9 +124,20 @@ impl Client {
             origin: origin_of(base),
             cookies: Mutex::new(BTreeMap::new()),
             set_cookies: Mutex::new(Vec::new()),
+            auth: Mutex::new(None),
             budget: AtomicU32::new(budget),
             body_limit: 2 * 1024 * 1024,
         }
+    }
+
+    /// Sets an `Authorization` header to send on every later request (used
+    /// after an API login returns a bearer token).
+    pub fn set_auth(&self, value: String) {
+        *self.auth.lock().unwrap_or_else(|p| p.into_inner()) = Some(value);
+    }
+
+    fn auth_header(&self) -> Option<String> {
+        self.auth.lock().unwrap_or_else(|p| p.into_inner()).clone()
     }
 
     /// How many requests are still allowed.
@@ -190,44 +211,73 @@ impl Client {
         jar.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
     }
 
-    /// Fetches `url` with GET. Enforces the origin and the budget.
-    pub fn get(&self, url: &Url) -> Result<Response, HttpError> {
+    /// Sends one request with any HTTP verb, optionally with a body of the
+    /// given content type. Enforces the origin and the budget, and attaches
+    /// the cookie jar and any captured `Authorization` header. This is the
+    /// single path every other method goes through.
+    pub fn request(
+        &self,
+        verb: &str,
+        url: &Url,
+        body: Option<(&str, Vec<u8>)>,
+    ) -> Result<Response, HttpError> {
         if !self.same_origin(url) {
             return Err(HttpError::OffSite(url.to_string()));
         }
         self.take_budget()?;
-        let mut req = self.agent.get(url.as_str());
+        let mut builder = ureq::http::Request::builder()
+            .method(verb)
+            .uri(url.as_str());
         if let Some(cookie) = self.cookie_header() {
-            req = req.header("Cookie", &cookie);
+            builder = builder.header("Cookie", cookie);
         }
-        let resp = req
-            .call()
+        if let Some(auth) = self.auth_header() {
+            builder = builder.header("Authorization", auth);
+        }
+        let bytes = match &body {
+            Some((ct, b)) => {
+                builder = builder.header("Content-Type", *ct);
+                b.clone()
+            }
+            None => Vec::new(),
+        };
+        let req = builder
+            .body(bytes)
+            .map_err(|e| HttpError::BadUrl(e.to_string()))?;
+        let resp = self
+            .agent
+            .run(req)
             .map_err(|e| HttpError::Transport(e.to_string()))?;
         let out = self.read(resp, url.as_str())?;
         self.store_cookies(&out);
         Ok(out)
     }
 
+    /// Fetches `url` with GET. Enforces the origin and the budget.
+    pub fn get(&self, url: &Url) -> Result<Response, HttpError> {
+        self.request("GET", url, None)
+    }
+
     /// Submits `fields` to `url` as `application/x-www-form-urlencoded`.
     pub fn post_form(&self, url: &Url, fields: &[(String, String)]) -> Result<Response, HttpError> {
-        if !self.same_origin(url) {
-            return Err(HttpError::OffSite(url.to_string()));
-        }
-        self.take_budget()?;
-        let body = encode_form(fields);
-        let mut req = self
-            .agent
-            .post(url.as_str())
-            .header("Content-Type", "application/x-www-form-urlencoded");
-        if let Some(cookie) = self.cookie_header() {
-            req = req.header("Cookie", &cookie);
-        }
-        let resp = req
-            .send(body.as_bytes())
-            .map_err(|e| HttpError::Transport(e.to_string()))?;
-        let out = self.read(resp, url.as_str())?;
-        self.store_cookies(&out);
-        Ok(out)
+        self.request(
+            "POST",
+            url,
+            Some((
+                "application/x-www-form-urlencoded",
+                encode_form(fields).into_bytes(),
+            )),
+        )
+    }
+
+    /// Sends `json` as the body of a `verb` request with an
+    /// `application/json` content type.
+    pub fn send_json(&self, verb: &str, url: &Url, json: &str) -> Result<Response, HttpError> {
+        self.request(
+            verb,
+            url,
+            Some(("application/json", json.as_bytes().to_vec())),
+        )
     }
 
     fn read(
@@ -309,16 +359,28 @@ mod tests {
             method: "GET".into(),
             url: "http://h/t?q=1".into(),
             body: String::new(),
+            content_type: None,
         };
         assert_eq!(get.as_curl(), "curl -i 'http://h/t?q=1'");
         let post = RequestRecord {
             method: "POST".into(),
             url: "http://h/login".into(),
             body: "u=a&p=b".into(),
+            content_type: Some("application/x-www-form-urlencoded".into()),
         };
         assert_eq!(
             post.as_curl(),
-            "curl -i -X POST --data 'u=a&p=b' 'http://h/login'"
+            "curl -i -X POST -H 'Content-Type: application/x-www-form-urlencoded' --data 'u=a&p=b' 'http://h/login'"
+        );
+        let json = RequestRecord {
+            method: "PUT".into(),
+            url: "http://h/api/x".into(),
+            body: "{\"a\":1}".into(),
+            content_type: Some("application/json".into()),
+        };
+        assert_eq!(
+            json.as_curl(),
+            "curl -i -X PUT -H 'Content-Type: application/json' --data '{\"a\":1}' 'http://h/api/x'"
         );
     }
 

@@ -17,8 +17,10 @@
 
 pub mod checks;
 pub mod crawl;
+pub mod discovery;
 pub mod html;
 pub mod http;
+pub mod openapi;
 
 use http::{Client, RequestRecord};
 use serde::Serialize;
@@ -60,16 +62,20 @@ pub struct Finding {
     pub request_detail: RequestRecord,
 }
 
-/// Signing in before the scan, through an HTML form.
+/// Signing in before the scan, through an HTML form or a JSON API.
 #[derive(Debug, Clone)]
 pub struct Login {
-    /// The page whose form takes the credentials (same origin).
+    /// The URL that takes the credentials (same origin): a form page, or a
+    /// JSON login endpoint when `json` is set.
     pub url: String,
     /// Field name/value pairs to submit (e.g. username and password).
     pub fields: Vec<(String, String)>,
     /// Optional text that appears only once signed in; when set, the scan
     /// verifies the login worked by looking for it on a page afterwards.
     pub success_text: Option<String>,
+    /// Post the credentials as an `application/json` body (an API login)
+    /// instead of an HTML form, and capture a returned bearer token.
+    pub json: bool,
 }
 
 /// What the scan does and how far it goes.
@@ -87,7 +93,15 @@ pub struct Options {
     /// Run the active payload checks; off leaves only crawling and the
     /// passive response checks.
     pub active: bool,
-    /// Optional form login run before crawling.
+    /// Brute-force a built-in list of common paths to find endpoints that no
+    /// page links to (as a content-discovery tool like ffuf does), and feed
+    /// what answers into the crawl. Essential for single-page apps whose HTML
+    /// carries no links.
+    pub discover_paths: bool,
+    /// Fetch an OpenAPI / Swagger description if the site exposes one, and
+    /// turn its documented endpoints and parameters into checks.
+    pub use_openapi: bool,
+    /// Optional login run before crawling (HTML form or JSON API).
     pub login: Option<Login>,
 }
 
@@ -99,6 +113,8 @@ impl Default for Options {
             timeout: Duration::from_secs(15),
             submit_forms: true,
             active: true,
+            discover_paths: true,
+            use_openapi: true,
             login: None,
         }
     }
@@ -110,6 +126,12 @@ pub struct Report {
     pub target: String,
     pub pages_crawled: usize,
     pub forms_found: usize,
+    /// Paths found by brute-forcing the built-in word list.
+    pub paths_discovered: usize,
+    /// Endpoints learned from an OpenAPI / Swagger description.
+    pub api_endpoints: usize,
+    /// Distinct places (query, form or JSON body) the active checks probed.
+    pub points_tested: usize,
     pub requests_made: u32,
     pub authenticated: bool,
     pub findings: Vec<Finding>,
@@ -142,22 +164,44 @@ pub struct InjectionPoint {
     pub source: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Method {
+    /// Parameters go in the query string, fetched with GET.
     Get,
+    /// Parameters go in an `application/x-www-form-urlencoded` POST body.
     Post,
+    /// Parameters go in an `application/json` body, sent with the given HTTP
+    /// verb (POST, PUT or PATCH) — used for API endpoints.
+    Json(String),
 }
 
 impl Method {
-    pub fn as_str(self) -> &'static str {
+    pub fn as_str(&self) -> &str {
         match self {
             Method::Get => "GET",
             Method::Post => "POST",
+            Method::Json(verb) => verb.as_str(),
         }
     }
 }
 
 impl InjectionPoint {
+    /// A key identifying this point by verb, path and parameter names, so
+    /// duplicates found by different means (crawl, discovery, OpenAPI) drop.
+    pub fn key(&self) -> String {
+        let mut names: Vec<&str> = self.params.iter().map(|(k, _)| k.as_str()).collect();
+        names.sort_unstable();
+        names.dedup();
+        format!(
+            "{} {}://{}{} [{}]",
+            self.method.as_str(),
+            self.url.scheme(),
+            self.url.authority(),
+            self.url.path(),
+            names.join(",")
+        )
+    }
+
     /// Builds the request for this point with parameter `index` set to
     /// `payload` (all others at their baseline), and sends it. Returns the
     /// response and the record of what was sent.
@@ -179,7 +223,7 @@ impl InjectionPoint {
                 }
             })
             .collect();
-        match self.method {
+        match &self.method {
             Method::Get => {
                 let mut url = self.url.clone();
                 url.set_query(Some(&http::encode_form(&params)));
@@ -187,6 +231,7 @@ impl InjectionPoint {
                     method: "GET".into(),
                     url: url.to_string(),
                     body: String::new(),
+                    content_type: None,
                 };
                 let resp = client.get(&url)?;
                 Ok((resp, record))
@@ -196,11 +241,56 @@ impl InjectionPoint {
                     method: "POST".into(),
                     url: self.url.to_string(),
                     body: http::encode_form(&params),
+                    content_type: Some("application/x-www-form-urlencoded".into()),
                 };
                 let resp = client.post_form(&self.url, &params)?;
                 Ok((resp, record))
             }
+            Method::Json(verb) => {
+                let body = json_body(&params, index);
+                let record = RequestRecord {
+                    method: verb.clone(),
+                    url: self.url.to_string(),
+                    body: body.clone(),
+                    content_type: Some("application/json".into()),
+                };
+                let resp = client.send_json(verb, &self.url, &body)?;
+                Ok((resp, record))
+            }
         }
+    }
+}
+
+/// Builds a JSON object body from name/value pairs. The parameter at
+/// `injected` is always sent as a string (it carries the payload); the rest
+/// keep their natural JSON type when the baseline looks like a number, bool
+/// or null, so a typed API still accepts the request and reaches its handler.
+fn json_body(params: &[(String, String)], injected: Option<usize>) -> String {
+    let mut map = serde_json::Map::new();
+    for (i, (k, v)) in params.iter().enumerate() {
+        let value = if Some(i) == injected {
+            serde_json::Value::String(v.clone())
+        } else {
+            json_scalar(v)
+        };
+        map.insert(k.clone(), value);
+    }
+    serde_json::Value::Object(map).to_string()
+}
+
+/// A benign baseline value as its natural JSON type.
+fn json_scalar(v: &str) -> serde_json::Value {
+    if let Ok(n) = v.parse::<i64>() {
+        return n.into();
+    }
+    if let Ok(f) = v.parse::<f64>() {
+        return f.into();
+    }
+    match v {
+        "true" => true.into(),
+        "false" => false.into(),
+        "null" => serde_json::Value::Null,
+        _ => serde_json::Value::String(v.to_string()),
     }
 }
 
@@ -221,14 +311,12 @@ pub fn scan(target: &str, options: &Options) -> Result<Report, ScanError> {
         Some(login) => match do_login(&client, &base, login) {
             Ok(ok) => {
                 if !ok {
-                    notes.push(
-                        "Вход по форме не удался: проверка выполнена без аутентификации".into(),
-                    );
+                    notes.push("Вход не удался: проверка выполнена без аутентификации".into());
                 }
                 ok
             }
             Err(e) => {
-                notes.push(format!("Вход по форме не выполнен: {e}"));
+                notes.push(format!("Вход не выполнен: {e}"));
                 false
             }
         },
@@ -240,7 +328,34 @@ pub fn scan(target: &str, options: &Options) -> Result<Report, ScanError> {
         return Err(ScanError::Unreachable(e.to_string()));
     }
 
-    let crawl = crawl::crawl(&client, &base, options, &mut notes);
+    // Content discovery: brute-force common paths the HTML links to nowhere,
+    // and crawl from whatever answers. This is what makes a single-page app
+    // with no links yield something to check.
+    let mut seeds: Vec<Url> = Vec::new();
+    let mut paths_discovered = 0usize;
+    if options.discover_paths {
+        let found = discovery::discover(&client, &base, options, &mut notes);
+        paths_discovered = found.len();
+        seeds.extend(found);
+    }
+
+    let crawl = crawl::crawl(&client, &base, &seeds, options, &mut notes);
+    let mut points = crawl.points;
+    let mut keys: std::collections::HashSet<String> = points.iter().map(|p| p.key()).collect();
+
+    // OpenAPI / Swagger: documented endpoints and their parameters, including
+    // JSON bodies the crawler can never see.
+    let mut api_endpoints = 0usize;
+    if options.use_openapi {
+        let api = openapi::discover(&client, &base, &mut notes);
+        for point in api {
+            if keys.insert(point.key()) {
+                api_endpoints += 1;
+                points.push(point);
+            }
+        }
+    }
+
     let mut findings = Vec::new();
 
     // Passive checks on the landing page and the cookies collected so far.
@@ -248,8 +363,9 @@ pub fn scan(target: &str, options: &Options) -> Result<Report, ScanError> {
         checks::passive::check(&base, &resp, &client, &mut findings);
     }
 
+    let points_tested = points.len();
     if options.active {
-        for point in &crawl.points {
+        for point in &points {
             checks::run_active(&client, point, &mut findings);
             if client.remaining() == 0 {
                 notes.push("Достигнут предел числа запросов: проверены не все места".into());
@@ -270,6 +386,9 @@ pub fn scan(target: &str, options: &Options) -> Result<Report, ScanError> {
         target: base.to_string(),
         pages_crawled: crawl.pages,
         forms_found: crawl.forms,
+        paths_discovered,
+        api_endpoints,
+        points_tested,
         requests_made: options.max_requests - client.remaining(),
         authenticated,
         findings,
@@ -278,15 +397,19 @@ pub fn scan(target: &str, options: &Options) -> Result<Report, ScanError> {
     })
 }
 
-/// Submits the login form's fields to its URL and, when `success_text` is
-/// set, checks a later page for it. Cookies set by the response are kept by
-/// the client for the rest of the scan.
+/// Signs in before the scan. For a JSON API login it posts the credentials as
+/// a JSON object and captures a returned bearer token; for a form login it
+/// reads the form (to carry hidden CSRF fields) and submits it. Either way the
+/// cookies the response sets are kept by the client for the rest of the scan.
 fn do_login(client: &Client, base: &Url, login: &Login) -> Result<bool, String> {
     let url = base
         .join(&login.url)
-        .map_err(|e| format!("адрес формы входа неверен: {e}"))?;
+        .map_err(|e| format!("адрес входа неверен: {e}"))?;
     if !client.same_origin(&url) {
-        return Err("форма входа на другом сайте".into());
+        return Err("адрес входа на другом сайте".into());
+    }
+    if login.json {
+        return do_login_json(client, base, &url, login);
     }
     // Read the form first so hidden fields (CSRF tokens) ride along.
     let mut fields: Vec<(String, String)> = Vec::new();
@@ -324,6 +447,84 @@ fn do_login(client: &Client, base: &Url, login: &Login) -> Result<bool, String> 
         }
         // No signal given: assume it worked if a session cookie was set.
         None => Ok(!client.cookies().is_empty()),
+    }
+}
+
+/// A JSON API login: posts `{field: value, …}` to the endpoint, keeps any
+/// session cookie, and if the response carries a bearer token, sends it as
+/// `Authorization: Bearer …` for the rest of the scan.
+fn do_login_json(client: &Client, base: &Url, url: &Url, login: &Login) -> Result<bool, String> {
+    let mut map = serde_json::Map::new();
+    for (k, v) in &login.fields {
+        map.insert(k.clone(), json_scalar(v));
+    }
+    let body = serde_json::Value::Object(map).to_string();
+    let response = client
+        .send_json("POST", url, &body)
+        .map_err(|e| e.to_string())?;
+    let parsed: Option<serde_json::Value> = serde_json::from_str(&response.body).ok();
+
+    // A token in the response means authenticated API access from here on.
+    let mut got_token = false;
+    if let Some(value) = &parsed {
+        if let Some(token) = find_token(value) {
+            client.set_auth(format!("Bearer {token}"));
+            got_token = true;
+        }
+    }
+
+    if let Some(text) = &login.success_text {
+        if response.body.contains(text) {
+            return Ok(true);
+        }
+        // Try a page fetch with whatever cookie or token we now hold.
+        if let Ok(page) = client.get(base) {
+            if page.body.contains(text) {
+                return Ok(true);
+            }
+        }
+        return Ok(got_token);
+    }
+    // No explicit signal: a 2xx with a token or a session cookie is success.
+    Ok((got_token || !client.cookies().is_empty()) && (200..300).contains(&response.status))
+}
+
+/// Searches a JSON value for a login token under the names APIs commonly use,
+/// at any depth. Returns the first non-empty string found.
+fn find_token(value: &serde_json::Value) -> Option<String> {
+    const KEYS: &[&str] = &[
+        "access_token",
+        "accesstoken",
+        "token",
+        "jwt",
+        "id_token",
+        "idtoken",
+        "auth_token",
+        "authtoken",
+        "bearer",
+        "sessiontoken",
+        "session_token",
+    ];
+    match value {
+        serde_json::Value::Object(map) => {
+            for (k, v) in map {
+                if let serde_json::Value::String(s) = v {
+                    let key = k.to_lowercase();
+                    if KEYS.contains(&key.as_str()) && !s.is_empty() {
+                        return Some(s.clone());
+                    }
+                }
+            }
+            // Recurse (e.g. {"data": {"access_token": …}}).
+            for v in map.values() {
+                if let Some(t) = find_token(v) {
+                    return Some(t);
+                }
+            }
+            None
+        }
+        serde_json::Value::Array(items) => items.iter().find_map(find_token),
+        _ => None,
     }
 }
 
