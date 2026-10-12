@@ -130,6 +130,44 @@ app.get('/t', (req, res) => {
 }
 
 #[test]
+fn regex_exec_is_not_command_injection() {
+    // `RegExp.prototype.exec` matches a string; it runs no command. A tainted
+    // argument to a bare `.exec()` on an unknown receiver must not be reported
+    // as OS command injection (this was a real false positive).
+    let src = r#"
+const express = require('express');
+const app = express();
+app.get('/ip', (req, res) => {
+  const ip = req.query.ip;
+  const mapped = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/i.exec(ip);
+  res.json({ mapped });
+});
+"#;
+    assert!(
+        !rules("app.js", src).contains(&"command-injection".to_string()),
+        "a regex .exec() is not command injection"
+    );
+}
+
+#[test]
+fn child_process_exec_through_a_handle_is_still_command_injection() {
+    // Removing the blanket `.exec` sink must not lose the real case: a
+    // `child_process` handle's `exec` with tainted input.
+    let src = r#"
+const express = require('express');
+const cp = require('child_process');
+const app = express();
+app.get('/p', (req, res) => {
+  cp.exec('ping ' + req.query.host);
+});
+"#;
+    assert!(
+        rules("app.js", src).contains(&"command-injection".to_string()),
+        "child_process.exec with tainted input is still command injection"
+    );
+}
+
+#[test]
 fn clean_code_has_no_findings() {
     let src = r#"
 const express = require('express');

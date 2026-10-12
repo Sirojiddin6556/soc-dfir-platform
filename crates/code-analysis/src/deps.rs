@@ -83,6 +83,10 @@ struct Collector<'a> {
     /// One-shot flag for the next `add`: set it right before a dev-scoped
     /// `add`, and it clears itself so the following `add` is runtime again.
     dev: bool,
+    /// npm package names declared by this project's own `package.json` files
+    /// (a monorepo's workspace packages). A dependency on one of these is
+    /// internal, not a registry package, so it is not reported or CVE-checked.
+    local_npm: HashSet<String>,
 }
 
 impl Collector<'_> {
@@ -142,6 +146,7 @@ pub fn collect(root: &Path) -> Vec<Dependency> {
         out: Vec::new(),
         seen: HashSet::new(),
         dev: false,
+        local_npm: local_npm_names(root),
     };
     walk(&mut c, root, 0);
     let mut out = c.out;
@@ -149,6 +154,50 @@ pub fn collect(root: &Path) -> Vec<Dependency> {
         (a.file.as_str(), a.line, a.name.as_str()).cmp(&(b.file.as_str(), b.line, b.name.as_str()))
     });
     out
+}
+
+/// The `name` of every `package.json` the project itself ships — a monorepo's
+/// workspace packages. Scanned before the main walk so a dependency on one can
+/// be recognised as internal wherever it appears. `node_modules`, skipped and
+/// hidden directories are not the project's own code and are not read.
+fn local_npm_names(root: &Path) -> HashSet<String> {
+    let mut names = HashSet::new();
+    collect_local_npm(root, 0, &mut names);
+    names
+}
+
+fn collect_local_npm(dir: &Path, depth: usize, out: &mut HashSet<String>) {
+    if depth > MAX_DEPTH {
+        return;
+    }
+    let Ok(read) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in read.filter_map(|e| e.ok()) {
+        let Ok(ft) = entry.file_type() else { continue };
+        if ft.is_symlink() {
+            continue;
+        }
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if ft.is_dir() {
+            let hidden = name.starts_with('.') && name.len() > 1;
+            if name == "node_modules" || SKIP_DIRS.contains(&name.as_str()) || hidden {
+                continue;
+            }
+            collect_local_npm(&path, depth + 1, out);
+        } else if ft.is_file() && name.eq_ignore_ascii_case("package.json") {
+            if let Some(text) = read_limited(&path, MAX_MANIFEST_BYTES) {
+                if let Ok(json) = serde_json::from_str::<Value>(&text) {
+                    if let Some(n) = json.get("name").and_then(Value::as_str) {
+                        if !n.is_empty() {
+                            out.insert(n.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn read_limited(path: &Path, max: u64) -> Option<String> {
@@ -746,6 +795,12 @@ fn package_json(c: &mut Collector, file: &str, text: &str) {
             .iter()
             .any(|p| version_spec.starts_with(p))
             {
+                continue;
+            }
+            // A dependency on one of the project's own workspace packages is
+            // internal, not a registry package (its `*` or `workspace:*` spec
+            // resolves locally), so it is neither reported nor CVE-checked.
+            if c.local_npm.contains(pkg) {
                 continue;
             }
             let line = text[section_at..]
@@ -1881,9 +1936,13 @@ fn github_actions(c: &mut Collector, file: &str, text: &str) {
         let Some(spec) = t.strip_prefix("uses:") else {
             continue;
         };
-        // Drop an inline comment, then surrounding quotes.
+        // Separate an inline comment, then drop surrounding quotes. The
+        // comment often names the human-readable version of a SHA pin
+        // (`uses: actions/checkout@fbc6f39...  # v4.1.1`).
         let mut spec = spec.trim();
+        let mut comment = "";
         if let Some(h) = spec.find(" #") {
+            comment = spec[h + 2..].trim();
             spec = spec[..h].trim_end();
         }
         let spec = spec.trim_matches(|c| c == '"' || c == '\'').trim();
@@ -1905,7 +1964,7 @@ fn github_actions(c: &mut Collector, file: &str, text: &str) {
             continue;
         }
         let action = format!("{owner}/{name}");
-        let version = full_semver(reff);
+        let version = action_version(reff, comment);
         c.add(
             "GitHub Actions",
             &action,
@@ -1916,6 +1975,33 @@ fn github_actions(c: &mut Collector, file: &str, text: &str) {
             DepKind::Manifest,
         );
     }
+}
+
+/// The version of a pinned action, for CVE lookup and for deciding whether it
+/// counts as pinned:
+/// - a full `X.Y.Z` tag → that version;
+/// - a commit SHA (the most exact, recommended pin) → the version named in a
+///   trailing `# vX.Y.Z` comment when there is one (so it can be checked), else
+///   the SHA itself, so the action counts as pinned and is never reported as
+///   having "no exact version"; a SHA never matches a semver range, so this
+///   introduces no false positive;
+/// - a floating tag (`v4`), branch (`main`) or any other ref → `None`, i.e.
+///   genuinely not pinned to an exact version.
+fn action_version(reff: &str, comment: &str) -> Option<String> {
+    if let Some(v) = full_semver(reff) {
+        return Some(v);
+    }
+    if is_commit_sha(reff) {
+        let from_comment = comment.split_whitespace().find_map(full_semver);
+        return Some(from_comment.unwrap_or_else(|| reff.to_string()));
+    }
+    None
+}
+
+/// Whether a ref is a git commit SHA (7 to 40 hex digits), the exact pin form
+/// GitHub recommends for third-party actions.
+fn is_commit_sha(reff: &str) -> bool {
+    (7..=40).contains(&reff.len()) && reff.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 /// A `ref` that is a full `X.Y.Z` semver tag (an optional leading `v` is
@@ -2530,6 +2616,7 @@ mod tests {
             out: Vec::new(),
             seen: HashSet::new(),
             dev: false,
+            local_npm: HashSet::new(),
         };
         f(&mut c, "f", text);
         c.out.sort_by_key(|d| d.line);
@@ -2546,6 +2633,7 @@ mod tests {
             out: Vec::new(),
             seen: HashSet::new(),
             dev: false,
+            local_npm: HashSet::new(),
         };
         f(&mut c, "f", text);
         c.out.sort_by_key(|d| d.line);
@@ -2683,6 +2771,7 @@ mod tests {
             out: Vec::new(),
             seen: HashSet::new(),
             dev: false,
+            local_npm: HashSet::new(),
         };
         bundled_script(
             &mut c,
@@ -2839,17 +2928,63 @@ mod tests {
             )]
         );
 
-        // Workflows: full-semver tags give a version; `@v4`, a branch and a
-        // commit SHA do not; local and docker uses are skipped.
-        let wf = "jobs:\n  build:\n    steps:\n      - uses: actions/checkout@v4.1.1\n      - uses: actions/setup-node@v4  # major tag only\n      - uses: step-security/harden-runner@17d0e2bd7d51742c71671bd19fa12bdc9d40b3bb\n      - uses: ./.github/actions/local\n      - uses: docker://alpine:3.19\n      - uses: hashicorp/vault-action@2.5.0  # with comment\n";
+        // Workflows: a full-semver tag gives a version; a floating tag (`@v4`)
+        // or branch does not. A commit SHA is the most exact pin, so it counts
+        // as pinned: to its `# vX.Y.Z` comment when one names the release, else
+        // to the SHA itself. Local and docker uses are skipped.
+        let wf = "jobs:\n  build:\n    steps:\n      - uses: actions/checkout@v4.1.1\n      - uses: actions/setup-node@v4  # major tag only\n      - uses: step-security/harden-runner@17d0e2bd7d51742c71671bd19fa12bdc9d40b3bb # v2.9.0\n      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02\n      - uses: ./.github/actions/local\n      - uses: docker://alpine:3.19\n      - uses: hashicorp/vault-action@2.5.0  # with comment\n";
         assert_eq!(
             parse(github_actions, wf),
             vec![
                 pinned("actions/checkout", "4.1.1", 4),
                 loose("actions/setup-node", 5),
-                loose("step-security/harden-runner", 6),
-                pinned("hashicorp/vault-action", "2.5.0", 9),
+                // SHA pin with a version comment: checked against that version.
+                pinned("step-security/harden-runner", "2.9.0", 6),
+                // SHA pin with no comment: pinned to the SHA, never "unpinned".
+                pinned(
+                    "actions/upload-artifact",
+                    "ea165f8d65b6e75b540449e92b4886f43607fa02",
+                    7,
+                ),
+                pinned("hashicorp/vault-action", "2.5.0", 10),
             ]
+        );
+    }
+
+    #[test]
+    fn workspace_packages_are_not_treated_as_registry_dependencies() {
+        // A monorepo: the root app depends on its own `@shp/*` workspace
+        // packages (version `*`) and on a real registry package. Only the
+        // registry package is collected.
+        let dir = std::env::temp_dir().join(format!("deps-workspace-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        let files = [
+            (
+                "package.json",
+                "{\n  \"name\": \"root\",\n  \"private\": true,\n  \"workspaces\": [\"packages/*\", \"apps/*\"]\n}\n",
+            ),
+            ("packages/contracts/package.json", "{\n  \"name\": \"@shp/contracts\",\n  \"version\": \"0.0.0\"\n}\n"),
+            ("packages/db/package.json", "{\n  \"name\": \"@shp/db\",\n  \"version\": \"0.0.0\"\n}\n"),
+            (
+                "apps/api/package.json",
+                "{\n  \"name\": \"@shp/api\",\n  \"dependencies\": {\n    \"@shp/contracts\": \"*\",\n    \"@shp/db\": \"*\",\n    \"express\": \"4.18.0\"\n  }\n}\n",
+            ),
+        ];
+        for (path, text) in files {
+            let p = dir.join(path);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, text).unwrap();
+        }
+        let names: Vec<String> = collect(&dir)
+            .into_iter()
+            .filter(|d| d.ecosystem == "npm")
+            .map(|d| d.name)
+            .collect();
+        std::fs::remove_dir_all(&dir).ok();
+        assert_eq!(
+            names,
+            vec!["express".to_string()],
+            "internal @shp/* workspace packages must be excluded"
         );
     }
 

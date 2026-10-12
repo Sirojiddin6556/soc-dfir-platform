@@ -359,11 +359,13 @@ impl Model for Js {
                 it.sink(&SQLI, &a0(), span, name);
                 (propagate(), None)
             }
-            // `childProcess.exec(cmd)` where the module is held in a variable.
-            "exec" | "execSync" => {
-                it.sink(&CMDI, &a0(), span, name);
-                (Value::clean(), None)
-            }
+            // `.exec()`/`.execSync()` are NOT flagged here on purpose. Node's
+            // `child_process.exec` reaches the analyzer as a `child_process.*`
+            // reference (handled in `call_ref`), so a real command execution is
+            // still caught. A bare `.exec()` on an unknown receiver is almost
+            // always `RegExp.prototype.exec` (`/re/.exec(s)`) or a query
+            // builder's `.exec()`, neither of which runs a command, so treating
+            // it as OS command injection is a false positive.
             // jQuery / cheerio: `$(sel).html(userHtml)`.
             "html" => {
                 it.sink(&XSS, &a0(), span, name);
