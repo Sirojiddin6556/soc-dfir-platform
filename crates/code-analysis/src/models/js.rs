@@ -109,6 +109,15 @@ const SSRF_REFS: &[&str] = &[
     "request",
 ];
 
+/// Whether a value passed to `.query()`/`.execute()`/`.raw()` is SQL text.
+/// A SQL statement is a string; an object or array first argument is the
+/// parameterised, ORM/GraphQL form (`client.query({ query, variables })`,
+/// `repo.query({ where })`), where user data rides in a separate field and
+/// is not concatenated into a statement — so it is not SQL injection.
+fn is_query_text(v: &Value) -> bool {
+    !matches!(v, Value::Dict(_) | Value::List(_))
+}
+
 impl Js {
     fn request(&self, it: &Interp, field: &str) -> Value {
         Value::Ref(
@@ -191,7 +200,10 @@ impl Model for Js {
             && !path.starts_with("express.")
             && !path.starts_with("fs.")
         {
-            it.sink(&SQLI, &a0(), span, short);
+            let a = a0();
+            if is_query_text(&a) {
+                it.sink(&SQLI, &a, span, short);
+            }
             return propagate();
         }
 
@@ -351,12 +363,11 @@ impl Model for Js {
             // Database queries: the SQL text is the first argument. A
             // parameterized call keeps user data in a separate array, so only
             // a built-up query string is flagged.
-            "query" | "execute" => {
-                it.sink(&SQLI, &a0(), span, name);
-                (propagate(), None)
-            }
-            "raw" => {
-                it.sink(&SQLI, &a0(), span, name);
+            "query" | "execute" | "raw" => {
+                let a = a0();
+                if is_query_text(&a) {
+                    it.sink(&SQLI, &a, span, name);
+                }
                 (propagate(), None)
             }
             // `.exec()`/`.execSync()` are NOT flagged here on purpose. Node's

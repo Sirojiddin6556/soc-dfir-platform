@@ -168,6 +168,33 @@ app.get('/p', (req, res) => {
 }
 
 #[test]
+fn an_object_argument_to_query_is_not_sql_injection() {
+    // A GraphQL / ORM call passes an object (`{ query, variables }`), where
+    // user data rides in a separate field and is parameterised — not a built
+    // SQL string. It must not be reported as SQL injection, while a real
+    // string query on the same receiver still is.
+    let src = r#"
+const express = require('express');
+const app = express();
+app.get('/g', (req, res) => {
+  client.query({ query: GET_USER, variables: { id: req.query.id } });  // safe
+});
+app.get('/s', (req, res) => {
+  db.query('SELECT * FROM u WHERE id = ' + req.query.id);              // injection
+});
+"#;
+    let found = scan(&[("app.js", src)]);
+    assert!(
+        !found.iter().any(|(r, l)| r == "sql-injection" && *l == 5),
+        "an object argument is a parameterised query, not injection"
+    );
+    assert!(
+        found.contains(&("sql-injection".to_string(), 8)),
+        "a concatenated SQL string is still injection"
+    );
+}
+
+#[test]
 fn clean_code_has_no_findings() {
     let src = r#"
 const express = require('express');
