@@ -1,7 +1,8 @@
 #![forbid(unsafe_code)]
 
-//! Installed packages from dpkg (`/var/lib/dpkg/status`) and rpm, with
-//! package URLs and OSV ecosystem names for vulnerability matching.
+//! Installed packages from dpkg (`/var/lib/dpkg/status`), rpm, and apk
+//! (`/lib/apk/db/installed`), with package URLs and OSV ecosystem names for
+//! vulnerability matching.
 
 use crate::os::OsRelease;
 use host_snapshot::SoftwareObservation;
@@ -143,6 +144,64 @@ pub fn parse_rpm_qa(output: &str) -> Vec<RpmPackage> {
         .collect()
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApkPackage {
+    pub name: String,
+    pub version: String,
+    pub architecture: String,
+    pub maintainer: String,
+    /// Origin (source) package; apk omits it when it equals the package name,
+    /// so this defaults to `name`.
+    pub origin: String,
+    /// Package build time (unix seconds); apk records no per-package install
+    /// time.
+    pub build_time: Option<i64>,
+}
+
+/// Parses apk's installed database (`/lib/apk/db/installed`). Records are
+/// blank-line-separated; each line is `K:value`. The keys used are `P:`
+/// (package), `V:` (version, e.g. `1.1.1k-r0`), `A:` (arch), `m:`
+/// (maintainer), `o:` (origin/source package), `t:` (build time).
+pub fn parse_apk_installed(content: &str) -> Vec<ApkPackage> {
+    let mut out = Vec::new();
+    for block in content.split("\n\n") {
+        let mut name = None;
+        let mut version = None;
+        let mut arch = String::new();
+        let mut maintainer = String::new();
+        let mut origin: Option<String> = None;
+        let mut build_time = None;
+        for line in block.lines() {
+            let Some((key, value)) = line.split_once(':') else {
+                continue;
+            };
+            let value = value.trim();
+            match key {
+                "P" => name = Some(value.to_string()),
+                "V" => version = Some(value.to_string()),
+                "A" => arch = value.to_string(),
+                "m" => maintainer = value.to_string(),
+                "o" => origin = Some(value.to_string()),
+                "t" => build_time = value.parse().ok(),
+                _ => {}
+            }
+        }
+        let (Some(name), Some(version)) = (name, version) else {
+            continue;
+        };
+        let origin = origin.unwrap_or_else(|| name.clone());
+        out.push(ApkPackage {
+            name,
+            version,
+            architecture: arch,
+            maintainer,
+            origin,
+            build_time,
+        });
+    }
+    out
+}
+
 /// Percent-encodes a purl component: unreserved characters and ':' stay as
 /// is, everything else (including '+', which a decoder would turn into a
 /// space) is encoded.
@@ -272,6 +331,49 @@ pub fn rpm_to_observation(pkg: &RpmPackage, os: &OsRelease) -> SoftwareObservati
     }
 }
 
+/// `pkg:apk/alpine/openssl@1.1.1k-r0?arch=x86_64&distro=alpine-3.13&upstream=openssl`
+pub fn apk_purl(pkg: &ApkPackage, os: &OsRelease) -> String {
+    let namespace = if os.id.is_empty() { "alpine" } else { &os.id };
+    let upstream = if pkg.origin == pkg.name {
+        String::new()
+    } else {
+        pkg.origin.clone()
+    };
+    purl(
+        "apk",
+        namespace,
+        &pkg.name,
+        &pkg.version,
+        vec![
+            ("arch", pkg.architecture.clone()),
+            ("distro", os.purl_distro().unwrap_or_default()),
+            ("upstream", upstream),
+        ],
+    )
+}
+
+pub fn apk_to_observation(pkg: &ApkPackage, os: &OsRelease) -> SoftwareObservation {
+    let install_date = pkg
+        .build_time
+        .and_then(|t| chrono::DateTime::<chrono::Utc>::from_timestamp(t, 0))
+        .map(|t| t.to_rfc3339())
+        .unwrap_or_default();
+    SoftwareObservation {
+        product: pkg.name.clone(),
+        version: pkg.version.clone(),
+        publisher: pkg.maintainer.clone(),
+        install_location: String::new(),
+        install_date,
+        architecture: pkg.architecture.clone(),
+        source: "apk".to_string(),
+        confidence: 1.0,
+        purl: Some(apk_purl(pkg, os)),
+        ecosystem: os.osv_ecosystem(),
+        source_package: Some(pkg.origin.clone()),
+        source_version: Some(pkg.version.clone()),
+    }
+}
+
 #[cfg(target_os = "linux")]
 pub(crate) mod live {
     use super::*;
@@ -311,6 +413,19 @@ pub(crate) mod live {
                     }
                 }
                 Err(e) => errors.push(format!("Не удалось прочитать /var/lib/dpkg/status: {}", e)),
+            }
+        }
+
+        let apk_path = root.join("lib/apk/db/installed");
+        if apk_path.exists() {
+            found_db = true;
+            match std::fs::read_to_string(&apk_path) {
+                Ok(content) => {
+                    for pkg in parse_apk_installed(&content) {
+                        out.push(apk_to_observation(&pkg, os));
+                    }
+                }
+                Err(e) => errors.push(format!("Не удалось прочитать /lib/apk/db/installed: {}", e)),
             }
         }
 
@@ -469,6 +584,75 @@ kernel-core\t(none)\t5.14.0\t362.13.1.el9_3\tx86_64\t(none)\t(none)\tnot-a-numbe
         assert_eq!(obs.version, "1:3.0.7-25.el9_3");
         assert_eq!(obs.ecosystem.as_deref(), Some("Rocky Linux:9"));
         assert_eq!(obs.install_date, "2024-01-01T00:00:00+00:00");
+    }
+
+    const APK_INSTALLED: &str = "C:Q1abc
+P:openssl
+V:1.1.1k-r0
+A:x86_64
+m:Natanael Copa <ncopa@alpinelinux.org>
+o:openssl
+t:1620000000
+D:so:libc.musl-x86_64.so.1
+
+C:Q1def
+P:libcrypto1.1
+V:1.1.1k-r0
+A:x86_64
+m:Natanael Copa <ncopa@alpinelinux.org>
+o:openssl
+t:1620000000
+
+C:Q1ghi
+P:musl
+V:1.2.2-r3
+A:x86_64
+m:Timo Teras <timo.teras@iki.fi>
+t:1619000000
+";
+
+    const ALPINE_OS: &str =
+        "NAME=\"Alpine Linux\"\nID=alpine\nVERSION_ID=3.13.5\nPRETTY_NAME=\"Alpine Linux v3.13\"\n";
+
+    #[test]
+    fn parses_apk_installed_database() {
+        let pkgs = parse_apk_installed(APK_INSTALLED);
+        let names: Vec<&str> = pkgs.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, vec!["openssl", "libcrypto1.1", "musl"]);
+
+        assert_eq!(pkgs[0].version, "1.1.1k-r0");
+        assert_eq!(pkgs[0].architecture, "x86_64");
+        assert_eq!(pkgs[0].origin, "openssl");
+        assert_eq!(pkgs[0].build_time, Some(1620000000));
+
+        // A subpackage keeps its own name but the source origin.
+        assert_eq!(pkgs[1].name, "libcrypto1.1");
+        assert_eq!(pkgs[1].origin, "openssl");
+
+        // No `o:` line, so the origin defaults to the package name.
+        assert_eq!(pkgs[2].origin, "musl");
+    }
+
+    #[test]
+    fn builds_apk_purls_and_osv_ecosystem() {
+        let os = parse_os_release(ALPINE_OS);
+        let pkgs = parse_apk_installed(APK_INSTALLED);
+        assert_eq!(
+            apk_purl(&pkgs[0], &os),
+            "pkg:apk/alpine/openssl@1.1.1k-r0?arch=x86_64&distro=alpine-3.13.5"
+        );
+        // A subpackage records its upstream source.
+        assert_eq!(
+            apk_purl(&pkgs[1], &os),
+            "pkg:apk/alpine/libcrypto1.1@1.1.1k-r0?arch=x86_64&distro=alpine-3.13.5&upstream=openssl"
+        );
+
+        let obs = apk_to_observation(&pkgs[1], &os);
+        assert_eq!(obs.source, "apk");
+        assert_eq!(obs.product, "libcrypto1.1");
+        assert_eq!(obs.version, "1.1.1k-r0");
+        assert_eq!(obs.ecosystem.as_deref(), Some("Alpine:v3.13"));
+        assert_eq!(obs.source_package.as_deref(), Some("openssl"));
     }
 
     #[test]

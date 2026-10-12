@@ -3,11 +3,12 @@
 //! Local vulnerability database for host scanning.
 //!
 //! `vulndb.update` downloads the public feeds -- OSV distribution advisories
-//! (Debian, Ubuntu, AlmaLinux, Rocky Linux) on Linux, the Microsoft Security
-//! Response Center monthly security updates on Windows, the CISA KEV catalog
-//! and FIRST EPSS scores -- and imports them into `<data dir>/vulndb/vuln.db`.
-//! `scan.cve` matches this machine against it: installed dpkg/rpm packages on
-//! Linux, the OS product and build (with UBR) on Windows. OSV advisories of
+//! (Debian, Ubuntu, AlmaLinux, Rocky Linux, Alpine) on Linux, the Microsoft
+//! Security Response Center monthly security updates on Windows, the CISA KEV
+//! catalog and FIRST EPSS scores -- and imports them into
+//! `<data dir>/vulndb/vuln.db`. `scan.cve` matches this machine against it:
+//! installed dpkg/rpm/apk packages on Linux, the OS product and build (with
+//! UBR) on Windows. OSV advisories of
 //! application packages (PyPI, npm, Maven ...) are loaded on request for
 //! the dependency check of code analysis.
 //!
@@ -195,9 +196,10 @@ fn file_stem(ecosystem: &str) -> String {
         .collect()
 }
 
-/// "Debian:12", "Ubuntu:24.04:LTS", "Rocky Linux:9": a supported
-/// distribution, a numeric release and an optional ":LTS"; or an
-/// application package ecosystem ("PyPI", "npm" ...).
+/// "Debian:12", "Ubuntu:24.04:LTS", "Rocky Linux:9", "Alpine:v3.19": a
+/// supported distribution, a numeric release (Alpine prefixes it with `v`)
+/// and an optional ":LTS"; or an application package ecosystem ("PyPI",
+/// "npm" ...).
 fn valid_ecosystem(ecosystem: &str) -> bool {
     if deps::is_language_ecosystem(ecosystem) {
         return true;
@@ -207,11 +209,21 @@ fn valid_ecosystem(ecosystem: &str) -> bool {
         return false;
     };
     let rest: Vec<&str> = parts.collect();
+    // Alpine's OSV ecosystem names its release "vX.Y"; every other supported
+    // distribution uses a bare number.
+    let digits = if base == "Alpine" {
+        match release.strip_prefix('v') {
+            Some(d) => d,
+            None => return false,
+        }
+    } else {
+        release
+    };
     package_scan::is_supported_ecosystem(base)
-        && !release.is_empty()
+        && !digits.is_empty()
         && release.len() <= 16
-        && release.bytes().all(|b| b.is_ascii_digit() || b == b'.')
-        && release.as_bytes()[0].is_ascii_digit()
+        && digits.bytes().all(|b| b.is_ascii_digit() || b == b'.')
+        && digits.as_bytes()[0].is_ascii_digit()
         && (rest.is_empty() || rest == ["LTS"])
 }
 
@@ -451,7 +463,7 @@ impl VulnDbService {
             .collect();
         if let Some(bad) = ecosystems.iter().find(|e| !valid_ecosystem(e)) {
             return Err(format!(
-                "Экосистема '{bad}' не поддерживается: доступны Debian:N, Ubuntu:NN.NN[:LTS], AlmaLinux:N, Rocky Linux:N, {}",
+                "Экосистема '{bad}' не поддерживается: доступны Debian:N, Ubuntu:NN.NN[:LTS], AlmaLinux:N, Rocky Linux:N, Alpine:vN.N, {}",
                 deps::LANGUAGE_ECOSYSTEMS.join(", ")
             ));
         }
@@ -1064,7 +1076,7 @@ impl VulnDbService {
             .filter(|e| package_scan::is_supported_ecosystem(e))
         else {
             let detail = format!(
-                "Дистрибутив {} не поддерживается: базы OSV подключены для Debian, Ubuntu, AlmaLinux и Rocky Linux",
+                "Дистрибутив {} не поддерживается: базы OSV подключены для Debian, Ubuntu, AlmaLinux, Rocky Linux и Alpine",
                 inventory.os_name
             );
             let mut v = base("UNSUPPORTED_PLATFORM", detail);
@@ -1090,7 +1102,7 @@ impl VulnDbService {
         let packages: Vec<InstalledPackage> = inventory
             .packages
             .iter()
-            .filter(|p| p.source == "dpkg" || p.source == "rpm")
+            .filter(|p| p.source == "dpkg" || p.source == "rpm" || p.source == "apk")
             .map(|p| InstalledPackage {
                 name: p.product.clone(),
                 version: p.version.clone(),
@@ -1468,6 +1480,10 @@ mod tests {
         assert!(valid_ecosystem("Ubuntu:24.04:LTS"));
         assert!(valid_ecosystem("Debian:12"));
         assert!(valid_ecosystem("Rocky Linux:9"));
+        assert!(valid_ecosystem("Alpine:v3.19"));
+        assert!(valid_ecosystem("Alpine:v3.21"));
+        assert!(!valid_ecosystem("Alpine:3.19")); // Alpine releases need the 'v'
+        assert!(!valid_ecosystem("Debian:v12")); // only Alpine takes the 'v'
         assert!(valid_ecosystem("PyPI"));
         assert!(valid_ecosystem("crates.io"));
         assert!(!valid_ecosystem("pypi"));
