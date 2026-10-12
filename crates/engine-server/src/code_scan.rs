@@ -40,6 +40,8 @@ fn download_mb(ecosystem: &str) -> u32 {
         "RubyGems" => 5,
         "crates.io" => 4,
         "NuGet" => 3,
+        "Hex" => 1,
+        "Pub" => 1,
         _ => 10,
     }
 }

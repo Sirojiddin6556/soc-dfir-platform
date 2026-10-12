@@ -32,7 +32,7 @@ pub enum DepKind {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Dependency {
     /// OSV ecosystem: PyPI, npm, Packagist, Maven, Go, crates.io,
-    /// RubyGems, NuGet.
+    /// RubyGems, NuGet, Hex, Pub.
     pub ecosystem: String,
     pub name: String,
     /// The exact version, when the file fixes one.
@@ -259,6 +259,8 @@ fn file(c: &mut Collector, path: &Path, name: &str) {
         "go.mod" => manifest(c, go_mod),
         "cargo.lock" => manifest(c, cargo_lock),
         "gemfile.lock" => manifest(c, gemfile_lock),
+        "mix.lock" => manifest(c, mix_lock),
+        "pubspec.lock" => manifest(c, pubspec_lock),
         "packages.config" => manifest(c, packages_config),
         "packages.lock.json" => manifest(c, nuget_lock),
         "directory.packages.props" => manifest(c, msbuild),
@@ -1678,6 +1680,98 @@ fn gemfile_lock(c: &mut Collector, file: &str, text: &str) {
     }
 }
 
+/// Elixir's `mix.lock`: an Elixir map whose values are tuples like
+/// `{:hex, :plug, "1.15.2", "<hash>", [:mix], [...], "hexpm", "<hash>"}`.
+/// Only `:hex`-managed packages resolve to a Hex ecosystem advisory; `:git`
+/// and `:path` entries are skipped. The real package name is the atom after
+/// `:hex,`, not the map key (they can differ for renamed packages).
+fn mix_lock(c: &mut Collector, file: &str, text: &str) {
+    for (i, line) in text.lines().enumerate() {
+        let Some((_, rest)) = line.split_once("{:hex,") else {
+            continue;
+        };
+        let rest = rest.trim_start();
+        let Some(rest) = rest.strip_prefix(':') else {
+            continue;
+        };
+        let name = rest
+            .split([',', ' '])
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        // The version is the first quoted string after the package atom.
+        let version = rest
+            .split_once('"')
+            .and_then(|(_, after)| after.split_once('"'))
+            .map(|(v, _)| v.to_string());
+        if name.is_empty() || version.is_none() {
+            continue;
+        }
+        let version = version.unwrap();
+        c.add(
+            "Hex",
+            &name,
+            Some(version.clone()),
+            &version,
+            file,
+            i as u32 + 1,
+            DepKind::Lockfile,
+        );
+    }
+}
+
+/// Dart's `pubspec.lock` (YAML): each package is a two-space-indented key
+/// under `packages:`, with `source:` and `version:` among its attributes.
+/// Only `source: hosted` packages come from pub.dev and have a Pub
+/// ecosystem; `sdk`, `git` and `path` sources are skipped.
+fn pubspec_lock(c: &mut Collector, file: &str, text: &str) {
+    let mut in_packages = false;
+    let mut cur: Option<(String, u32, Option<String>, Option<String>)> = None;
+    let flush = |c: &mut Collector, cur: Option<(String, u32, Option<String>, Option<String>)>| {
+        if let Some((name, line, Some(source), Some(version))) = cur {
+            if source == "hosted" {
+                c.add(
+                    "Pub",
+                    &name,
+                    Some(version.clone()),
+                    &version,
+                    file,
+                    line,
+                    DepKind::Lockfile,
+                );
+            }
+        }
+    };
+    for (i, line) in text.lines().enumerate() {
+        if !line.starts_with(' ') {
+            // A new top-level key ends the packages section.
+            flush(c, cur.take());
+            in_packages = line.trim_end() == "packages:";
+            continue;
+        }
+        if !in_packages {
+            continue;
+        }
+        let indent = line.len() - line.trim_start().len();
+        let t = line.trim();
+        if indent == 2 {
+            // Next package key, e.g. `  http:`.
+            flush(c, cur.take());
+            if let Some(name) = t.strip_suffix(':') {
+                cur = Some((name.to_string(), i as u32 + 1, None, None));
+            }
+        } else if let Some(cur) = cur.as_mut() {
+            if let Some(v) = t.strip_prefix("source:") {
+                cur.2 = Some(unquote(v.trim()).to_string());
+            } else if let Some(v) = t.strip_prefix("version:") {
+                cur.3 = Some(unquote(v.trim()).to_string());
+            }
+        }
+    }
+    flush(c, cur.take());
+}
+
 // -------------------------------------------------------------------- .NET
 
 fn nuget_exact(version: &str) -> Option<String> {
@@ -2536,6 +2630,29 @@ mod tests {
         assert_eq!(
             parse(packages_config, config),
             vec![pinned("jQuery", "1.7.1", 2)]
+        );
+    }
+
+    #[test]
+    fn elixir_mix_and_dart_pubspec() {
+        // mix.lock: only :hex tuples count; :git is skipped; the atom after
+        // :hex is the real package name.
+        let mix = "%{\n  \"bunt\": {:hex, :bunt, \"0.2.1\", \"abc\", [:mix], [], \"hexpm\", \"def\"},\n  \"plug\": {:hex, :plug, \"1.15.2\", \"a1\", [:mix], [{:mime, \"~> 2.0\", [hex: :mime, repo: \"hexpm\", optional: false]}], \"hexpm\", \"b2\"},\n  \"local\": {:git, \"https://github.com/x/y.git\", \"deadbeef\", []},\n}\n";
+        assert_eq!(
+            parse(mix_lock, mix),
+            vec![
+                pinned("bunt", "0.2.1", 2),
+                pinned("plug", "1.15.2", 3),
+                // the :git dependency has no Hex version and is dropped
+            ]
+        );
+
+        // pubspec.lock: only `source: hosted` packages have a Pub ecosystem;
+        // sdk/git sources are skipped.
+        let pubspec = "# Generated by pub\npackages:\n  http:\n    dependency: \"direct main\"\n    description:\n      name: http\n      url: \"https://pub.dev\"\n    source: hosted\n    version: \"0.13.5\"\n  flutter:\n    dependency: \"direct main\"\n    source: sdk\n    version: \"0.0.0\"\nsdks:\n  dart: \">=2.17.0 <3.0.0\"\n";
+        assert_eq!(
+            parse(pubspec_lock, pubspec),
+            vec![pinned("http", "0.13.5", 3)]
         );
     }
 
