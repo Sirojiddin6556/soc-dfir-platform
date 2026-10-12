@@ -390,14 +390,23 @@ json.dump({"dists": dists, "top": top}, sys.stdout)
             candidates.push((p.trim().to_string(), vec![]));
         }
     }
-    candidates.push(("python3".to_string(), vec![]));
-    candidates.push(("python".to_string(), vec![]));
-    candidates.push(("py".to_string(), vec!["-3"]));
+    // On Windows the bare `python3`/`python` names are often the Microsoft
+    // Store app-execution alias, which stalls when run non-interactively, so
+    // try the real `py` launcher first and keep each probe short. On other
+    // systems `python3` is the canonical name.
+    if cfg!(windows) {
+        candidates.push(("py".to_string(), vec!["-3"]));
+        candidates.push(("python".to_string(), vec![]));
+        candidates.push(("python3".to_string(), vec![]));
+    } else {
+        candidates.push(("python3".to_string(), vec![]));
+        candidates.push(("python".to_string(), vec![]));
+        candidates.push(("py".to_string(), vec!["-3"]));
+    }
 
     let norm = |s: &str| s.trim().to_ascii_lowercase().replace(['_', '.'], "-");
     for (prog, pre) in &candidates {
-        let Some(stdout) = run_capture(prog, pre, SCRIPT, std::time::Duration::from_secs(15))
-        else {
+        let Some(stdout) = run_capture(prog, pre, SCRIPT, std::time::Duration::from_secs(8)) else {
             continue;
         };
         let Ok(parsed) = serde_json::from_slice::<Value>(&stdout) else {
@@ -931,7 +940,9 @@ mod tests {
                 "from flask import request\nimport os\n\n\ndef run():\n    os.system('ping ' + request.args['host'])\n",
             )],
         );
-        let service = Arc::new(CodeScanService::new(vulndb()));
+        // A SAST finding test, not a dependency test: no host-environment
+        // probe, so it does not depend on (or wait on) the machine's Python.
+        let service = Arc::new(CodeScanService::new_without_env_probe(vulndb()));
         let started = service.start(dir.to_str().unwrap(), false, false).unwrap();
         assert_eq!(started["running"], true);
         let s = wait(&service);
