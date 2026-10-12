@@ -2605,6 +2605,49 @@ pub fn python_imports(
     found
 }
 
+/// The PyPI distribution a top-level import name belongs to, when it differs
+/// from the import name itself (`cv2` is shipped by `opencv-python`). Used to
+/// name a package for a CVE lookup when the project has no manifest; the
+/// authoritative map is the installed environment's own
+/// `importlib.metadata.packages_distributions()`, and this table only covers
+/// the common cases where that environment cannot be read. Returns `None` when
+/// the import name is (normally) also the distribution name.
+pub fn python_dist_name(module: &str) -> Option<&'static str> {
+    Some(match module {
+        "cv2" => "opencv-python",
+        "PIL" => "pillow",
+        "sklearn" => "scikit-learn",
+        "bs4" => "beautifulsoup4",
+        "yaml" => "pyyaml",
+        "dateutil" => "python-dateutil",
+        "dotenv" => "python-dotenv",
+        "jose" => "python-jose",
+        "attr" => "attrs",
+        "OpenSSL" => "pyopenssl",
+        "Crypto" => "pycryptodome",
+        "Cryptodome" => "pycryptodomex",
+        "serial" => "pyserial",
+        "usb" => "pyusb",
+        "google.protobuf" | "google" => "protobuf",
+        "pkg_resources" | "setuptools" => "setuptools",
+        "jwt" => "pyjwt",
+        "magic" => "python-magic",
+        "docx" => "python-docx",
+        "pptx" => "python-pptx",
+        "fitz" => "pymupdf",
+        "win32api" | "win32con" | "win32com" | "pywintypes" | "pythoncom" => "pywin32",
+        "slugify" => "python-slugify",
+        "lxml" => "lxml",
+        "Xlib" => "python-xlib",
+        "zoneinfo" => return None,
+        "skimage" => "scikit-image",
+        "mpl_toolkits" | "pylab" => "matplotlib",
+        "memcache" => "python-memcached",
+        "ruamel" => "ruamel.yaml",
+        _ => return None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

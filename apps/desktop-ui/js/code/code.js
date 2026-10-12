@@ -380,6 +380,9 @@ export class CodeSpace {
           ${e.loaded ? `база от ${escapeHtml(formatDate(e.checked_at))}` : 'база не загружена'}
         </div>`).join('')}</div>`;
     }
+    if (dc.python_env && dc.python_env.resolved) {
+      html += `<div class="vuln-note" id="codeDepsEnv">Версии ${escapeHtml(String(dc.python_env.resolved))} Python-пакетов (без requirements.txt) взяты из установленного окружения${dc.python_env.interpreter ? ` (${escapeHtml(dc.python_env.interpreter)})` : ''} и проверены на уязвимости.</div>`;
+    }
     if (missing.length) {
       const mb = ecosystems.filter(e => !e.loaded).reduce((n, e) => n + (e.download_mb || 0), 0);
       html += `<div class="vuln-note" id="codeDepsMissing">Пакеты ${escapeHtml(missing.join(', '))} ещё не проверены: в базе уязвимостей нет данных OSV для этих экосистем. Загрузка нужна один раз, потом базу можно обновлять той же кнопкой.</div>
@@ -394,10 +397,13 @@ export class CodeSpace {
     if (dc.error) html += `<div class="vuln-error">${escapeHtml(dc.error)}</div>`;
     if (undeclared.length) {
       const first = undeclared[0];
+      const names = undeclared
+        .map(m => (m.dist && m.dist !== m.module) ? `${m.module} (${m.dist})` : m.module)
+        .join(', ');
       html += `<div class="vuln-note code-deps-warn" id="codeDepsUndeclared">Код на Python импортирует сторонние модули
-        <span class="vuln-mono">${escapeHtml(undeclared.map(m => m.module).join(', '))}</span>
-        (например, ${escapeHtml(first.file)}:${escapeHtml(String(first.line))}), но списка зависимостей нет: ни requirements.txt, ни pyproject.toml, ни Pipfile, ни виртуального окружения в папке.
-        Их версии неизвестны, поэтому на уязвимости они не проверены. Зафиксируйте версии (pip freeze &gt; requirements.txt) или проверьте папку вместе с окружением.</div>`;
+        <span class="vuln-mono">${escapeHtml(names)}</span>
+        (например, ${escapeHtml(first.file)}:${escapeHtml(String(first.line))}), версии которых не заданы ни в проекте, ни в установленном окружении.
+        Поэтому на уязвимости они не проверены. Выполните в папке проекта <span class="vuln-mono">pip freeze &gt; requirements.txt</span> (или <span class="vuln-mono">pipreqs .</span>) и пересканируйте — тогда они тоже будут проверены.</div>`;
     }
     if (dc.unpinned_total) {
       html += `<details class="code-issues" id="codeDepsUnpinned">
