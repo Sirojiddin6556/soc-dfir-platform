@@ -27,6 +27,7 @@ use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
+use vulnerability_engine::app_scan::{self, InstalledApp};
 use vulnerability_engine::deps::{self, DependencyCheck, PackageQuery};
 use vulnerability_engine::feeds::{self, FeedSource};
 use vulnerability_engine::msrc::{self, WindowsHostFacts};
@@ -44,6 +45,11 @@ const EPSS_URLS: [&str; 2] = [
     "https://epss.cyentia.com/epss_scores-current.csv.gz",
 ];
 const MSRC_API: &str = "https://api.msrc.microsoft.com/cvrf/v3.0";
+const NVD_API: &str = "https://services.nvd.nist.gov/rest/json/cves/2.0";
+/// NVD's documented ceiling for the public (no-key) API: 5 requests / 30 s.
+/// One query per curated product, spaced to stay within it.
+const NVD_REQUEST_SPACING: Duration = Duration::from_secs(6);
+const NVD_PAGE_SIZE: usize = 2000;
 /// Monthly MSRC documents downloaded when the request names no number.
 pub const DEFAULT_MSRC_MONTHS: u32 = 12;
 const MAX_MSRC_MONTHS: u32 = 120;
@@ -122,6 +128,23 @@ fn windows_display_name(facts: &WindowsHostFacts) -> String {
         name = format!("{name} {}", facts.display_version);
     }
     name
+}
+
+/// Installed programs from the Windows Uninstall registry, as the application
+/// matcher's input. Empty when enumeration fails or off Windows.
+fn collect_installed_apps() -> Vec<InstalledApp> {
+    platform_windows::enumerate_installed_software()
+        .map(|list| {
+            list.into_iter()
+                .map(|s| InstalledApp {
+                    name: s.product,
+                    version: s.version,
+                    publisher: s.publisher,
+                    architecture: s.architecture,
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// A feed file ready to import.
@@ -327,6 +350,8 @@ impl VulnDbService {
                     ("osv", Some(eco.to_string()))
                 } else if f.name == msrc::MSRC_FEED {
                     ("msrc", None)
+                } else if f.name == feeds::NVD_FEED {
+                    ("nvd", None)
                 } else if f.name == feeds::KEV_FEED {
                     ("kev", None)
                 } else if f.name == feeds::EPSS_FEED {
@@ -545,6 +570,10 @@ impl VulnDbService {
         if let Some(months) = msrc_months {
             let step = self.update_msrc(&repo, months as usize);
             self.push_step(step);
+            // Installed-application CVEs are part of the Windows host picture,
+            // so they load in the same situations the MSRC bulletins do.
+            let step = self.update_nvd(&repo);
+            self.push_step(step);
         }
         let step = self.update_kev(&repo);
         self.push_step(step);
@@ -671,6 +700,109 @@ impl VulnDbService {
             result,
             "оценок вероятности эксплуатации",
         )
+    }
+
+    /// Imports NVD application CVEs for the curated product set: one targeted
+    /// query per product (not the whole feed). Offline, reads `nvd-*.json` /
+    /// `nvd.json` documents from the offline directory instead.
+    fn update_nvd(&self, repo: &VulnDbRepository) -> UpdateStep {
+        let feed = feeds::NVD_FEED.to_string();
+        let documents = match &self.offline_dir {
+            Some(dir) => match read_offline_nvd(dir) {
+                Ok(docs) if !docs.is_empty() => docs,
+                Ok(_) => {
+                    // No NVD files offline is not an error: the host may only
+                    // want OS/package data. Record nothing, report skipped.
+                    return unchanged_step(repo, feed, dir.display().to_string());
+                }
+                Err(e) => return failed_step(feed, e),
+            },
+            None => match self.fetch_nvd_online() {
+                Ok(docs) => docs,
+                Err(e) => return failed_step(feed, e),
+            },
+        };
+
+        let mut hasher = Sha256::new();
+        for doc in &documents {
+            hasher.update(doc.as_bytes());
+        }
+        let hash = hex::encode(hasher.finalize());
+        self.set_current("NVD: импорт уязвимостей программ".to_string());
+        match feeds::import_nvd_app_cves(repo, &documents, &hash) {
+            Ok(count) => {
+                let origin = match &self.offline_dir {
+                    Some(dir) => dir.display().to_string(),
+                    None => NVD_API.to_string(),
+                };
+                let _ = feeds::record_feed_source(
+                    repo,
+                    &feed,
+                    &FeedSource {
+                        source: origin.clone(),
+                        etag: None,
+                        last_modified: None,
+                        bytes: documents.iter().map(|d| d.len() as u64).sum(),
+                        sha256: hash,
+                        fetched_at: Utc::now().to_rfc3339(),
+                    },
+                );
+                UpdateStep {
+                    feed,
+                    ok: true,
+                    unchanged: false,
+                    source: Some(origin),
+                    records: Some(count as u64),
+                    message: format!("{count} уязвимостей программ по базе NVD"),
+                }
+            }
+            Err(e) => failed_step(feed, format!("Импорт NVD не удался: {e}")),
+        }
+    }
+
+    /// One NVD query per curated product, paged, spaced to respect the public
+    /// rate limit. A product that errors is skipped (its CVEs are simply
+    /// missed) so one failure does not abort the others.
+    fn fetch_nvd_online(&self) -> Result<Vec<String>, String> {
+        let products = app_scan::catalog_cpes();
+        let total = products.len();
+        let mut documents = Vec::new();
+        let mut errors = Vec::new();
+        for (i, (vendor, product)) in products.iter().enumerate() {
+            if i > 0 {
+                std::thread::sleep(NVD_REQUEST_SPACING);
+            }
+            let cpe = format!("cpe:2.3:a:{vendor}:{product}");
+            let encoded = percent_encode(&cpe);
+            let mut start = 0usize;
+            loop {
+                let url = format!(
+                    "{NVD_API}?virtualMatchString={encoded}&resultsPerPage={NVD_PAGE_SIZE}&startIndex={start}"
+                );
+                self.set_current(format!("NVD: {vendor}:{product} ({} из {total})", i + 1));
+                let body = match nvd_get(&url) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        errors.push(format!("{vendor}:{product}: {e}"));
+                        break;
+                    }
+                };
+                let (total_results, per_page) = nvd_page_counts(&body);
+                documents.push(body);
+                start += per_page.max(NVD_PAGE_SIZE);
+                if start >= total_results || per_page == 0 {
+                    break;
+                }
+                std::thread::sleep(NVD_REQUEST_SPACING);
+            }
+        }
+        if documents.is_empty() {
+            return Err(format!(
+                "NVD: ни один запрос не удался: {}",
+                errors.join("; ")
+            ));
+        }
+        Ok(documents)
     }
 
     /// Imports the newest `months` MSRC monthly documents. A document whose
@@ -1078,7 +1210,11 @@ impl VulnDbService {
         }
 
         if let LocalHost::Windows(facts) = local_host() {
-            return self.scan_windows(host_id, facts);
+            let mut v = self.scan_windows(host_id, facts);
+            // Installed-application CVE check runs regardless of the OS/MSRC
+            // outcome: it reads the Uninstall registry, not the OS build.
+            v["software"] = self.scan_software_json(&collect_installed_apps());
+            return v;
         }
 
         let inventory = platform_linux::collect_package_inventory();
@@ -1210,6 +1346,73 @@ impl VulnDbService {
             "collection_errors": inventory.errors,
         })
     }
+}
+
+/// Percent-encodes a CPE match string for an NVD query parameter: letters,
+/// digits and the unreserved set pass through, everything else (`:`, `\`,
+/// `+`, `*` ...) is `%XX`.
+fn percent_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        if b.is_ascii_alphanumeric() || b"-._~".contains(&b) {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+
+/// GETs an NVD API URL and returns the body, or a short error.
+fn nvd_get(url: &str) -> Result<String, String> {
+    let response = agent()
+        .get(url)
+        .header("Accept", "application/json")
+        .call()
+        .map_err(|e| format!("{e}"))?;
+    let status = response.status().as_u16();
+    if status != 200 {
+        return Err(format!("HTTP {status}"));
+    }
+    response
+        .into_body()
+        .into_with_config()
+        .limit(64 * 1024 * 1024)
+        .read_to_string()
+        .map_err(|e| format!("{e}"))
+}
+
+/// Reads `totalResults` and `resultsPerPage` from an NVD response for paging.
+fn nvd_page_counts(body: &str) -> (usize, usize) {
+    let v: Value = match serde_json::from_str(body) {
+        Ok(v) => v,
+        Err(_) => return (0, 0),
+    };
+    let total = v["totalResults"].as_u64().unwrap_or(0) as usize;
+    let per_page = v["resultsPerPage"].as_u64().unwrap_or(0) as usize;
+    (total, per_page)
+}
+
+/// NVD documents in the offline directory: `nvd.json` or any `nvd-*.json`.
+fn read_offline_nvd(dir: &Path) -> Result<Vec<String>, String> {
+    let entries = std::fs::read_dir(dir)
+        .map_err(|e| format!("NVD: не удалось прочитать каталог {}: {e}", dir.display()))?;
+    let mut docs = Vec::new();
+    for entry in entries {
+        let path = entry.map_err(|e| e.to_string())?.path();
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        let is_nvd = name == "nvd.json"
+            || (name.starts_with("nvd-") && name.ends_with(".json"))
+            || (name.starts_with("nvd_") && name.ends_with(".json"));
+        if is_nvd && path.is_file() {
+            let text = std::fs::read_to_string(&path)
+                .map_err(|e| format!("NVD: {}: {e}", path.display()))?;
+            docs.push(text);
+        }
+    }
+    Ok(docs)
 }
 
 /// A monthly MSRC document to import: where it is (a URL, or a file in the
@@ -1447,6 +1650,78 @@ impl VulnDbService {
                 "older_than_window": report.older_than_window,
             },
             "collection_errors": [],
+        })
+    }
+
+    /// Matches installed applications against the NVD CPE data. Takes the app
+    /// list as input so it runs, and is tested, on any platform.
+    fn scan_software_json(&self, apps: &[InstalledApp]) -> Value {
+        let repo = match self.repo() {
+            Ok(r) => r,
+            Err(e) => {
+                return json!({
+                    "status": "DATASET_UNAVAILABLE",
+                    "status_detail": e,
+                    "findings": [],
+                });
+            }
+        };
+        let nvd_loaded = self.feeds_json(&repo).iter().any(|f| f["kind"] == "nvd");
+        let report = match app_scan::scan_installed_apps(&repo, apps) {
+            Ok(r) => r,
+            Err(e) => {
+                return json!({
+                    "status": "DATASET_CORRUPT",
+                    "status_detail": format!("Ошибка чтения базы уязвимостей: {e}"),
+                    "findings": [],
+                });
+            }
+        };
+        let checked_products = report.checked.len();
+        let (status, detail) = if !nvd_loaded {
+            (
+                "NVD_NOT_LOADED",
+                "База NVD для программ не загружена: обновите базу, иначе проверка программ ничего не доказывает".to_string(),
+            )
+        } else if report.findings.is_empty() {
+            (
+                "NO_KNOWN_MATCHED_VULNERABILITIES",
+                format!(
+                    "В {checked_products} распознанных программах известных уязвимостей не найдено по базе NVD"
+                ),
+            )
+        } else {
+            (
+                "VULNERABILITIES_FOUND",
+                format!(
+                    "Найдено {} уязвимостей в {} программах",
+                    report.findings.len(),
+                    report
+                        .findings
+                        .iter()
+                        .map(|f| f.component.as_str())
+                        .collect::<std::collections::BTreeSet<_>>()
+                        .len()
+                ),
+            )
+        };
+        json!({
+            "status": status,
+            "status_detail": detail,
+            "summary": {
+                "total": report.findings.len(),
+                "critical": report.severity_counts.critical,
+                "high": report.severity_counts.high,
+                "medium": report.severity_counts.medium,
+                "low": report.severity_counts.low,
+                "unknown": report.severity_counts.unknown,
+                "kev": report.kev_count,
+                "no_fix": report.no_fix_count,
+            },
+            "findings": report.findings,
+            "checked": report.checked,
+            "skipped": report.skipped,
+            "unrecognized": report.unrecognised,
         })
     }
 }
@@ -1728,5 +2003,88 @@ mod tests {
         );
         let no_build = platform_windows::system::WindowsOsInfo { build: None, ..os };
         assert!(windows_facts_from(no_build).is_err());
+    }
+
+    #[test]
+    fn nvd_helpers_encode_and_page() {
+        assert_eq!(
+            percent_encode("cpe:2.3:a:7-zip:7-zip"),
+            "cpe%3A2.3%3Aa%3A7-zip%3A7-zip"
+        );
+        // Backslashes and plus signs (Notepad++) are escaped too.
+        assert_eq!(percent_encode(r"a\+b"), "a%5C%2Bb");
+        assert_eq!(
+            nvd_page_counts(r#"{"totalResults":42,"resultsPerPage":20}"#),
+            (42, 20)
+        );
+        assert_eq!(nvd_page_counts("<html>"), (0, 0));
+    }
+
+    #[test]
+    fn offline_nvd_documents_are_found_by_name() {
+        let dir = temp_dir("nvd-offline");
+        std::fs::write(dir.join("nvd.json"), r#"{"vulnerabilities":[]}"#).unwrap();
+        std::fs::write(dir.join("nvd-7zip.json"), r#"{"vulnerabilities":[]}"#).unwrap();
+        std::fs::write(dir.join("notes.txt"), "x").unwrap();
+        std::fs::write(dir.join("Ubuntu.zip"), "x").unwrap();
+        let docs = read_offline_nvd(&dir).unwrap();
+        assert_eq!(docs.len(), 2, "only nvd.json and nvd-*.json");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn app(name: &str, version: &str, publisher: &str) -> InstalledApp {
+        InstalledApp {
+            name: name.into(),
+            version: version.into(),
+            publisher: publisher.into(),
+            architecture: "x64".into(),
+        }
+    }
+
+    #[test]
+    fn software_scan_loads_nvd_offline_and_reports_only_true_findings() {
+        let data = temp_dir("sw-data");
+        let offline = temp_dir("sw-nvd");
+        // One 7-Zip CVE fixed in 24.09.
+        std::fs::write(
+            offline.join("nvd.json"),
+            r#"{"vulnerabilities":[{"cve":{
+                "id":"CVE-2024-11477",
+                "descriptions":[{"lang":"en","value":"7-Zip overflow"}],
+                "metrics":{"cvssMetricV31":[{"cvssData":{"baseScore":7.8,"vectorString":"CVSS:3.1/AV:L"}}]},
+                "configurations":[{"nodes":[{"cpeMatch":[
+                    {"vulnerable":true,"criteria":"cpe:2.3:a:7-zip:7-zip:*:*:*:*:*:*:*:*","versionEndExcluding":"24.09"}]}]}]
+            }}]}"#,
+        )
+        .unwrap();
+        let service = VulnDbService::new(data.join("vulndb"), Some(offline.clone()));
+        let repo = service.repo().unwrap();
+
+        // Before loading NVD: status says so, no finding invented.
+        let before =
+            service.scan_software_json(&[app("7-Zip 23.01 (x64)", "23.01", "Igor Pavlov")]);
+        assert_eq!(before["status"], "NVD_NOT_LOADED");
+        assert_eq!(before["findings"].as_array().unwrap().len(), 0);
+
+        let step = service.update_nvd(&repo);
+        assert!(step.ok, "{}", step.message);
+
+        let apps = vec![
+            app("7-Zip 23.01 (x64)", "23.01", "Igor Pavlov"), // vulnerable
+            app("7-Zip 24.09 (x64)", "24.09", "Igor Pavlov"), // patched
+            app("Some Internal Tool", "1.0", "Acme"),         // unrecognised
+        ];
+        let v = service.scan_software_json(&apps);
+        assert_eq!(v["status"], "VULNERABILITIES_FOUND");
+        let findings = v["findings"].as_array().unwrap();
+        assert_eq!(findings.len(), 1, "only the 7-Zip 23.01 is affected");
+        assert_eq!(findings[0]["id"], "CVE-2024-11477");
+        assert_eq!(findings[0]["component"], "7-Zip");
+        assert_eq!(findings[0]["fixed_version"], "24.09");
+        assert_eq!(v["unrecognized"], 1);
+        assert_eq!(v["summary"]["high"], 1);
+
+        let _ = std::fs::remove_dir_all(&data);
+        let _ = std::fs::remove_dir_all(&offline);
     }
 }
