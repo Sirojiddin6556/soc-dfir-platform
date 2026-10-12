@@ -28,6 +28,9 @@ pub fn check(client: &Client, point: &InjectionPoint, index: usize, findings: &m
         return;
     }
     let name = point.params[index].0.clone();
+    let confirmation = super::confirm(client, point, index, &payload, |r| {
+        super::is_html(r) && r.body.contains(&needle)
+    });
     findings.push(Finding {
         rule: "reflected-xss".into(),
         cwe: 79,
@@ -41,6 +44,9 @@ pub fn check(client: &Client, point: &InjectionPoint, index: usize, findings: &m
         param: Some(name),
         evidence: snippet(&resp.body, &needle),
         request: record.as_curl(),
+        response: super::response_record(&resp, &needle),
+        confirmed: super::confirmed(&confirmation),
+        confirmation,
         request_detail: record,
     });
 }

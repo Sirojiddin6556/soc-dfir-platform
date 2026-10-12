@@ -87,6 +87,9 @@ fn error_based(client: &Client, point: &InjectionPoint, index: usize) -> Option<
         param: Some(name),
         evidence: format!("Ошибка БД в ответе: {err}"),
         request: record.as_curl(),
+        response: super::response_record(&resp, &err),
+        confirmed: true,
+        confirmation: None,
         request_detail: record,
     })
 }
@@ -154,6 +157,9 @@ fn boolean_based(client: &Client, point: &InjectionPoint, index: usize) -> Optio
                 f2.body.len()
             ),
             request: record.as_curl(),
+            response: super::response_record(&f2, ""),
+            confirmed: true,
+            confirmation: None,
             request_detail: record,
         });
     }
@@ -220,7 +226,7 @@ fn time_based(client: &Client, point: &InjectionPoint, index: usize) -> Option<F
         // payload with a zero-second sleep must come back quickly, and a
         // second delayed request must be slow again.
         let (_, _, control_time) = timed(client, point, index, control_payload)?;
-        let (_, record, confirm) = timed(client, point, index, slow_payload)?;
+        let (resp, record, confirm) = timed(client, point, index, slow_payload)?;
         let delayed = first.min(confirm);
         if delayed - control_time >= MARGIN && confirm >= THRESHOLD {
             let name = point.params[index].0.clone();
@@ -239,6 +245,9 @@ fn time_based(client: &Client, point: &InjectionPoint, index: usize) -> Option<F
                     "Задержка по времени ({engine}): с паузой {DELAY}с ответ {delayed:.1}с, без паузы {control_time:.1}с."
                 ),
                 request: record.as_curl(),
+                response: super::response_record(&resp, ""),
+                confirmed: true,
+                confirmation: None,
                 request_detail: record,
             });
         }

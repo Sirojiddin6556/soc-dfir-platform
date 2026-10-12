@@ -80,6 +80,9 @@ pub fn check(client: &Client, point: &InjectionPoint, index: usize, findings: &m
             param: Some(name),
             evidence: format!("Шаблон вычислил «{expr}» → «{product}» (payload: {payload})"),
             request: record.as_curl(),
+            response: super::response_record(&again, &product),
+            confirmed: true,
+            confirmation: None,
             request_detail: record,
         });
         return;

@@ -60,6 +60,50 @@ pub struct Finding {
     pub request: String,
     /// The raw request record, for programmatic use.
     pub request_detail: RequestRecord,
+    /// The response that proved it: status and a body excerpt.
+    pub response: ResponseRecord,
+    /// An independent re-request reproduced the signal and the parameter's
+    /// own (benign) value did not, so the finding is not a one-off or a
+    /// response the page always gives. Error/boolean/time SQLi set this from
+    /// their own built-in confirmation.
+    pub confirmed: bool,
+    /// The confirming exchange, when a re-request confirmation ran.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub confirmation: Option<Confirmation>,
+}
+
+/// The response that proved a finding.
+#[derive(Debug, Clone, Serialize)]
+pub struct ResponseRecord {
+    pub status: u16,
+    /// A short excerpt of the body showing the signal (reflected payload, DB
+    /// error, ...), newlines flattened.
+    pub excerpt: String,
+}
+
+/// The re-request confirmation of an active finding: the payload is sent
+/// again (the signal must reappear) and the parameter's original value is
+/// sent (the signal must be gone), proving the injected value is the cause.
+#[derive(Debug, Clone, Serialize)]
+pub struct Confirmation {
+    /// Re-sending the payload reproduced the signal.
+    pub reproduced: bool,
+    /// The original value did not produce the signal.
+    pub control_clean: bool,
+    /// The repeated request (same payload) and its status.
+    pub repeat: RequestRecord,
+    pub repeat_status: u16,
+    /// The control request (original value) and its status.
+    pub control: RequestRecord,
+    pub control_status: u16,
+}
+
+impl Confirmation {
+    /// A finding is confirmed when the payload reproduced the signal and the
+    /// benign control did not.
+    pub fn is_confirmed(&self) -> bool {
+        self.reproduced && self.control_clean
+    }
 }
 
 /// Signing in before the scan, through an HTML form or a JSON API.

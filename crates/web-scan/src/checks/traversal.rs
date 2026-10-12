@@ -74,7 +74,13 @@ pub fn check(client: &Client, point: &InjectionPoint, index: usize, findings: &m
         let Ok((resp, record)) = point.send(client, Some(index), payload) else {
             continue;
         };
-        if let Some(m) = evidence_re().find(&resp.body) {
+        if let Some(found) = evidence_re()
+            .find(&resp.body)
+            .map(|m| m.as_str().trim().to_string())
+        {
+            let confirmation = super::confirm(client, point, index, payload, |r| {
+                evidence_re().is_match(&r.body)
+            });
             findings.push(Finding {
                 rule: "path-traversal".into(),
                 cwe: 22,
@@ -86,8 +92,11 @@ pub fn check(client: &Client, point: &InjectionPoint, index: usize, findings: &m
                 url: record.url.clone(),
                 method: point.method.as_str().into(),
                 param: Some(name),
-                evidence: format!("В ответе содержимое файла: {}", m.as_str().trim()),
+                evidence: format!("В ответе содержимое файла: {found}"),
                 request: record.as_curl(),
+                response: super::response_record(&resp, &found),
+                confirmed: super::confirmed(&confirmation),
+                confirmation,
                 request_detail: record,
             });
             return;

@@ -8,7 +8,7 @@
 //! since the browser then withholds the cookie on a cross-site POST and the
 //! forged request arrives unauthenticated.
 
-use crate::{Finding, InjectionPoint, Method, Severity};
+use crate::{Finding, InjectionPoint, Method, ResponseRecord, Severity};
 
 /// Whether a field name looks like an anti-CSRF token. Broad on purpose: any
 /// token-bearing field means the form has some protection, so we do not flag.
@@ -51,6 +51,14 @@ pub fn check(points: &[InjectionPoint], set_cookies: &[String], findings: &mut V
             url: point.url.to_string(),
             method: "POST".into(),
             param: None,
+            // A structural finding about the form itself, not a live
+            // response, so there is no status to show.
+            response: ResponseRecord {
+                status: 0,
+                excerpt: format!("<form method=POST> поля: {}", fields.join(", ")),
+            },
+            confirmed: true,
+            confirmation: None,
             evidence: format!("Поля формы без токена: {}", fields.join(", ")),
             request: format!("curl -i -X POST '{}'", point.url),
             request_detail: crate::http::RequestRecord {

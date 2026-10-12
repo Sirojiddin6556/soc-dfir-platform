@@ -70,6 +70,13 @@ pub fn check(client: &Client, point: &InjectionPoint, index: usize, findings: &m
             } else {
                 format!("в теле ответа переход на {MARK}")
             };
+            let confirmation = super::confirm(client, point, index, &payload, |r| {
+                ((300..400).contains(&r.status)
+                    && r.header("location")
+                        .map(location_points_out)
+                        .unwrap_or(false))
+                    || body_redirects_out(&r.body)
+            });
             findings.push(Finding {
                 rule: "open-redirect".into(),
                 cwe: 601,
@@ -83,6 +90,9 @@ pub fn check(client: &Client, point: &InjectionPoint, index: usize, findings: &m
                 param: Some(name),
                 evidence: how,
                 request: record.as_curl(),
+                response: super::response_record(&resp, MARK),
+                confirmed: super::confirmed(&confirmation),
+                confirmation,
                 request_detail: record,
             });
             return;

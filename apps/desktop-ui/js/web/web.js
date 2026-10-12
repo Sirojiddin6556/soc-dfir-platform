@@ -277,19 +277,37 @@ export class WebSpace {
   findingCard(f) {
     const sev = SEVERITY_LABELS[f.severity] || f.severity;
     const param = f.param ? ` · параметр <code>${escapeHtml(f.param)}</code>` : '';
+    const confirmed = f.confirmed
+      ? '<span class="web-finding-confirmed" title="Подтверждено повторным запросом">✓ подтверждено</span>'
+      : '<span class="web-finding-unconfirmed" title="Повторная проверка не подтвердила — возможно ложное срабатывание">не подтверждено</span>';
+    const resp = f.response
+      ? `<div class="web-finding-response">Ответ <span class="web-finding-status">HTTP ${escapeHtml(String(f.response.status || '—'))}</span>: <code>${escapeHtml(f.response.excerpt || '')}</code></div>`
+      : '';
+    const c = f.confirmation;
+    const confirmBlock = c
+      ? `<div class="web-finding-confirm">
+          <div>Повтор с той же нагрузкой: ответ ${escapeHtml(String(c.repeat_status))}, сигнал ${c.reproduced ? 'воспроизвёлся' : 'не воспроизвёлся'}.</div>
+          <pre>${escapeHtml((c.repeat && c.repeat.url) || '')}</pre>
+          <div>Контроль с исходным значением: ответ ${escapeHtml(String(c.control_status))}, сигнал ${c.control_clean ? 'отсутствует' : 'присутствует'}.</div>
+          <pre>${escapeHtml((c.control && c.control.url) || '')}</pre>
+        </div>`
+      : '';
     return `
       <div class="web-finding">
         <div class="web-finding-head">
           <span class="vuln-badge vuln-sev-${escapeAttr(f.severity)}">${escapeHtml(sev)}</span>
           <span class="web-finding-title">${escapeHtml(f.title)}</span>
           <span class="web-finding-cwe">CWE-${escapeHtml(String(f.cwe))}</span>
+          ${confirmed}
         </div>
         <div class="web-finding-loc"><code>${escapeHtml(f.method)} ${escapeHtml(f.url)}</code>${param}</div>
         <div class="web-finding-msg">${escapeHtml(f.message)}</div>
         <div class="web-finding-evidence">${escapeHtml(f.evidence)}</div>
+        ${resp}
         <details class="web-finding-repro">
-          <summary>Как повторить</summary>
+          <summary>Запрос и ответ</summary>
           <pre>${escapeHtml(f.request)}</pre>
+          ${confirmBlock}
         </details>
       </div>
     `;

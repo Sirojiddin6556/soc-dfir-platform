@@ -558,6 +558,27 @@ fn finds_the_planted_vulnerabilities_and_spares_the_safe_endpoint() {
         !xss.iter().any(|u| u.contains("/safe")),
         "false XSS on /safe: {xss:?}"
     );
+    // The reflected-XSS finding is confirmed by a re-request and carries the
+    // response that proved it, so the operator sees the evidence.
+    let search_xss = report
+        .findings
+        .iter()
+        .find(|f| f.rule == "reflected-xss" && f.url.contains("/search"))
+        .expect("a reflected-xss finding on /search");
+    assert!(search_xss.confirmed, "reflected XSS should be confirmed");
+    let conf = search_xss
+        .confirmation
+        .as_ref()
+        .expect("a confirmation record");
+    assert!(
+        conf.reproduced,
+        "the payload re-request reproduced the signal"
+    );
+    assert!(conf.control_clean, "the benign control did not reflect");
+    assert!(
+        !search_xss.response.excerpt.is_empty(),
+        "the finding carries a response excerpt"
+    );
 
     // SQL injection is found both by the database error on /item and, with no
     // error at all, by the response-time delay on /blind.

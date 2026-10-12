@@ -4,7 +4,7 @@
 //! than a single injectable parameter, so each is reported once for the site.
 
 use crate::http::{Client, RequestRecord, Response};
-use crate::{Finding, Severity};
+use crate::{Finding, ResponseRecord, Severity};
 use url::Url;
 
 pub fn check(base: &Url, resp: &Response, client: &Client, findings: &mut Vec<Finding>) {
@@ -31,6 +31,14 @@ pub fn check(base: &Url, resp: &Response, client: &Client, findings: &mut Vec<Fi
             url: base.to_string(),
             method: "GET".into(),
             param: None,
+            response: ResponseRecord {
+                status: resp.status,
+                excerpt: evidence.clone(),
+            },
+            // A passive finding is a direct, repeatable reading of the
+            // response headers, not a probe that might fire by chance.
+            confirmed: true,
+            confirmation: None,
             evidence,
             request: record.as_curl(),
             request_detail: record.clone(),
@@ -92,9 +100,10 @@ pub fn check(base: &Url, resp: &Response, client: &Client, findings: &mut Vec<Fi
 
     cookies(resp, https, base, &record, findings);
     versions(resp, base, &record, findings);
-    // Cookies set on earlier responses (e.g. the login) are checked too.
+    // Cookies set on earlier responses (e.g. the login) are checked too; the
+    // status of that earlier response is not kept, so 0 stands for "unknown".
     for raw in client.set_cookie_headers() {
-        cookie_flags(&raw, https, base, &record, findings);
+        cookie_flags(&raw, https, base, &record, 0, findings);
     }
 }
 
@@ -106,7 +115,7 @@ fn cookies(
     findings: &mut Vec<Finding>,
 ) {
     for raw in resp.headers_all("set-cookie") {
-        cookie_flags(raw, https, base, record, findings);
+        cookie_flags(raw, https, base, record, resp.status, findings);
     }
 }
 
@@ -117,6 +126,7 @@ fn cookie_flags(
     https: bool,
     base: &Url,
     record: &RequestRecord,
+    status: u16,
     findings: &mut Vec<Finding>,
 ) {
     let name = raw.split('=').next().unwrap_or("").trim().to_string();
@@ -159,6 +169,12 @@ fn cookie_flags(
         url: base.to_string(),
         method: "GET".into(),
         param: Some(name),
+        response: ResponseRecord {
+            status,
+            excerpt: format!("Set-Cookie: {}", raw.split(';').next().unwrap_or(raw).trim()),
+        },
+        confirmed: true,
+        confirmation: None,
         evidence: format!("Set-Cookie: {}", raw.split(';').next().unwrap_or(raw).trim()),
         request: record.as_curl(),
         request_detail: record.clone(),
@@ -182,6 +198,12 @@ fn versions(resp: &Response, base: &Url, record: &RequestRecord, findings: &mut 
                     url: base.to_string(),
                     method: "GET".into(),
                     param: None,
+                    response: ResponseRecord {
+                        status: resp.status,
+                        excerpt: format!("{header}: {value}"),
+                    },
+                    confirmed: true,
+                    confirmation: None,
                     evidence: format!("{header}: {value}"),
                     request: record.as_curl(),
                     request_detail: record.clone(),

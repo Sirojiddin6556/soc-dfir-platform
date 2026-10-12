@@ -12,7 +12,7 @@
 //! enabled. Test only a site you are authorized to.
 
 use crate::http::Client;
-use crate::{Finding, InjectionPoint, Severity};
+use crate::{Finding, InjectionPoint, ResponseRecord, Severity};
 use std::collections::HashSet;
 use url::Url;
 
@@ -86,13 +86,13 @@ pub fn check(
                 continue;
             }
             reported.insert(i);
-            findings.push(stored_finding(mark, &resp.url, &resp.body));
+            findings.push(stored_finding(mark, &resp.url, &resp.body, resp.status));
         }
     }
 }
 
 /// Builds the finding for a planted payload seen on a page it was not sent to.
-fn stored_finding(mark: &Mark, page_url: &str, body: &str) -> Finding {
+fn stored_finding(mark: &Mark, page_url: &str, body: &str, status: u16) -> Finding {
     Finding {
         rule: "stored-xss".into(),
         cwe: 79,
@@ -107,6 +107,14 @@ fn stored_finding(mark: &Mark, page_url: &str, body: &str) -> Finding {
         param: Some(mark.param.clone()),
         evidence: format!("Сохранено через {}; всплыло здесь: {}", mark.origin, snippet(body, &mark.payload)),
         request: format!("curl -i '{page_url}'"),
+        response: ResponseRecord {
+            status,
+            excerpt: snippet(body, &mark.payload),
+        },
+        // The planted marker surfacing on a page it was never sent to is
+        // itself the proof the input was stored and served.
+        confirmed: true,
+        confirmation: None,
         request_detail: crate::http::RequestRecord {
             method: "GET".into(),
             url: page_url.to_string(),

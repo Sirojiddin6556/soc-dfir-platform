@@ -100,7 +100,7 @@ pub fn check(client: &Client, point: &InjectionPoint, index: usize, findings: &m
         let Some((_, _, control_time)) = timed(client, point, index, &control) else {
             continue;
         };
-        let Some((_, record, confirm)) = timed(client, point, index, &slow) else {
+        let Some((resp, record, confirm)) = timed(client, point, index, &slow) else {
             continue;
         };
         let delayed = first.min(confirm);
@@ -121,6 +121,9 @@ pub fn check(client: &Client, point: &InjectionPoint, index: usize, findings: &m
                     "Задержка по времени ({shell}): с паузой {DELAY}с ответ {delayed:.1}с, без паузы {control_time:.1}с."
                 ),
                 request: record.as_curl(),
+                response: super::response_record(&resp, ""),
+                confirmed: true,
+                confirmation: None,
                 request_detail: record,
             });
             return;
