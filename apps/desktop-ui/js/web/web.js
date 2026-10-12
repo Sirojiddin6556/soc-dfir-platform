@@ -305,10 +305,13 @@ export class WebSpace {
         <div class="web-finding-evidence">${escapeHtml(f.evidence)}</div>
         ${resp}
         <details class="web-finding-repro">
-          <summary>Запрос и ответ</summary>
+          <summary>Как повторить</summary>
           <pre>${escapeHtml(f.request)}</pre>
-          ${confirmBlock}
         </details>
+        ${c ? `<details class="web-finding-check">
+          <summary>Проверка повторным запросом</summary>
+          ${confirmBlock}
+        </details>` : ''}
       </div>
     `;
   }

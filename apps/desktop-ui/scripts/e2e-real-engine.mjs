@@ -995,6 +995,8 @@ async function checkWebScan(page, base, shot) {
     const xssCard = page.locator('.web-finding', { hasText: 'Отражённый XSS' }).first();
     check((await xssCard.locator('.web-finding-repro pre').textContent()).includes('curl'),
       'a finding card shows how to repeat the request');
+    check((await xssCard.locator('.web-finding-confirmed').count()) === 1,
+      'the reflected-XSS card shows it was confirmed by a re-request');
     // The reflected payload is shown as text, not run as markup.
     check((await page.locator('.web-finding svg').count()) === 0, 'the reflected payload is escaped in the UI');
     await shot('08-web');
