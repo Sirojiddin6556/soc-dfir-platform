@@ -3,7 +3,7 @@
 //! Local vulnerability database for host scanning.
 //!
 //! `vulndb.update` downloads the public feeds -- OSV distribution advisories
-//! (Debian, Ubuntu, AlmaLinux, Rocky Linux, Alpine) on Linux, the Microsoft
+//! (Debian, Ubuntu, AlmaLinux, Rocky Linux, Alpine, openSUSE Leap) on Linux, the Microsoft
 //! Security Response Center monthly security updates on Windows, the CISA KEV
 //! catalog and FIRST EPSS scores -- and imports them into
 //! `<data dir>/vulndb/vuln.db`. `scan.cve` matches this machine against it:
@@ -196,10 +196,10 @@ fn file_stem(ecosystem: &str) -> String {
         .collect()
 }
 
-/// "Debian:12", "Ubuntu:24.04:LTS", "Rocky Linux:9", "Alpine:v3.19": a
-/// supported distribution, a numeric release (Alpine prefixes it with `v`)
-/// and an optional ":LTS"; or an application package ecosystem ("PyPI",
-/// "npm" ...).
+/// "Debian:12", "Ubuntu:24.04:LTS", "Rocky Linux:9", "Alpine:v3.19",
+/// "openSUSE:Leap 15.5": a supported distribution and a numeric release
+/// (Alpine prefixes it with `v`, openSUSE with `Leap `) and an optional
+/// ":LTS"; or an application package ecosystem ("PyPI", "npm" ...).
 fn valid_ecosystem(ecosystem: &str) -> bool {
     if deps::is_language_ecosystem(ecosystem) {
         return true;
@@ -209,10 +209,15 @@ fn valid_ecosystem(ecosystem: &str) -> bool {
         return false;
     };
     let rest: Vec<&str> = parts.collect();
-    // Alpine's OSV ecosystem names its release "vX.Y"; every other supported
-    // distribution uses a bare number.
+    // Alpine's OSV ecosystem names its release "vX.Y" and openSUSE's names it
+    // "Leap X.Y"; every other supported distribution uses a bare number.
     let digits = if base == "Alpine" {
         match release.strip_prefix('v') {
+            Some(d) => d,
+            None => return false,
+        }
+    } else if base == "openSUSE" {
+        match release.strip_prefix("Leap ") {
             Some(d) => d,
             None => return false,
         }
@@ -463,7 +468,7 @@ impl VulnDbService {
             .collect();
         if let Some(bad) = ecosystems.iter().find(|e| !valid_ecosystem(e)) {
             return Err(format!(
-                "Экосистема '{bad}' не поддерживается: доступны Debian:N, Ubuntu:NN.NN[:LTS], AlmaLinux:N, Rocky Linux:N, Alpine:vN.N, {}",
+                "Экосистема '{bad}' не поддерживается: доступны Debian:N, Ubuntu:NN.NN[:LTS], AlmaLinux:N, Rocky Linux:N, Alpine:vN.N, openSUSE:Leap NN.N, {}",
                 deps::LANGUAGE_ECOSYSTEMS.join(", ")
             ));
         }
@@ -1076,7 +1081,7 @@ impl VulnDbService {
             .filter(|e| package_scan::is_supported_ecosystem(e))
         else {
             let detail = format!(
-                "Дистрибутив {} не поддерживается: базы OSV подключены для Debian, Ubuntu, AlmaLinux, Rocky Linux и Alpine",
+                "Дистрибутив {} не поддерживается: базы OSV подключены для Debian, Ubuntu, AlmaLinux, Rocky Linux, Alpine и openSUSE Leap",
                 inventory.os_name
             );
             let mut v = base("UNSUPPORTED_PLATFORM", detail);
@@ -1484,6 +1489,10 @@ mod tests {
         assert!(valid_ecosystem("Alpine:v3.21"));
         assert!(!valid_ecosystem("Alpine:3.19")); // Alpine releases need the 'v'
         assert!(!valid_ecosystem("Debian:v12")); // only Alpine takes the 'v'
+        assert!(valid_ecosystem("openSUSE:Leap 15.5"));
+        assert!(valid_ecosystem("openSUSE:Leap 15.6"));
+        assert!(!valid_ecosystem("openSUSE:15.5")); // needs the 'Leap ' prefix
+        assert!(!valid_ecosystem("openSUSE:Leap")); // needs a numeric release
         assert!(valid_ecosystem("PyPI"));
         assert!(valid_ecosystem("crates.io"));
         assert!(!valid_ecosystem("pypi"));
