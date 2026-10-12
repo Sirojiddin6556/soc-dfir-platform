@@ -233,10 +233,31 @@ impl Project {
                 _ => String::new(),
             };
             let text = if parsed.is_empty() { &source } else { &parsed };
-            let Some(tree) = crate::parse_tree(lang, text) else {
+            let Some(mut tree) = crate::parse_tree(lang, text) else {
                 project.skipped.push((path, "не удалось разобрать".into()));
                 continue;
             };
+            // TypeScript dialect fallback: a `.ts` file that actually holds
+            // JSX fails to parse under the non-JSX grammar (and, rarely, a
+            // `.tsx` file using an angle-bracket cast parses under the plain
+            // grammar). Re-parse with the sibling dialect and keep whichever
+            // tree has fewer error nodes. The JS lowerer handles all three
+            // dialects, so only the tree changes; the recorded language,
+            // which drives the stats, stays the one the extension implies.
+            if tree.root_node().has_error() {
+                let alt = match lang {
+                    Language::TypeScript => Some(Language::Tsx),
+                    Language::Tsx => Some(Language::TypeScript),
+                    _ => None,
+                };
+                if let Some(alt) = alt {
+                    if let Some(alt_tree) = crate::parse_tree(alt, text) {
+                        if error_count(alt_tree.root_node()) < error_count(tree.root_node()) {
+                            tree = alt_tree;
+                        }
+                    }
+                }
+            }
             let Some(ir) = crate::lower_tree(lang, &tree, text) else {
                 project
                     .skipped
@@ -482,9 +503,27 @@ fn module_name(path: &str, lang: Language) -> (String, bool) {
     }
 }
 
-/// Test code by the conventions of the languages: a `test`, `tests` or
-/// `__tests__` directory, `test_*.py`, `*_test.py`, `tests.py`,
-/// `conftest.py`, `*Test.java`, `*Tests.java`, `*IT.java`.
+/// The number of error and missing nodes in a tree, used to pick the
+/// better of two parses of the same file.
+fn error_count(root: tree_sitter::Node) -> usize {
+    if !root.has_error() {
+        return 0;
+    }
+    let mut count = 0;
+    let mut stack = vec![root];
+    while let Some(node) = stack.pop() {
+        let mut cursor = node.walk();
+        for c in node.children(&mut cursor) {
+            if c.is_error() || c.is_missing() {
+                count += 1;
+            } else if c.has_error() {
+                stack.push(c);
+            }
+        }
+    }
+    count
+}
+
 fn first_error(root: tree_sitter::Node) -> Option<u32> {
     if !root.has_error() {
         return None;
@@ -505,6 +544,9 @@ fn first_error(root: tree_sitter::Node) -> Option<u32> {
     }
 }
 
+/// Test code by the conventions of the languages: a `test`, `tests` or
+/// `__tests__` directory, `test_*.py`, `*_test.py`, `tests.py`,
+/// `conftest.py`, `*Test.java`, `*Tests.java`, `*IT.java`.
 pub fn is_test_path(path: &str) -> bool {
     let mut parts: Vec<&str> = path.split('/').collect();
     let file = parts.pop().unwrap_or("");

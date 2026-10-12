@@ -92,6 +92,14 @@ impl Language {
     }
 }
 
+/// A file that a language front end could parse only partially.
+#[derive(Debug, Clone, Serialize)]
+pub struct ParseError {
+    pub path: String,
+    /// Line of the first syntax error, if known.
+    pub line: Option<u32>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct Report {
     pub findings: Vec<rules::Finding>,
@@ -105,7 +113,10 @@ pub struct Report {
     /// Files per language that were analyzed.
     pub languages: Vec<(String, usize)>,
     pub skipped: Vec<(String, String)>,
-    pub parse_errors: Vec<String>,
+    /// Files a language front end could parse only partially, with the line
+    /// of the first syntax error (so the gap is pinpointable, not just
+    /// counted).
+    pub parse_errors: Vec<ParseError>,
     /// Test files: loaded so calls resolve, not analyzed unless asked.
     pub test_files: usize,
     /// Time spent reading and parsing the files, then analyzing them.
@@ -239,7 +250,10 @@ pub fn analyze_with(project: &project::Project, options: Options) -> Report {
             .modules
             .iter()
             .filter(|m| m.parse_errors)
-            .map(|m| m.path.clone())
+            .map(|m| ParseError {
+                path: m.path.clone(),
+                line: m.first_error,
+            })
             .collect(),
         test_files: if options.include_tests {
             0

@@ -195,6 +195,30 @@ app.get('/s', (req, res) => {
 }
 
 #[test]
+fn jsx_in_a_dot_ts_file_is_still_analyzed() {
+    // A `.ts` file that actually contains JSX fails to parse under the
+    // non-JSX TypeScript grammar; the whole file used to be reported as a
+    // parse error and a real sink inside it was never seen. The dialect
+    // fallback re-parses it as TSX, so the injection is detected.
+    let src = r#"
+import { Controller, Get, Query } from '@nestjs/common';
+@Controller('u')
+export class UserController {
+  constructor(private readonly db: any) {}
+  @Get()
+  find(@Query('id') id: string) {
+    const rows = this.db.query('SELECT * FROM u WHERE id = ' + id);
+    return <ul>{rows.map((r: any) => <li>{r.name}</li>)}</ul>;
+  }
+}
+"#;
+    assert!(
+        rules("user.controller.ts", src).contains(&"sql-injection".to_string()),
+        "a sink in a .ts file that also contains JSX must still be analyzed"
+    );
+}
+
+#[test]
 fn clean_code_has_no_findings() {
     let src = r#"
 const express = require('express');

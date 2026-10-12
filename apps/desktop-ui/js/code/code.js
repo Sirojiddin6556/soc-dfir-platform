@@ -281,7 +281,7 @@ export class CodeSpace {
       ${parseErrors.length ? `
         <details class="code-issues" id="codeParseErrors">
           <summary>Файлы с ошибками разбора: ${escapeHtml(String(parseErrors.length))} (проверены частично)</summary>
-          <div class="vuln-mono">${parseErrors.slice(0, 100).map(p => escapeHtml(p)).join('<br>')}</div>
+          <div class="vuln-mono">${parseErrors.slice(0, 100).map(p => escapeHtml(p.line ? `${p.path}:${p.line}` : p.path)).join('<br>')}</div>
         </details>` : ''}
       ${skipped.length ? `
         <details class="code-issues" id="codeSkipped">
