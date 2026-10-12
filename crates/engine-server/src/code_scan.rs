@@ -42,6 +42,8 @@ fn download_mb(ecosystem: &str) -> u32 {
         "NuGet" => 3,
         "Hex" => 1,
         "Pub" => 1,
+        "SwiftURL" => 1,
+        "GitHub Actions" => 1,
         _ => 10,
     }
 }

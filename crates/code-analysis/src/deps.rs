@@ -32,7 +32,7 @@ pub enum DepKind {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Dependency {
     /// OSV ecosystem: PyPI, npm, Packagist, Maven, Go, crates.io,
-    /// RubyGems, NuGet, Hex, Pub.
+    /// RubyGems, NuGet, Hex, Pub, SwiftURL, GitHub Actions.
     pub ecosystem: String,
     pub name: String,
     /// The exact version, when the file fixes one.
@@ -213,7 +213,12 @@ fn walk(c: &mut Collector, dir: &Path, depth: usize) {
                 }
                 _ => {}
             }
-            if SKIP_DIRS.contains(&name.as_str()) || (name.starts_with('.') && name.len() > 1) {
+            // Hidden directories are skipped, except `.github`, which holds
+            // the workflow files that pin GitHub Actions.
+            let hidden = name.starts_with('.') && name.len() > 1;
+            if SKIP_DIRS.contains(&name.as_str())
+                || (hidden && !name.eq_ignore_ascii_case(".github"))
+            {
                 continue;
             }
             walk(c, &path, depth + 1);
@@ -241,6 +246,18 @@ fn file(c: &mut Collector, path: &Path, name: &str) {
     let requirements = (lower.contains("requirements") || lower.starts_with("constraints"))
         && matches!(ext, "txt" | "in" | "pip")
         || in_requirements_dir && matches!(ext, "txt" | "in");
+    // A GitHub Actions workflow (`.github/workflows/*.yml`) or a composite
+    // action definition (`action.yml`), both of which pin actions with
+    // `uses: owner/repo@ref`.
+    let in_workflows_dir = path.parent().is_some_and(|p| {
+        p.file_name()
+            .is_some_and(|d| d.eq_ignore_ascii_case("workflows"))
+            && p.parent()
+                .and_then(|g| g.file_name())
+                .is_some_and(|g| g.eq_ignore_ascii_case(".github"))
+    });
+    let github_actions_file = (in_workflows_dir && matches!(ext, "yml" | "yaml"))
+        || matches!(lower.as_str(), "action.yml" | "action.yaml");
     match lower.as_str() {
         _ if requirements => manifest(c, requirements_txt),
         "pipfile" => manifest(c, pipfile),
@@ -261,6 +278,8 @@ fn file(c: &mut Collector, path: &Path, name: &str) {
         "gemfile.lock" => manifest(c, gemfile_lock),
         "mix.lock" => manifest(c, mix_lock),
         "pubspec.lock" => manifest(c, pubspec_lock),
+        "package.resolved" => manifest(c, swift_package_resolved),
+        _ if github_actions_file => manifest(c, github_actions),
         "packages.config" => manifest(c, packages_config),
         "packages.lock.json" => manifest(c, nuget_lock),
         "directory.packages.props" => manifest(c, msbuild),
@@ -1772,6 +1791,156 @@ fn pubspec_lock(c: &mut Collector, file: &str, text: &str) {
     flush(c, cur.take());
 }
 
+/// Swift Package Manager's `Package.resolved` (JSON). v2+ lists pins with a
+/// `location`; v1 nests them under `object.pins` with a `repositoryURL`.
+/// OSV keys Swift packages by their repository URL with the scheme and the
+/// trailing `.git` removed (`github.com/vapor/vapor`), so a pin's URL is
+/// normalized to that form. Only version-pinned remote packages resolve.
+fn swift_package_resolved(c: &mut Collector, file: &str, text: &str) {
+    let Ok(doc) = serde_json::from_str::<Value>(text) else {
+        return;
+    };
+    // v1 wraps the list in `object`; v2+ has it at the top level.
+    let pins = doc
+        .get("pins")
+        .or_else(|| doc.get("object").and_then(|o| o.get("pins")))
+        .and_then(Value::as_array);
+    let Some(pins) = pins else {
+        return;
+    };
+    for pin in pins {
+        let url = pin
+            .get("location")
+            .or_else(|| pin.get("repositoryURL"))
+            .and_then(Value::as_str);
+        let Some(url) = url else {
+            continue;
+        };
+        let Some(name) = normalize_repo_url(url) else {
+            continue;
+        };
+        let version = pin
+            .get("state")
+            .and_then(|s| s.get("version"))
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        if let Some(v) = version {
+            // JSON parsing loses positions, so point at the line naming the URL.
+            let line = text
+                .lines()
+                .position(|l| l.contains(url))
+                .map(|n| n as u32 + 1)
+                .unwrap_or(1);
+            c.add(
+                "SwiftURL",
+                &name,
+                Some(v.clone()),
+                &v,
+                file,
+                line,
+                DepKind::Lockfile,
+            );
+        }
+    }
+}
+
+/// `https://github.com/vapor/vapor.git` -> `github.com/vapor/vapor`, the form
+/// OSV uses to key Git-hosted packages (Swift, Go). Returns `None` for a URL
+/// with no host/path.
+fn normalize_repo_url(url: &str) -> Option<String> {
+    let u = url.trim();
+    // `git@github.com:vapor/vapor.git` -> `github.com/vapor/vapor`.
+    let u = if let Some(rest) = u.strip_prefix("git@") {
+        return normalize_repo_url(&rest.replacen(':', "/", 1));
+    } else {
+        u.strip_prefix("https://")
+            .or_else(|| u.strip_prefix("http://"))
+            .or_else(|| u.strip_prefix("ssh://"))
+            .or_else(|| u.strip_prefix("git://"))
+            .unwrap_or(u)
+    };
+    let u = u.strip_suffix('/').unwrap_or(u);
+    let u = u.strip_suffix(".git").unwrap_or(u);
+    if u.is_empty() || !u.contains('/') {
+        return None;
+    }
+    Some(u.to_string())
+}
+
+/// GitHub Actions workflows and composite actions pin actions with
+/// `uses: owner/repo@ref` (`owner/repo/subpath@ref` for a nested action).
+/// The advisory is keyed by `owner/repo`. A ref that is a full semver tag
+/// (`v4.1.1`) gives a concrete version to check; a partial tag (`v4`), a
+/// branch or a commit SHA leaves the version unknown, so the action is
+/// recorded but not matched. Local (`./`) and Docker (`docker://`) uses have
+/// no OSV ecosystem and are skipped.
+fn github_actions(c: &mut Collector, file: &str, text: &str) {
+    for (i, line) in text.lines().enumerate() {
+        let t = line.trim();
+        let t = t.strip_prefix("- ").unwrap_or(t);
+        let Some(spec) = t.strip_prefix("uses:") else {
+            continue;
+        };
+        // Drop an inline comment, then surrounding quotes.
+        let mut spec = spec.trim();
+        if let Some(h) = spec.find(" #") {
+            spec = spec[..h].trim_end();
+        }
+        let spec = spec.trim_matches(|c| c == '"' || c == '\'').trim();
+        if spec.is_empty()
+            || spec.starts_with("./")
+            || spec.starts_with("../")
+            || spec.starts_with("docker://")
+        {
+            continue;
+        }
+        let Some((repo, reff)) = spec.rsplit_once('@') else {
+            continue;
+        };
+        let mut segs = repo.split('/');
+        let (Some(owner), Some(name)) = (segs.next(), segs.next()) else {
+            continue;
+        };
+        if owner.is_empty() || name.is_empty() {
+            continue;
+        }
+        let action = format!("{owner}/{name}");
+        let version = full_semver(reff);
+        c.add(
+            "GitHub Actions",
+            &action,
+            version,
+            reff,
+            file,
+            i as u32 + 1,
+            DepKind::Manifest,
+        );
+    }
+}
+
+/// A `ref` that is a full `X.Y.Z` semver tag (an optional leading `v` is
+/// dropped), else `None` for a partial tag, branch or commit SHA that cannot
+/// be compared against a version range.
+fn full_semver(reff: &str) -> Option<String> {
+    let v = reff
+        .strip_prefix('v')
+        .or_else(|| reff.strip_prefix('V'))
+        .unwrap_or(reff);
+    let mut parts = v.split('.');
+    let major = parts.next()?;
+    let minor = parts.next()?;
+    let patch = parts.next()?;
+    let numeric = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    // The patch may carry a prerelease/build suffix (`1-rc1`), so only its
+    // leading digits must be numeric.
+    let patch_num = patch.split(['-', '+']).next().unwrap_or("");
+    if numeric(major) && numeric(minor) && numeric(patch_num) {
+        Some(v.to_string())
+    } else {
+        None
+    }
+}
+
 // -------------------------------------------------------------------- .NET
 
 fn nuget_exact(version: &str) -> Option<String> {
@@ -2653,6 +2822,34 @@ mod tests {
         assert_eq!(
             parse(pubspec_lock, pubspec),
             vec![pinned("http", "0.13.5", 3)]
+        );
+    }
+
+    #[test]
+    fn swift_resolved_and_github_actions() {
+        // Package.resolved v2: URL normalized to the OSV key; a branch-pinned
+        // package (no version) is dropped.
+        let resolved = "{\n  \"pins\" : [\n    {\n      \"identity\" : \"vapor\",\n      \"kind\" : \"remoteSourceControl\",\n      \"location\" : \"https://github.com/vapor/vapor.git\",\n      \"state\" : { \"revision\" : \"abc\", \"version\" : \"4.84.0\" }\n    },\n    {\n      \"identity\" : \"edge\",\n      \"location\" : \"https://github.com/x/edge.git\",\n      \"state\" : { \"branch\" : \"main\", \"revision\" : \"def\" }\n    }\n  ],\n  \"version\" : 2\n}\n";
+        assert_eq!(
+            parse(swift_package_resolved, resolved),
+            vec![(
+                "github.com/vapor/vapor".to_string(),
+                Some("4.84.0".to_string()),
+                6
+            )]
+        );
+
+        // Workflows: full-semver tags give a version; `@v4`, a branch and a
+        // commit SHA do not; local and docker uses are skipped.
+        let wf = "jobs:\n  build:\n    steps:\n      - uses: actions/checkout@v4.1.1\n      - uses: actions/setup-node@v4  # major tag only\n      - uses: step-security/harden-runner@17d0e2bd7d51742c71671bd19fa12bdc9d40b3bb\n      - uses: ./.github/actions/local\n      - uses: docker://alpine:3.19\n      - uses: hashicorp/vault-action@2.5.0  # with comment\n";
+        assert_eq!(
+            parse(github_actions, wf),
+            vec![
+                pinned("actions/checkout", "4.1.1", 4),
+                loose("actions/setup-node", 5),
+                loose("step-security/harden-runner", 6),
+                pinned("hashicorp/vault-action", "2.5.0", 9),
+            ]
         );
     }
 
