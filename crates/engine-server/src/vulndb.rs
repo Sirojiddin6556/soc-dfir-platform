@@ -3,8 +3,9 @@
 //! Local vulnerability database for host scanning.
 //!
 //! `vulndb.update` downloads the public feeds -- OSV distribution advisories
-//! (Debian, Ubuntu, AlmaLinux, Rocky Linux, Alpine, openSUSE Leap) on Linux, the Microsoft
-//! Security Response Center monthly security updates on Windows, the CISA KEV
+//! (Debian, Ubuntu, AlmaLinux, Rocky Linux, Alpine, openSUSE Leap, Wolfi,
+//! Chainguard) on Linux, the Microsoft Security Response Center monthly
+//! security updates on Windows, the CISA KEV
 //! catalog and FIRST EPSS scores -- and imports them into
 //! `<data dir>/vulndb/vuln.db`. `scan.cve` matches this machine against it:
 //! installed dpkg/rpm/apk packages on Linux, the OS product and build (with
@@ -199,9 +200,15 @@ fn file_stem(ecosystem: &str) -> String {
 /// "Debian:12", "Ubuntu:24.04:LTS", "Rocky Linux:9", "Alpine:v3.19",
 /// "openSUSE:Leap 15.5": a supported distribution and a numeric release
 /// (Alpine prefixes it with `v`, openSUSE with `Leap `) and an optional
-/// ":LTS"; or an application package ecosystem ("PyPI", "npm" ...).
+/// ":LTS"; the rolling distributions "Wolfi" and "Chainguard" with no
+/// release; or an application package ecosystem ("PyPI", "npm" ...).
 fn valid_ecosystem(ecosystem: &str) -> bool {
     if deps::is_language_ecosystem(ecosystem) {
+        return true;
+    }
+    // Wolfi and Chainguard are rolling distributions: OSV names them with no
+    // release, so they have no `base:release` form to validate.
+    if ecosystem == "Wolfi" || ecosystem == "Chainguard" {
         return true;
     }
     let mut parts = ecosystem.split(':');
@@ -468,7 +475,7 @@ impl VulnDbService {
             .collect();
         if let Some(bad) = ecosystems.iter().find(|e| !valid_ecosystem(e)) {
             return Err(format!(
-                "Экосистема '{bad}' не поддерживается: доступны Debian:N, Ubuntu:NN.NN[:LTS], AlmaLinux:N, Rocky Linux:N, Alpine:vN.N, openSUSE:Leap NN.N, {}",
+                "Экосистема '{bad}' не поддерживается: доступны Debian:N, Ubuntu:NN.NN[:LTS], AlmaLinux:N, Rocky Linux:N, Alpine:vN.N, openSUSE:Leap NN.N, Wolfi, Chainguard, {}",
                 deps::LANGUAGE_ECOSYSTEMS.join(", ")
             ));
         }
@@ -1081,7 +1088,7 @@ impl VulnDbService {
             .filter(|e| package_scan::is_supported_ecosystem(e))
         else {
             let detail = format!(
-                "Дистрибутив {} не поддерживается: базы OSV подключены для Debian, Ubuntu, AlmaLinux, Rocky Linux, Alpine и openSUSE Leap",
+                "Дистрибутив {} не поддерживается: базы OSV подключены для Debian, Ubuntu, AlmaLinux, Rocky Linux, Alpine, openSUSE Leap, Wolfi и Chainguard",
                 inventory.os_name
             );
             let mut v = base("UNSUPPORTED_PLATFORM", detail);
@@ -1493,6 +1500,8 @@ mod tests {
         assert!(valid_ecosystem("openSUSE:Leap 15.6"));
         assert!(!valid_ecosystem("openSUSE:15.5")); // needs the 'Leap ' prefix
         assert!(!valid_ecosystem("openSUSE:Leap")); // needs a numeric release
+        assert!(valid_ecosystem("Wolfi")); // rolling, no release
+        assert!(valid_ecosystem("Chainguard"));
         assert!(valid_ecosystem("PyPI"));
         assert!(valid_ecosystem("crates.io"));
         assert!(!valid_ecosystem("pypi"));

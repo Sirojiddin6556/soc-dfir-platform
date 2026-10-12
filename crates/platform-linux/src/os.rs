@@ -101,6 +101,13 @@ impl OsRelease {
     /// The OSV ecosystem name for this distribution's packages, when OSV
     /// publishes one (https://ossf.github.io/osv-schema/#affectedpackage-field).
     pub fn osv_ecosystem(&self) -> Option<String> {
+        // Wolfi and Chainguard are rolling: OSV names them with no release,
+        // so they resolve even when os-release carries no VERSION_ID.
+        match self.id.as_str() {
+            "wolfi" => return Some("Wolfi".to_string()),
+            "chainguard" => return Some("Chainguard".to_string()),
+            _ => {}
+        }
         if self.version_id.is_empty() {
             return None;
         }
@@ -237,6 +244,16 @@ ID=debian
         assert_eq!(rocky.id, "rocky");
         assert_eq!(rocky.id_like, vec!["rhel", "centos", "fedora"]);
         assert_eq!(rocky.osv_ecosystem().as_deref(), Some("Rocky Linux:9"));
+    }
+
+    #[test]
+    fn maps_rolling_wolfi_without_a_version() {
+        // Wolfi's VERSION_ID is a build date, and OSV names the ecosystem with
+        // no release; it must resolve even if VERSION_ID is absent.
+        let wolfi = parse_os_release("ID=wolfi\nNAME=\"Wolfi\"\nVERSION_ID=\"20230201\"\n");
+        assert_eq!(wolfi.osv_ecosystem().as_deref(), Some("Wolfi"));
+        let no_ver = parse_os_release("ID=chainguard\nNAME=\"Chainguard\"\n");
+        assert_eq!(no_ver.osv_ecosystem().as_deref(), Some("Chainguard"));
     }
 
     #[test]
