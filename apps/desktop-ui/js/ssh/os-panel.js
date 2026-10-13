@@ -387,12 +387,18 @@ export class RemoteHostPanel {
         const pct = typeof f.percent === 'number' ? `${f.percent}%` : '—';
         const detail =
           f.evaluated > 0
-            ? `${f.passed} из ${f.evaluated}`
+            ? `${f.passed} из ${f.evaluated} с точным результатом`
             : 'нет проверок с точным результатом';
+        // How much of the framework we could actually evaluate (definite
+        // pass/fail) out of every check mapped to it — an honest coverage line.
+        const applicable = typeof f.applicable === 'number' ? f.applicable : f.evaluated;
+        const coverage =
+          applicable > 0 ? `охват: ${f.evaluated} из ${applicable}` : '';
         return `<div class="vuln-cis-score">
             <div class="vuln-cis-score-pct">${escapeHtml(pct)}</div>
             <div class="vuln-cis-score-name">${escapeHtml(String(f.framework ?? ''))}</div>
             <div class="vuln-cis-score-detail">${escapeHtml(detail)}</div>
+            ${coverage ? `<div class="vuln-cis-score-detail">${escapeHtml(coverage)}</div>` : ''}
           </div>`;
       })
       .join('');
@@ -422,7 +428,7 @@ export class RemoteHostPanel {
 
     return `
       <h4 class="vuln-remote-section">Аудит конфигурации (CIS)</h4>
-      <div class="vuln-note">Каждая проверка оценивается только по реальным данным хоста. «Не задано» и «нет доступа» — это не нарушение: значение по умолчанию не видно без прав или без запуска sshd -T, поэтому такие пункты не считаются провалом.</div>
+      <div class="vuln-note">Каждая проверка оценивается только по реальным данным хоста. Где доступно, читается итоговая конфигурация демона (sshd -T) и безопасные значения OpenSSH по умолчанию. «Не задано» и «нет доступа» — это не нарушение: такие пункты не считаются провалом, а проценты считаются только по проверкам с точным результатом.</div>
       ${scores ? `<div class="vuln-cis-scores">${scores}</div>` : ''}
       <div class="vuln-cis-counts">
         Пройдено: ${Number(summary.pass) || 0} ·

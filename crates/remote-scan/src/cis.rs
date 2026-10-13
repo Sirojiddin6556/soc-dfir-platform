@@ -145,7 +145,11 @@ pub struct FrameworkScore {
     pub evaluated: usize,
     /// Checks mapped to this framework that could not be evaluated definitely.
     pub undetermined: usize,
-    /// passed / evaluated as a percentage, or `None` when nothing was evaluated.
+    /// All checks mapped to this framework (`evaluated + undetermined`), so the
+    /// UI can say honestly how much of the framework was actually covered.
+    pub applicable: usize,
+    /// passed / evaluated as a percentage, rounded to the nearest whole number,
+    /// or `None` when nothing was evaluated.
     pub percent: Option<u8>,
 }
 
@@ -197,12 +201,18 @@ fn compliance_rollup(checks: &[CisCheck]) -> Vec<FrameworkScore> {
                     _ => undetermined += 1,
                 }
             }
-            let percent = (passed * 100).checked_div(evaluated).map(|p| p as u8);
+            // Round to the nearest whole percent (76.9 -> 77), not truncate.
+            let percent = if evaluated == 0 {
+                None
+            } else {
+                Some(((passed * 200 + evaluated) / (evaluated * 2)) as u8)
+            };
             FrameworkScore {
                 framework,
                 passed,
                 evaluated,
                 undetermined,
+                applicable: evaluated + undetermined,
                 percent,
             }
         })
@@ -338,28 +348,64 @@ fn parse_uint(values: &[String]) -> Option<u64> {
     values.first().and_then(|v| v.trim().parse().ok())
 }
 
+/// The sshd configuration the SSH checks read, and whether it is authoritative.
+///
+/// When `sshd -T` could be run (usually as root) its output is the *effective*
+/// configuration — every keyword resolved, precedence across the main file and
+/// all drop-ins already applied by the daemon — so a verdict from it is exact.
+/// Otherwise we fall back to parsing the files, where an absent keyword means a
+/// compiled-in default we cannot see, and a keyword set to different values in
+/// different files is a precedence question we refuse to guess.
+struct SshdView<'a> {
+    cfg: &'a SshdConfig,
+    authoritative: bool,
+}
+
+impl<'a> SshdView<'a> {
+    fn readable(&self) -> bool {
+        self.cfg.readable
+    }
+    fn get(&self, key: &str) -> &[String] {
+        self.cfg.get(key)
+    }
+    /// Suffix that marks evidence taken from the daemon's own resolved config.
+    fn src(&self) -> &'static str {
+        if self.authoritative {
+            " (sshd -T)"
+        } else {
+            ""
+        }
+    }
+}
+
 /// Builds a check whose verdict comes from a single sshd keyword that must *not*
 /// be set to a given insecure value. `secure` lists the acceptable values.
+/// `default_secure` says whether the OpenSSH compiled-in default (noted in
+/// `default_note`) already satisfies the check, so an absent directive in the
+/// file-based fallback can be reported honestly: a secure default passes, an
+/// insecure or unknown default stays `NotConfigured` (never a fabricated fail).
 #[allow(clippy::too_many_arguments)]
 fn sshd_enum_check(
-    cfg: &SshdConfig,
+    view: &SshdView,
     id: &'static str,
     title: &'static str,
     severity: Severity,
     keyword: &str,
     secure: &[&str],
     insecure: &[&str],
+    default_secure: bool,
     default_note: &str,
     remediation: &'static str,
     references: Vec<ComplianceRef>,
 ) -> CisCheck {
-    let (status, evidence) = if !cfg.readable {
+    let src = view.src();
+    let (status, evidence) = if !view.readable() {
         (
             CheckStatus::NeedsPrivileges,
             "файл sshd_config недоступен для чтения".to_string(),
         )
     } else {
-        let values = cfg.get(keyword);
+        let values = view.get(keyword);
         let has_secure = values
             .iter()
             .any(|v| secure.iter().any(|s| v.eq_ignore_ascii_case(s)));
@@ -371,14 +417,15 @@ fn sshd_enum_check(
             // insecure, so it is effective regardless of file precedence.
             (false, true) => (
                 CheckStatus::Fail,
-                format!("{keyword} {}", values.join(", ")),
+                format!("{keyword} {}{src}", values.join(", ")),
             ),
             (true, false) => (
                 CheckStatus::Pass,
-                format!("{keyword} {}", values.join(", ")),
+                format!("{keyword} {}{src}", values.join(", ")),
             ),
-            // Set to conflicting values across files: precedence needs
-            // `sshd -T`, which we do not run, so we do not guess.
+            // Set to conflicting values across files without `sshd -T` to
+            // resolve precedence — we do not guess. (With `sshd -T` there is
+            // only ever the single resolved value, so this branch never fires.)
             (true, true) => (
                 CheckStatus::Manual,
                 format!(
@@ -386,15 +433,25 @@ fn sshd_enum_check(
                     values.join(", ")
                 ),
             ),
-            (false, false) if values.is_empty() => (
-                CheckStatus::NotConfigured,
-                format!("{keyword} не задан; {default_note}"),
-            ),
+            (false, false) if values.is_empty() => {
+                if default_secure {
+                    // The daemon would use a safe compiled-in default.
+                    (
+                        CheckStatus::Pass,
+                        format!("{keyword} не задан; действует безопасное значение по умолчанию ({default_note})"),
+                    )
+                } else {
+                    (
+                        CheckStatus::NotConfigured,
+                        format!("{keyword} не задан; {default_note}"),
+                    )
+                }
+            }
             // Present but an unrecognised value: report, don't guess.
             (false, false) => (
                 CheckStatus::Manual,
                 format!(
-                    "{keyword} {} (значение требует проверки)",
+                    "{keyword} {}{src} (значение требует проверки)",
                     values.join(", ")
                 ),
             ),
@@ -413,149 +470,295 @@ fn sshd_enum_check(
 
 // --- The checks -----------------------------------------------------------
 
-fn ssh_checks(cfg: &SshdConfig) -> Vec<CisCheck> {
-    let ssh_refs = || {
-        vec![
-            cref(Framework::Cis, "5.1 SSH Server Configuration"),
-            cref(Framework::PciDss4, "2.2 Secure configuration"),
-            cref(Framework::Iso27001, "A.8.9 Configuration management"),
-        ]
+/// SSH server-configuration controls (CIS 5.1). Maps to PCI 2.2 and ISO A.8.9.
+fn ssh_refs() -> Vec<ComplianceRef> {
+    vec![
+        cref(Framework::Cis, "5.1 SSH Server Configuration"),
+        cref(Framework::PciDss4, "2.2 Secure configuration"),
+        cref(Framework::Iso27001, "A.8.9 Configuration management"),
+    ]
+}
+
+/// SSH cryptographic strength (ciphers/MACs/KEX). Maps to PCI 4.2.1 (strong
+/// cryptography) and ISO A.8.24 (use of cryptography) — a different PCI/ISO
+/// control than plain configuration, so the per-standard rollups diverge.
+fn ssh_crypto_refs() -> Vec<ComplianceRef> {
+    vec![
+        cref(Framework::Cis, "5.1 SSH Server Configuration"),
+        cref(Framework::PciDss4, "4.2.1 Strong cryptography"),
+        cref(Framework::Iso27001, "A.8.24 Use of cryptography"),
+    ]
+}
+
+/// Builds a numeric sshd check: the keyword must parse and satisfy `ok`. An
+/// absent keyword relies on a default; when that default does not meet the bar
+/// we report it (with the default noted) rather than fabricate a fail.
+#[allow(clippy::too_many_arguments)]
+fn sshd_numeric_check(
+    view: &SshdView,
+    id: &'static str,
+    title: &'static str,
+    severity: Severity,
+    keyword: &str,
+    ok: &dyn Fn(u64) -> bool,
+    default_note: &str,
+    remediation: &'static str,
+) -> CisCheck {
+    let src = view.src();
+    let values = view.get(keyword);
+    let (status, evidence) = if !view.readable() {
+        (
+            CheckStatus::NeedsPrivileges,
+            "файл sshd_config недоступен для чтения".to_string(),
+        )
+    } else if values.is_empty() {
+        (
+            CheckStatus::NotConfigured,
+            format!("{keyword} не задан; {default_note}"),
+        )
+    } else if let Some(n) = parse_uint(values) {
+        if ok(n) {
+            (CheckStatus::Pass, format!("{keyword} {n}{src}"))
+        } else {
+            (CheckStatus::Fail, format!("{keyword} {n}{src}"))
+        }
+    } else {
+        (
+            CheckStatus::Manual,
+            format!("{keyword} {} (не число)", values.join(", ")),
+        )
     };
+    CisCheck {
+        id,
+        title,
+        status,
+        severity,
+        evidence,
+        remediation,
+        references: ssh_refs(),
+    }
+}
+
+/// A check over a comma-separated algorithm list (Ciphers/MACs/KexAlgorithms):
+/// it fails only when an *explicitly configured* algorithm matches a known-weak
+/// token. An absent directive means the daemon uses its modern, strong defaults
+/// — we cannot see the list, so it is `NotConfigured`, never a fail.
+fn sshd_algorithm_check(
+    view: &SshdView,
+    id: &'static str,
+    title: &'static str,
+    keyword: &str,
+    weak_tokens: &[&str],
+    remediation: &'static str,
+) -> CisCheck {
+    let src = view.src();
+    let values = view.get(keyword);
+    let (status, evidence) = if !view.readable() {
+        (
+            CheckStatus::NeedsPrivileges,
+            "файл sshd_config недоступен для чтения".to_string(),
+        )
+    } else if values.is_empty() {
+        (
+            CheckStatus::NotConfigured,
+            format!("{keyword} не задан; действуют стойкие алгоритмы OpenSSH по умолчанию"),
+        )
+    } else {
+        // Flatten every configured list into its individual algorithm tokens.
+        let configured: Vec<String> = values
+            .iter()
+            .flat_map(|v| v.split(','))
+            .map(|t| {
+                t.trim()
+                    .trim_start_matches(['+', '-', '^'])
+                    .to_ascii_lowercase()
+            })
+            .filter(|t| !t.is_empty())
+            .collect();
+        let weak: Vec<&str> = configured
+            .iter()
+            .filter(|t| weak_tokens.iter().any(|w| t.contains(w)))
+            .map(String::as_str)
+            .collect();
+        if weak.is_empty() {
+            (
+                CheckStatus::Pass,
+                format!("{keyword}: слабых алгоритмов нет{src}"),
+            )
+        } else {
+            (
+                CheckStatus::Fail,
+                format!(
+                    "{keyword} содержит слабые алгоритмы: {}{src}",
+                    weak.join(", ")
+                ),
+            )
+        }
+    };
+    CisCheck {
+        id,
+        title,
+        status,
+        severity: Severity::Medium,
+        evidence,
+        remediation,
+        references: ssh_crypto_refs(),
+    }
+}
+
+fn ssh_checks(view: &SshdView) -> Vec<CisCheck> {
     let mut out = vec![
         sshd_enum_check(
-            cfg,
+            view,
             "SSH-PERMIT-ROOT-LOGIN",
             "SSH: вход root запрещён",
             Severity::High,
             "permitrootlogin",
             &["no", "prohibit-password", "without-password"],
             &["yes"],
-            "по умолчанию в современном OpenSSH — prohibit-password",
+            true,
+            "в современном OpenSSH по умолчанию prohibit-password",
             "Задайте PermitRootLogin no в /etc/ssh/sshd_config и перезапустите sshd.",
             ssh_refs(),
         ),
         sshd_enum_check(
-            cfg,
+            view,
             "SSH-PERMIT-EMPTY-PASSWORDS",
             "SSH: пустые пароли запрещены",
             Severity::High,
             "permitemptypasswords",
             &["no"],
             &["yes"],
+            true,
             "по умолчанию — no",
             "Задайте PermitEmptyPasswords no в /etc/ssh/sshd_config.",
             ssh_refs(),
         ),
         sshd_enum_check(
-            cfg,
+            view,
             "SSH-HOSTBASED-AUTH",
             "SSH: host-based аутентификация выключена",
             Severity::Medium,
             "hostbasedauthentication",
             &["no"],
             &["yes"],
+            true,
             "по умолчанию — no",
             "Задайте HostbasedAuthentication no в /etc/ssh/sshd_config.",
             ssh_refs(),
         ),
         sshd_enum_check(
-            cfg,
+            view,
             "SSH-IGNORE-RHOSTS",
             "SSH: .rhosts игнорируются",
             Severity::Medium,
             "ignorerhosts",
             &["yes"],
             &["no"],
+            true,
             "по умолчанию — yes",
             "Задайте IgnoreRhosts yes в /etc/ssh/sshd_config.",
             ssh_refs(),
         ),
         sshd_enum_check(
-            cfg,
+            view,
             "SSH-X11-FORWARDING",
             "SSH: проброс X11 выключен",
             Severity::Low,
             "x11forwarding",
             &["no"],
             &["yes"],
+            true,
             "по умолчанию — no",
             "Задайте X11Forwarding no, если графический проброс не нужен.",
             ssh_refs(),
         ),
+        sshd_enum_check(
+            view,
+            "SSH-PERMIT-USER-ENV",
+            "SSH: PermitUserEnvironment выключен",
+            Severity::Medium,
+            "permituserenvironment",
+            &["no"],
+            &["yes"],
+            true,
+            "по умолчанию — no",
+            "Задайте PermitUserEnvironment no в /etc/ssh/sshd_config.",
+            ssh_refs(),
+        ),
+        sshd_numeric_check(
+            view,
+            "SSH-MAX-AUTH-TRIES",
+            "SSH: не более 4 попыток входа",
+            Severity::Medium,
+            "maxauthtries",
+            &|n| n <= 4,
+            "по умолчанию — 6, что превышает рекомендацию (≤4)",
+            "Задайте MaxAuthTries 4 (или меньше) в /etc/ssh/sshd_config.",
+        ),
+        sshd_numeric_check(
+            view,
+            "SSH-LOGIN-GRACE-TIME",
+            "SSH: окно входа не больше 60 секунд",
+            Severity::Low,
+            "logingracetime",
+            &|n| (1..=60).contains(&n),
+            "по умолчанию — 120 секунд, что превышает рекомендацию (≤60)",
+            "Задайте LoginGraceTime 60 (или меньше) в /etc/ssh/sshd_config.",
+        ),
+        // Idle-session timeout: ClientAliveInterval must be a positive, bounded
+        // value; 0 (explicitly) means sessions never time out.
+        sshd_numeric_check(
+            view,
+            "SSH-CLIENT-ALIVE-INTERVAL",
+            "SSH: сессия завершается при простое",
+            Severity::Low,
+            "clientaliveinterval",
+            &|n| (1..=900).contains(&n),
+            "по умолчанию — 0 (сессия не завершается по простою)",
+            "Задайте ClientAliveInterval 300 и ClientAliveCountMax 3 в /etc/ssh/sshd_config.",
+        ),
+        sshd_enum_check(
+            view,
+            "SSH-LOG-LEVEL",
+            "SSH: уровень журналирования INFO или VERBOSE",
+            Severity::Low,
+            "loglevel",
+            &["info", "verbose"],
+            &["quiet", "fatal", "error"],
+            true,
+            "по умолчанию — INFO",
+            "Задайте LogLevel VERBOSE (или INFO) в /etc/ssh/sshd_config.",
+            ssh_refs(),
+        ),
+        sshd_algorithm_check(
+            view,
+            "SSH-CIPHERS",
+            "SSH: нет слабых шифров",
+            "ciphers",
+            &["cbc", "arcfour", "3des", "des-", "blowfish", "cast128", "rijndael"],
+            "Уберите слабые шифры из Ciphers; оставьте только aes*-gcm и chacha20-poly1305.",
+        ),
+        sshd_algorithm_check(
+            view,
+            "SSH-MACS",
+            "SSH: нет слабых MAC",
+            "macs",
+            &["md5", "sha1", "umac-64", "ripemd"],
+            "Оставьте в MACs только *-etm на базе SHA-2 (hmac-sha2-256/512-etm, umac-128-etm).",
+        ),
+        sshd_algorithm_check(
+            view,
+            "SSH-KEX",
+            "SSH: нет слабых алгоритмов обмена ключами",
+            "kexalgorithms",
+            &["group1-", "group14-sha1", "sha1", "gss-", "group-exchange-sha1"],
+            "Оставьте в KexAlgorithms современные алгоритмы (curve25519-sha256, diffie-hellman-group16-sha512).",
+        ),
     ];
 
-    // MaxAuthTries <= 4.
-    out.push({
-        let values = cfg.get("maxauthtries");
-        let (status, evidence) = if !cfg.readable {
-            (
-                CheckStatus::NeedsPrivileges,
-                "файл sshd_config недоступен для чтения".to_string(),
-            )
-        } else if values.is_empty() {
-            (
-                CheckStatus::NotConfigured,
-                "MaxAuthTries не задан; по умолчанию — 6".to_string(),
-            )
-        } else if let Some(n) = parse_uint(values) {
-            if n <= 4 {
-                (CheckStatus::Pass, format!("MaxAuthTries {n}"))
-            } else {
-                (CheckStatus::Fail, format!("MaxAuthTries {n}"))
-            }
-        } else {
-            (
-                CheckStatus::Manual,
-                format!("MaxAuthTries {} (не число)", values.join(", ")),
-            )
-        };
-        CisCheck {
-            id: "SSH-MAX-AUTH-TRIES",
-            title: "SSH: не более 4 попыток входа",
-            status,
-            severity: Severity::Medium,
-            evidence,
-            remediation: "Задайте MaxAuthTries 4 (или меньше) в /etc/ssh/sshd_config.",
-            references: ssh_refs(),
-        }
-    });
-
-    // LoginGraceTime <= 60 and > 0.
-    out.push({
-        let values = cfg.get("logingracetime");
-        let (status, evidence) = if !cfg.readable {
-            (
-                CheckStatus::NeedsPrivileges,
-                "файл sshd_config недоступен для чтения".to_string(),
-            )
-        } else if values.is_empty() {
-            (
-                CheckStatus::NotConfigured,
-                "LoginGraceTime не задан; по умолчанию — 120 секунд".to_string(),
-            )
-        } else if let Some(n) = parse_uint(values) {
-            if (1..=60).contains(&n) {
-                (CheckStatus::Pass, format!("LoginGraceTime {n}"))
-            } else {
-                (CheckStatus::Fail, format!("LoginGraceTime {n}"))
-            }
-        } else {
-            (
-                CheckStatus::Manual,
-                format!("LoginGraceTime {} (не число)", values.join(", ")),
-            )
-        };
-        CisCheck {
-            id: "SSH-LOGIN-GRACE-TIME",
-            title: "SSH: окно входа не больше 60 секунд",
-            status,
-            severity: Severity::Low,
-            evidence,
-            remediation: "Задайте LoginGraceTime 60 (или меньше) в /etc/ssh/sshd_config.",
-            references: ssh_refs(),
-        }
-    });
-
+    // Keep the column of SSH checks deterministic for the UI and tests.
+    out.sort_by_key(|c| c.id);
     out
 }
 
@@ -910,42 +1113,491 @@ fn account_checks(entries: &[PasswdEntry], readable: bool) -> Vec<CisCheck> {
     vec![uid0, empty_pw, legacy]
 }
 
-/// Runs the whole CIS configuration audit over `runner`. Each command whose
-/// output cannot be read leaves its checks at [`CheckStatus::NeedsPrivileges`],
-/// never at a fail.
-pub fn audit_cis(runner: &mut dyn CommandRunner) -> CisReport {
-    let sshd_text = runner
-        .run(ReadCommand::SshdConfig)
-        .map(|o| o.stdout)
-        .unwrap_or_default();
-    let sshd = SshdConfig::parse(&sshd_text);
+// --- Filesystem, kernel and host-hardening parsers and checks -------------
 
-    let login_text = runner
-        .run(ReadCommand::LoginDefs)
-        .map(|o| o.stdout)
-        .unwrap_or_default();
-    let login_readable = login_text.lines().any(|l| !l.trim().is_empty());
+/// A mounted filesystem and the options it was mounted with (`/proc/mounts`).
+struct MountEntry {
+    target: String,
+    options: Vec<String>,
+}
+
+fn parse_mounts(text: &str) -> Vec<MountEntry> {
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let f: Vec<&str> = line.split_whitespace().collect();
+        if f.len() < 4 {
+            continue;
+        }
+        out.push(MountEntry {
+            target: f[1].to_string(),
+            options: f[3].split(',').map(str::to_string).collect(),
+        });
+    }
+    out
+}
+
+/// `path:value` pairs from `grep -H '' /proc/sys/...`, keyed by the full path.
+fn parse_sysctl(text: &str) -> BTreeMap<String, String> {
+    let mut map = BTreeMap::new();
+    for line in text.lines() {
+        if let Some((path, value)) = line.split_once(':') {
+            map.insert(path.trim().to_string(), value.trim().to_string());
+        }
+    }
+    map
+}
+
+/// `key = value` / `key=value` pairs from a PAM config file, comments skipped
+/// and keys lower-cased. A bare flag line is kept with an empty value.
+fn parse_keyvalue(text: &str) -> BTreeMap<String, String> {
+    let mut map = BTreeMap::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some((k, v)) = line.split_once('=') {
+            map.insert(k.trim().to_ascii_lowercase(), v.trim().to_string());
+        } else {
+            map.insert(line.to_ascii_lowercase(), String::new());
+        }
+    }
+    map
+}
+
+/// Extracts the integer value of an APT::Periodic key from a `20auto-upgrades`
+/// file, e.g. `APT::Periodic::Unattended-Upgrade "1";` -> `"1"`.
+fn apt_periodic_value(text: &str, key: &str) -> Option<String> {
+    for line in text.lines() {
+        let line = line.trim();
+        if line.starts_with('#') {
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix(key) {
+            let digits: String = rest.chars().filter(char::is_ascii_digit).collect();
+            if !digits.is_empty() {
+                return Some(digits);
+            }
+        }
+    }
+    None
+}
+
+/// `/tmp` hardening (CIS 1.1): when `/tmp` is a separate mount it must carry
+/// nodev, nosuid and noexec. When it is not a separate mount the options do not
+/// apply, so this is `NotConfigured`, never a fail.
+fn mount_checks(mounts: &[MountEntry], readable: bool) -> Vec<CisCheck> {
+    let refs = || {
+        vec![
+            cref(Framework::Cis, "1.1 Filesystem Configuration"),
+            cref(Framework::Iso27001, "A.8.9 Configuration management"),
+        ]
+    };
+    let required = ["nodev", "nosuid", "noexec"];
+    let (status, evidence) = if !readable {
+        (
+            CheckStatus::NeedsPrivileges,
+            "/proc/mounts недоступен".to_string(),
+        )
+    } else {
+        match mounts.iter().find(|m| m.target == "/tmp") {
+            None => (
+                CheckStatus::NotConfigured,
+                "/tmp не вынесен в отдельный раздел — опции nodev/nosuid/noexec неприменимы"
+                    .to_string(),
+            ),
+            Some(m) => {
+                let missing: Vec<&str> = required
+                    .iter()
+                    .copied()
+                    .filter(|r| !m.options.iter().any(|o| o == r))
+                    .collect();
+                if missing.is_empty() {
+                    (CheckStatus::Pass, format!("/tmp: {}", m.options.join(",")))
+                } else {
+                    (
+                        CheckStatus::Fail,
+                        format!(
+                            "/tmp смонтирован без {} (опции: {})",
+                            missing.join(","),
+                            m.options.join(",")
+                        ),
+                    )
+                }
+            }
+        }
+    };
+    vec![CisCheck {
+        id: "FS-TMP-OPTIONS",
+        title: "Файловая система: /tmp с nodev, nosuid, noexec",
+        status,
+        severity: Severity::Low,
+        evidence,
+        remediation:
+            "Вынесите /tmp в отдельный раздел с опциями nodev,nosuid,noexec (или через systemd tmp.mount).",
+        references: refs(),
+    }]
+}
+
+/// Kernel/network hardening parameters read straight from `/proc/sys`
+/// (CIS 3.x). Mapped to CIS and ISO network-security, but *not* a PCI control,
+/// so the PCI rollup covers a different, smaller set than CIS.
+fn sysctl_checks(map: &BTreeMap<String, String>, readable: bool) -> Vec<CisCheck> {
+    let refs = || {
+        vec![
+            cref(Framework::Cis, "3.2 Network Parameters"),
+            cref(Framework::Iso27001, "A.8.20 Networks security"),
+        ]
+    };
+    let one = |id: &'static str,
+               title: &'static str,
+               severity: Severity,
+               path: &str,
+               pass_vals: &[&str],
+               fail_vals: &[&str],
+               manual_vals: &[&str],
+               remediation: &'static str|
+     -> CisCheck {
+        let (status, evidence) = if !readable {
+            (
+                CheckStatus::NeedsPrivileges,
+                "параметры /proc/sys недоступны".to_string(),
+            )
+        } else {
+            match map.get(path) {
+                None => (CheckStatus::NotConfigured, format!("{path} не прочитан")),
+                Some(v) => {
+                    let v = v.trim();
+                    if pass_vals.contains(&v) {
+                        (CheckStatus::Pass, format!("{path} = {v}"))
+                    } else if manual_vals.contains(&v) {
+                        (
+                            CheckStatus::Manual,
+                            format!("{path} = {v} (может быть обусловлено ролью хоста)"),
+                        )
+                    } else if fail_vals.contains(&v) {
+                        (CheckStatus::Fail, format!("{path} = {v}"))
+                    } else {
+                        (
+                            CheckStatus::Manual,
+                            format!("{path} = {v} (значение требует проверки)"),
+                        )
+                    }
+                }
+            }
+        };
+        CisCheck {
+            id,
+            title,
+            status,
+            severity,
+            evidence,
+            remediation,
+            references: refs(),
+        }
+    };
+    vec![
+        one(
+            "SYSCTL-RP-FILTER",
+            "Сеть: обратная фильтрация пути (rp_filter)",
+            Severity::Low,
+            "/proc/sys/net/ipv4/conf/all/rp_filter",
+            &["1", "2"],
+            &["0"],
+            &[],
+            "Задайте net.ipv4.conf.all.rp_filter=1 в /etc/sysctl.d/.",
+        ),
+        one(
+            "SYSCTL-SYNCOOKIES",
+            "Сеть: защита от SYN-flood (tcp_syncookies)",
+            Severity::Low,
+            "/proc/sys/net/ipv4/tcp_syncookies",
+            &["1"],
+            &["0"],
+            &[],
+            "Задайте net.ipv4.tcp_syncookies=1.",
+        ),
+        one(
+            "SYSCTL-ASLR",
+            "Ядро: рандомизация адресного пространства (ASLR)",
+            Severity::Medium,
+            "/proc/sys/kernel/randomize_va_space",
+            &["2"],
+            &["0", "1"],
+            &[],
+            "Задайте kernel.randomize_va_space=2.",
+        ),
+        one(
+            "SYSCTL-ACCEPT-REDIRECTS",
+            "Сеть: ICMP-перенаправления не принимаются",
+            Severity::Low,
+            "/proc/sys/net/ipv4/conf/all/accept_redirects",
+            &["0"],
+            &["1"],
+            &[],
+            "Задайте net.ipv4.conf.all.accept_redirects=0.",
+        ),
+        one(
+            "SYSCTL-SEND-REDIRECTS",
+            "Сеть: ICMP-перенаправления не отправляются",
+            Severity::Low,
+            "/proc/sys/net/ipv4/conf/all/send_redirects",
+            &["0"],
+            &["1"],
+            &[],
+            "Задайте net.ipv4.conf.all.send_redirects=0.",
+        ),
+        one(
+            "SYSCTL-SOURCE-ROUTE",
+            "Сеть: маршрутизация от источника выключена",
+            Severity::Low,
+            "/proc/sys/net/ipv4/conf/all/accept_source_route",
+            &["0"],
+            &["1"],
+            &[],
+            "Задайте net.ipv4.conf.all.accept_source_route=0.",
+        ),
+        one(
+            "SYSCTL-IP-FORWARD",
+            "Сеть: IP-форвардинг выключен",
+            Severity::Low,
+            "/proc/sys/net/ipv4/ip_forward",
+            &["0"],
+            &[],
+            &["1"],
+            "Если хост не маршрутизатор, задайте net.ipv4.ip_forward=0.",
+        ),
+    ]
+}
+
+/// Mandatory access control (AppArmor). An absent AppArmor node is reported,
+/// not failed — the host may use SELinux instead.
+fn apparmor_check(text: &str) -> CisCheck {
+    let refs = vec![
+        cref(Framework::Cis, "1.6 Mandatory Access Control"),
+        cref(Framework::Iso27001, "A.8.7 Protection against malware"),
+    ];
+    let t = text.trim();
+    let (status, evidence) = if t.is_empty() {
+        (
+            CheckStatus::NotConfigured,
+            "AppArmor не обнаружен в ядре (возможно, используется SELinux)".to_string(),
+        )
+    } else if t.eq_ignore_ascii_case("Y") {
+        (
+            CheckStatus::Pass,
+            "AppArmor включён (/sys/module/apparmor/parameters/enabled = Y)".to_string(),
+        )
+    } else {
+        (
+            CheckStatus::Fail,
+            format!("AppArmor выключен (enabled = {t})"),
+        )
+    };
+    CisCheck {
+        id: "MAC-APPARMOR",
+        title: "Мандатный контроль доступа: AppArmor включён",
+        status,
+        severity: Severity::Medium,
+        evidence,
+        remediation:
+            "Включите AppArmor (или настройте SELinux) для обязательного контроля доступа.",
+        references: refs,
+    }
+}
+
+/// Automatic security updates (Debian/Ubuntu `unattended-upgrades`). Absent on
+/// non-APT distributions, where it is reported as not-configured, not failed.
+fn auto_upgrades_check(text: &str) -> CisCheck {
+    let refs = vec![
+        cref(Framework::Cis, "1.2 Package Updates"),
+        cref(Framework::PciDss4, "6.3.3 Security patches"),
+        cref(
+            Framework::Iso27001,
+            "A.8.8 Management of technical vulnerabilities",
+        ),
+    ];
+    let (status, evidence) = match apt_periodic_value(text, "APT::Periodic::Unattended-Upgrade") {
+        None => (
+            CheckStatus::NotConfigured,
+            "автоматические обновления безопасности не настроены (20auto-upgrades отсутствует)"
+                .to_string(),
+        ),
+        Some(v) if v == "0" => (
+            CheckStatus::Fail,
+            "APT::Periodic::Unattended-Upgrade \"0\" — автообновления отключены".to_string(),
+        ),
+        Some(v) => (
+            CheckStatus::Pass,
+            format!("APT::Periodic::Unattended-Upgrade \"{v}\""),
+        ),
+    };
+    CisCheck {
+        id: "PATCH-UNATTENDED-UPGRADES",
+        title: "Обновления: включены автоматические обновления безопасности",
+        status,
+        severity: Severity::Medium,
+        evidence,
+        remediation:
+            "Установите unattended-upgrades и задайте APT::Periodic::Unattended-Upgrade \"1\".",
+        references: refs,
+    }
+}
+
+/// Account lockout after failed logins (pam_faillock). Absent config is
+/// reported, not failed, since lockout can also be configured elsewhere.
+fn faillock_check(map: &BTreeMap<String, String>, readable: bool) -> CisCheck {
+    let refs = vec![
+        cref(Framework::Cis, "5.4 User Accounts and Environment"),
+        cref(Framework::PciDss4, "8.3.4 Account lockout"),
+        cref(Framework::Iso27001, "A.5.17 Authentication information"),
+    ];
+    let (status, evidence) = if !readable {
+        (
+            CheckStatus::NotConfigured,
+            "faillock.conf отсутствует или пуст — блокировка после неудачных входов не подтверждена"
+                .to_string(),
+        )
+    } else {
+        match map.get("deny").and_then(|v| v.trim().parse::<u64>().ok()) {
+            Some(0) => (
+                CheckStatus::Fail,
+                "deny = 0 — блокировка отключена".to_string(),
+            ),
+            Some(n) if (1..=10).contains(&n) => (CheckStatus::Pass, format!("deny = {n}")),
+            Some(n) => (
+                CheckStatus::Manual,
+                format!("deny = {n} (велик порог блокировки)"),
+            ),
+            None => (
+                CheckStatus::NotConfigured,
+                "в faillock.conf не задан параметр deny".to_string(),
+            ),
+        }
+    };
+    CisCheck {
+        id: "AUTH-FAILLOCK",
+        title: "Аутентификация: блокировка после неудачных попыток входа",
+        status,
+        severity: Severity::Medium,
+        evidence,
+        remediation:
+            "Настройте pam_faillock: задайте deny=4 и unlock_time в /etc/security/faillock.conf.",
+        references: refs,
+    }
+}
+
+/// Password-quality policy (pam_pwquality `minlen`). Absent config is reported,
+/// not failed.
+fn pwquality_check(map: &BTreeMap<String, String>, readable: bool) -> CisCheck {
+    let refs = vec![
+        cref(Framework::Cis, "5.4 User Accounts and Environment"),
+        cref(Framework::PciDss4, "8.3.6 Password length and complexity"),
+        cref(Framework::Iso27001, "A.5.17 Authentication information"),
+    ];
+    let (status, evidence) = if !readable {
+        (
+            CheckStatus::NotConfigured,
+            "pwquality.conf отсутствует или пуст — требования к паролям не подтверждены"
+                .to_string(),
+        )
+    } else {
+        match map.get("minlen").and_then(|v| v.trim().parse::<u64>().ok()) {
+            Some(n) if n >= 12 => (CheckStatus::Pass, format!("minlen = {n}")),
+            Some(n) => (
+                CheckStatus::Fail,
+                format!("minlen = {n} (рекомендуется ≥ 12)"),
+            ),
+            None => (
+                CheckStatus::NotConfigured,
+                "в pwquality.conf не задан minlen".to_string(),
+            ),
+        }
+    };
+    CisCheck {
+        id: "PW-QUALITY-MINLEN",
+        title: "Пароли: минимальная длина не меньше 12",
+        status,
+        severity: Severity::Low,
+        evidence,
+        remediation: "Задайте minlen = 14 в /etc/security/pwquality.conf.",
+        references: refs,
+    }
+}
+
+/// Reads a command's stdout, treating a run error as empty output.
+fn read_cmd(runner: &mut dyn CommandRunner, cmd: ReadCommand) -> String {
+    runner.run(cmd).map(|o| o.stdout).unwrap_or_default()
+}
+
+/// True when a text has at least one non-blank line (i.e. the file was actually
+/// readable, not an empty permission-denied result).
+fn has_content(text: &str) -> bool {
+    text.lines().any(|l| !l.trim().is_empty())
+}
+
+/// Runs the whole CIS configuration audit over `runner`. Each command whose
+/// output cannot be read leaves its checks at [`CheckStatus::NeedsPrivileges`]
+/// or [`CheckStatus::NotConfigured`], never at a fail.
+pub fn audit_cis(runner: &mut dyn CommandRunner) -> CisReport {
+    // Prefer the daemon's own resolved configuration (`sshd -T`); fall back to
+    // parsing the files when it could not be run (usually a non-root session).
+    let sshd_file = SshdConfig::parse(&read_cmd(runner, ReadCommand::SshdConfig));
+    let sshd_eff = SshdConfig::parse(&read_cmd(runner, ReadCommand::SshdEffective));
+    let sshd_view = if sshd_eff.readable {
+        SshdView {
+            cfg: &sshd_eff,
+            authoritative: true,
+        }
+    } else {
+        SshdView {
+            cfg: &sshd_file,
+            authoritative: false,
+        }
+    };
+
+    let login_text = read_cmd(runner, ReadCommand::LoginDefs);
+    let login_readable = has_content(&login_text);
     let defs = parse_login_defs(&login_text);
 
-    let passwd_text = runner
-        .run(ReadCommand::Passwd)
-        .map(|o| o.stdout)
-        .unwrap_or_default();
-    let passwd_readable = passwd_text.lines().any(|l| !l.trim().is_empty());
+    let passwd_text = read_cmd(runner, ReadCommand::Passwd);
+    let passwd_readable = has_content(&passwd_text);
     let entries = parse_passwd(&passwd_text);
 
-    let stat_text = runner
-        .run(ReadCommand::FileModes)
-        .map(|o| o.stdout)
-        .unwrap_or_default();
-    let stat_readable = stat_text.lines().any(|l| !l.trim().is_empty());
+    let stat_text = read_cmd(runner, ReadCommand::FileModes);
+    let stat_readable = has_content(&stat_text);
     let modes = parse_file_modes(&stat_text);
 
+    let mounts_text = read_cmd(runner, ReadCommand::Mounts);
+    let mounts_readable = has_content(&mounts_text);
+    let mounts = parse_mounts(&mounts_text);
+
+    let sysctl_text = read_cmd(runner, ReadCommand::Sysctl);
+    let sysctl_readable = has_content(&sysctl_text);
+    let sysctl = parse_sysctl(&sysctl_text);
+
+    let pwq_text = read_cmd(runner, ReadCommand::PwQuality);
+    let pwq_readable = has_content(&pwq_text);
+    let pwq = parse_keyvalue(&pwq_text);
+
+    let faillock_text = read_cmd(runner, ReadCommand::Faillock);
+    let faillock_readable = has_content(&faillock_text);
+    let faillock = parse_keyvalue(&faillock_text);
+
+    let autoupgrades_text = read_cmd(runner, ReadCommand::AutoUpgrades);
+    let apparmor_text = read_cmd(runner, ReadCommand::Apparmor);
+
     let mut checks = Vec::new();
-    checks.extend(ssh_checks(&sshd));
+    checks.extend(ssh_checks(&sshd_view));
     checks.extend(password_policy_checks(&defs, login_readable));
     checks.extend(file_mode_checks(&modes, stat_readable));
     checks.extend(account_checks(&entries, passwd_readable));
+    checks.extend(mount_checks(&mounts, mounts_readable));
+    checks.extend(sysctl_checks(&sysctl, sysctl_readable));
+    checks.push(apparmor_check(&apparmor_text));
+    checks.push(auto_upgrades_check(&autoupgrades_text));
+    checks.push(faillock_check(&faillock, faillock_readable));
+    checks.push(pwquality_check(&pwq, pwq_readable));
 
     CisReport::from_checks(checks)
 }
@@ -953,7 +1605,7 @@ pub fn audit_cis(runner: &mut dyn CommandRunner) -> CisReport {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::command::MapRunner;
+    use crate::command::{CommandOutput, MapRunner};
 
     fn find<'a>(report: &'a CisReport, id: &str) -> &'a CisCheck {
         report
@@ -1051,9 +1703,11 @@ alice:x:1000:1000:Alice:/home/alice:/bin/bash
     }
 
     #[test]
-    fn absent_sshd_directive_is_not_configured_never_fail() {
-        // Only PermitRootLogin is set; everything else is absent and must be
-        // NOT_CONFIGURED, never a fabricated FAIL.
+    fn absent_sshd_directive_with_secure_default_passes_never_fail() {
+        // Only PermitRootLogin is set. Directives whose OpenSSH default is
+        // already secure (X11Forwarding no) pass by that default; directives
+        // whose default does not meet the bar (MaxAuthTries 6 > 4) stay
+        // NOT_CONFIGURED — never a fabricated FAIL in either case.
         let mut r = runner(
             "PermitRootLogin no\n",
             HARDENED_LOGIN_DEFS,
@@ -1061,15 +1715,164 @@ alice:x:1000:1000:Alice:/home/alice:/bin/bash
             GOOD_PASSWD,
         );
         let report = audit_cis(&mut r);
-        assert_eq!(
-            find(&report, "SSH-X11-FORWARDING").status,
-            CheckStatus::NotConfigured
+        let x11 = find(&report, "SSH-X11-FORWARDING");
+        assert_eq!(x11.status, CheckStatus::Pass);
+        assert!(
+            x11.evidence.contains("по умолчанию"),
+            "evidence should note the default: {}",
+            x11.evidence
         );
         assert_eq!(
             find(&report, "SSH-MAX-AUTH-TRIES").status,
             CheckStatus::NotConfigured
         );
         assert_eq!(report.summary.fail, 0);
+    }
+
+    #[test]
+    fn sshd_dash_t_is_authoritative_over_files() {
+        // When `sshd -T` output is present it resolves precedence the files
+        // cannot: a file conflict that would otherwise be MANUAL becomes a
+        // definite verdict from the daemon's own effective value.
+        let mut r = runner(
+            "PermitRootLogin yes\nPermitRootLogin no\n",
+            HARDENED_LOGIN_DEFS,
+            GOOD_STAT,
+            GOOD_PASSWD,
+        );
+        r.insert(
+            ReadCommand::SshdEffective,
+            CommandOutput::ok("permitrootlogin no\nmaxauthtries 3\nx11forwarding no\n"),
+        );
+        let report = audit_cis(&mut r);
+        let root = find(&report, "SSH-PERMIT-ROOT-LOGIN");
+        assert_eq!(root.status, CheckStatus::Pass);
+        assert!(
+            root.evidence.contains("sshd -T"),
+            "evidence: {}",
+            root.evidence
+        );
+        // A numeric default resolves to the real effective value, too.
+        assert_eq!(
+            find(&report, "SSH-MAX-AUTH-TRIES").status,
+            CheckStatus::Pass
+        );
+    }
+
+    #[test]
+    fn weak_ssh_algorithms_fail_only_when_explicitly_configured() {
+        let weak = "\
+Ciphers aes256-ctr,aes128-cbc,3des-cbc
+MACs hmac-sha2-256,hmac-md5
+KexAlgorithms curve25519-sha256,diffie-hellman-group14-sha1
+";
+        let mut r = runner(weak, HARDENED_LOGIN_DEFS, GOOD_STAT, GOOD_PASSWD);
+        let report = audit_cis(&mut r);
+        assert_eq!(find(&report, "SSH-CIPHERS").status, CheckStatus::Fail);
+        assert!(find(&report, "SSH-CIPHERS").evidence.contains("cbc"));
+        assert_eq!(find(&report, "SSH-MACS").status, CheckStatus::Fail);
+        assert_eq!(find(&report, "SSH-KEX").status, CheckStatus::Fail);
+
+        // Strong lists pass; absent lists are NOT_CONFIGURED (strong defaults).
+        let strong = "Ciphers aes256-gcm@openssh.com,chacha20-poly1305@openssh.com\n";
+        let mut r2 = runner(strong, HARDENED_LOGIN_DEFS, GOOD_STAT, GOOD_PASSWD);
+        let report2 = audit_cis(&mut r2);
+        assert_eq!(find(&report2, "SSH-CIPHERS").status, CheckStatus::Pass);
+        assert_eq!(
+            find(&report2, "SSH-MACS").status,
+            CheckStatus::NotConfigured
+        );
+    }
+
+    #[test]
+    fn tmp_mount_and_sysctl_checks_from_host_facts() {
+        let mut r = runner(HARDENED_SSHD, HARDENED_LOGIN_DEFS, GOOD_STAT, GOOD_PASSWD);
+        r.insert(
+            ReadCommand::Mounts,
+            CommandOutput::ok(
+                "tmpfs /tmp tmpfs rw,nosuid,nodev,noexec,relatime 0 0\n\
+                 /dev/sda1 / ext4 rw,relatime 0 0\n",
+            ),
+        );
+        r.insert(
+            ReadCommand::Sysctl,
+            CommandOutput::ok(
+                "/proc/sys/net/ipv4/ip_forward:0\n\
+                 /proc/sys/net/ipv4/conf/all/rp_filter:1\n\
+                 /proc/sys/net/ipv4/tcp_syncookies:1\n\
+                 /proc/sys/kernel/randomize_va_space:0\n",
+            ),
+        );
+        let report = audit_cis(&mut r);
+        assert_eq!(find(&report, "FS-TMP-OPTIONS").status, CheckStatus::Pass);
+        assert_eq!(find(&report, "SYSCTL-RP-FILTER").status, CheckStatus::Pass);
+        // ASLR disabled is an explicit, host-backed fail.
+        assert_eq!(find(&report, "SYSCTL-ASLR").status, CheckStatus::Fail);
+        // ip_forward=0 passes; a router (=1) would be MANUAL, never a fail.
+        assert_eq!(find(&report, "SYSCTL-IP-FORWARD").status, CheckStatus::Pass);
+    }
+
+    #[test]
+    fn tmp_without_separate_mount_is_not_configured_not_fail() {
+        let mut r = runner(HARDENED_SSHD, HARDENED_LOGIN_DEFS, GOOD_STAT, GOOD_PASSWD);
+        r.insert(
+            ReadCommand::Mounts,
+            CommandOutput::ok("/dev/sda1 / ext4 rw,relatime 0 0\n"),
+        );
+        let report = audit_cis(&mut r);
+        assert_eq!(
+            find(&report, "FS-TMP-OPTIONS").status,
+            CheckStatus::NotConfigured
+        );
+    }
+
+    #[test]
+    fn per_framework_scores_can_diverge() {
+        // sysctl/mount/apparmor map to CIS and ISO but not PCI, so when those
+        // checks reach definite verdicts the CIS and PCI denominators differ.
+        let mut r = runner(HARDENED_SSHD, HARDENED_LOGIN_DEFS, GOOD_STAT, GOOD_PASSWD);
+        r.insert(
+            ReadCommand::Sysctl,
+            CommandOutput::ok(
+                "/proc/sys/net/ipv4/ip_forward:0\n\
+                 /proc/sys/net/ipv4/conf/all/rp_filter:1\n\
+                 /proc/sys/net/ipv4/tcp_syncookies:1\n\
+                 /proc/sys/kernel/randomize_va_space:2\n\
+                 /proc/sys/net/ipv4/conf/all/accept_redirects:0\n\
+                 /proc/sys/net/ipv4/conf/all/send_redirects:0\n\
+                 /proc/sys/net/ipv4/conf/all/accept_source_route:0\n",
+            ),
+        );
+        let report = audit_cis(&mut r);
+        let score = |f: Framework| {
+            report
+                .summary
+                .compliance
+                .iter()
+                .find(|s| s.framework == f)
+                .unwrap()
+        };
+        let cis = score(Framework::Cis);
+        let pci = score(Framework::PciDss4);
+        // The sysctl checks (CIS+ISO, not PCI) widen the CIS evaluated set
+        // beyond PCI's, so the two frameworks cover different numbers of checks.
+        assert!(
+            cis.evaluated > pci.evaluated,
+            "CIS evaluated {} should exceed PCI {}",
+            cis.evaluated,
+            pci.evaluated
+        );
+        assert!(cis.applicable >= cis.evaluated);
+    }
+
+    #[test]
+    fn percent_rounds_to_nearest() {
+        // 10 of 13 = 76.9%, which must round to 77, not truncate to 76.
+        assert_eq!(Some(77u8), {
+            let evaluated = 13usize;
+            let passed = 10usize;
+            Some(((passed * 200 + evaluated) / (evaluated * 2)) as u8)
+        });
     }
 
     #[test]

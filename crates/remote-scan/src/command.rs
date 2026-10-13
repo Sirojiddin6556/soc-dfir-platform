@@ -27,6 +27,11 @@ pub enum ReadCommand {
     ApkInstalled,
     /// The effective sshd configuration (main file plus any drop-ins).
     SshdConfig,
+    /// `sshd -T` — the *effective* sshd configuration as the daemon itself
+    /// resolves it (every directive, precedence already applied). Read-only;
+    /// usually only available to root, so it is best-effort and the file-based
+    /// [`ReadCommand::SshdConfig`] is the fallback.
+    SshdEffective,
     /// System-wide password-ageing and hashing defaults.
     LoginDefs,
     /// The local account database (names, UIDs, shells — no hashes).
@@ -34,6 +39,20 @@ pub enum ReadCommand {
     /// Mode, owner and group of the sensitive system files, from `stat`
     /// metadata only (never their contents).
     FileModes,
+    /// Currently mounted filesystems and their options (`/proc/mounts`), to
+    /// audit hardening options such as nodev/nosuid/noexec on `/tmp`.
+    Mounts,
+    /// A fixed set of kernel hardening parameters, read straight from
+    /// `/proc/sys` (never via the `sysctl` binary), each as `path:value`.
+    Sysctl,
+    /// The PAM password-quality policy (`pwquality.conf` and its drop-ins).
+    PwQuality,
+    /// The PAM account-lockout policy (`faillock.conf`).
+    Faillock,
+    /// Whether Debian/Ubuntu unattended security upgrades are enabled.
+    AutoUpgrades,
+    /// Whether AppArmor is enabled in the kernel (`/sys`).
+    Apparmor,
 }
 
 impl ReadCommand {
@@ -66,6 +85,16 @@ impl ReadCommand {
                  /etc/ssh/sshd_config.d/*.conf; \
                  do cat \"$f\" 2>/dev/null; done"
                 .to_string(),
+            // `sshd -T` prints the effective configuration the daemon would
+            // actually use (precedence across the main file and every drop-in
+            // already applied). It only validates and dumps config — it starts
+            // no listener and changes nothing — so it is read-only. It usually
+            // needs root (to read host keys); when it cannot run, stdout is
+            // empty and the audit falls back to the file-based config. The
+            // common absolute path is tried first for non-login shells.
+            ReadCommand::SshdEffective => {
+                "/usr/sbin/sshd -T 2>/dev/null || sshd -T 2>/dev/null".to_string()
+            }
             ReadCommand::LoginDefs => "cat /etc/login.defs 2>/dev/null".to_string(),
             // Account names, UIDs, shells and the password *field* (the `x`
             // placeholder) — never a hash; hashes live in shadow, which a
@@ -78,6 +107,31 @@ impl ReadCommand {
                  /etc/passwd /etc/shadow /etc/group /etc/gshadow \
                  /etc/ssh/sshd_config 2>/dev/null"
                 .to_string(),
+            // The live mount table. Only read.
+            ReadCommand::Mounts => "cat /proc/mounts 2>/dev/null".to_string(),
+            // Kernel hardening parameters read directly as files under
+            // /proc/sys — never through the `sysctl` binary — so this stays a
+            // pure read. `grep -H ''` prints each file as `path:value`.
+            ReadCommand::Sysctl => "grep -H '' \
+                 /proc/sys/net/ipv4/ip_forward \
+                 /proc/sys/net/ipv4/conf/all/rp_filter \
+                 /proc/sys/net/ipv4/tcp_syncookies \
+                 /proc/sys/kernel/randomize_va_space \
+                 /proc/sys/net/ipv4/conf/all/accept_redirects \
+                 /proc/sys/net/ipv4/conf/all/send_redirects \
+                 /proc/sys/net/ipv4/conf/all/accept_source_route \
+                 2>/dev/null"
+                .to_string(),
+            ReadCommand::PwQuality => "cat /etc/security/pwquality.conf \
+                 /etc/security/pwquality.conf.d/*.conf 2>/dev/null"
+                .to_string(),
+            ReadCommand::Faillock => "cat /etc/security/faillock.conf 2>/dev/null".to_string(),
+            ReadCommand::AutoUpgrades => {
+                "cat /etc/apt/apt.conf.d/20auto-upgrades 2>/dev/null".to_string()
+            }
+            ReadCommand::Apparmor => {
+                "cat /sys/module/apparmor/parameters/enabled 2>/dev/null".to_string()
+            }
         }
     }
 }
@@ -161,7 +215,7 @@ mod tests {
     use super::*;
 
     /// Every command the scanner can issue, for the read-only guards to sweep.
-    const ALL_COMMANDS: [ReadCommand; 10] = [
+    const ALL_COMMANDS: [ReadCommand; 17] = [
         ReadCommand::OsRelease,
         ReadCommand::KernelRelease,
         ReadCommand::Architecture,
@@ -169,9 +223,16 @@ mod tests {
         ReadCommand::RpmQuery,
         ReadCommand::ApkInstalled,
         ReadCommand::SshdConfig,
+        ReadCommand::SshdEffective,
         ReadCommand::LoginDefs,
         ReadCommand::Passwd,
         ReadCommand::FileModes,
+        ReadCommand::Mounts,
+        ReadCommand::Sysctl,
+        ReadCommand::PwQuality,
+        ReadCommand::Faillock,
+        ReadCommand::AutoUpgrades,
+        ReadCommand::Apparmor,
     ];
 
     #[test]

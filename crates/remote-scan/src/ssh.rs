@@ -233,9 +233,16 @@ async fn collect_over_ssh(
         ReadCommand::RpmQuery,
         ReadCommand::ApkInstalled,
         ReadCommand::SshdConfig,
+        ReadCommand::SshdEffective,
         ReadCommand::LoginDefs,
         ReadCommand::Passwd,
         ReadCommand::FileModes,
+        ReadCommand::Mounts,
+        ReadCommand::Sysctl,
+        ReadCommand::PwQuality,
+        ReadCommand::Faillock,
+        ReadCommand::AutoUpgrades,
+        ReadCommand::Apparmor,
     ] {
         // A per-command failure (e.g. rpm absent on a dpkg host) is not fatal;
         // record an empty output so the pipeline reports it as unavailable.
