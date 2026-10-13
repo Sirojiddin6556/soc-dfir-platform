@@ -93,3 +93,11 @@
 .vuln-cis-na { color: var(--text-secondary); border-color: var(--border-muted); }
 .vuln-cis-fail-row td:first-child { border-left: 2px solid var(--accent-critical); }
 .vuln-remote-ok { font-size: 12px; color: var(--accent-success); border: 1px solid var(--accent-success); border-radius: 6px; padding: 8px 12px; }
+
+/* «Проверка по SSH» space: sub-tab bar and the project-code panel extras. */
+.ssh-subtabs { display: flex; gap: 8px; margin: 14px 0 4px; flex-wrap: wrap; }
+.ssh-subtab { font-size: 13px; }
+.vuln-remote-wide { flex: 1 1 100%; }
+.vuln-remote-wide input[type="text"] { width: 100%; }
+.vuln-remote-warn { color: var(--accent-warning); border: 1px solid var(--accent-warning); border-radius: 6px; padding: 8px 12px; }
+.vuln-remote-report { margin-top: 12px; }

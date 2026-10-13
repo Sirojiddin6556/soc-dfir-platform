@@ -11,12 +11,16 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use std::path::Path;
+
 use async_trait::async_trait;
 use russh::client::{self, Handle, Handler};
 use russh::keys::key::{self, KeyPair};
 use russh::{ChannelMsg, Disconnect};
+use russh_sftp::client::SftpSession;
 
 use crate::command::{CommandOutput, MapRunner, ReadCommand};
+use crate::fetch::{is_binary_path, is_excluded_dir, FetchLimits, FetchSummary};
 use crate::scan::scan_remote;
 use crate::types::{
     Credential, HostKey, HostKeyPolicy, RemoteError, RemoteScanReport, RemoteScanStatus,
@@ -284,6 +288,224 @@ pub async fn scan_over_ssh(
     )
     .await?;
     scan_remote(repo, target, Some(host_key), &mut runner)
+}
+
+/// The outcome of fetching a remote project tree over SFTP into a local
+/// directory, ready for the code analyser to read.
+pub struct FetchResult {
+    pub summary: FetchSummary,
+    pub host_key: HostKey,
+    /// The base path as the server resolved it (a relative path or `~` is
+    /// interpreted against the login home), for the report.
+    pub resolved_path: String,
+}
+
+/// Downloads the project at `remote_path` into the local directory `dest` over
+/// SFTP, confirming the host key first. **Read-only on the target**: it only
+/// lists directories and reads files — never writes, renames or removes
+/// anything on the server. Dependency, build and version-control directories
+/// and binary/media files are skipped, and the [`FetchLimits`] bound the copy
+/// so a huge or hostile tree cannot fill the disk or loop through symlinks.
+pub async fn fetch_project_over_ssh(
+    target: &RemoteTarget,
+    credential: &Credential,
+    expected_fingerprint: &str,
+    remote_path: &str,
+    dest: &Path,
+    limits: FetchLimits,
+    timeouts: SshTimeouts,
+) -> Result<FetchResult, RemoteError> {
+    let (mut handle, host_key) = open_session(
+        target,
+        HostKeyPolicy::Expect(expected_fingerprint.to_string()),
+        timeouts,
+    )
+    .await?;
+    authenticate(&mut handle, target, credential).await?;
+
+    // The SFTP subsystem rides a dedicated channel.
+    let channel = handle
+        .channel_open_session()
+        .await
+        .map_err(|e| RemoteError::Ssh(e.to_string()))?;
+    channel
+        .request_subsystem(true, "sftp")
+        .await
+        .map_err(|e| RemoteError::Sftp(format!("подсистема SFTP недоступна на сервере: {e}")))?;
+    let sftp = SftpSession::new(channel.into_stream())
+        .await
+        .map_err(|e| RemoteError::Sftp(e.to_string()))?;
+    sftp.set_timeout(timeouts.command.as_secs().max(5));
+
+    // Resolve `~`/relative against the login home; fall back to the raw input.
+    let base = sftp
+        .canonicalize(remote_path)
+        .await
+        .unwrap_or_else(|_| remote_path.to_string());
+
+    let summary = download_tree(&sftp, &base, dest, limits).await?;
+    let _ = sftp.close().await;
+    let _ = handle.disconnect(Disconnect::ByApplication, "", "en").await;
+    Ok(FetchResult {
+        summary,
+        host_key,
+        resolved_path: base,
+    })
+}
+
+/// Joins a POSIX base, a `/`-separated relative path and a name into a remote
+/// path. SFTP always speaks POSIX paths on the wire regardless of the engine
+/// host's own separator.
+fn remote_join(base: &str, rel: &str, name: &str) -> String {
+    let base = base.trim_end_matches('/');
+    if rel.is_empty() {
+        format!("{base}/{name}")
+    } else {
+        format!("{base}/{rel}/{name}")
+    }
+}
+
+/// Maps a `/`-separated relative path and a name onto a local path under
+/// `dest`, pushing one component at a time so it is correct on any OS.
+fn local_path(dest: &Path, rel: &str, name: &str) -> std::path::PathBuf {
+    let mut p = dest.to_path_buf();
+    for comp in rel.split('/').filter(|c| !c.is_empty()) {
+        p.push(comp);
+    }
+    p.push(name);
+    p
+}
+
+/// Walks the remote tree breadth-first, applying the exclusions and limits,
+/// and writes each kept file under `dest` preserving its relative path.
+async fn download_tree(
+    sftp: &SftpSession,
+    base: &str,
+    dest: &Path,
+    limits: FetchLimits,
+) -> Result<FetchSummary, RemoteError> {
+    let mut summary = FetchSummary::default();
+    // Confirm the base is a directory we can list before anything else.
+    let root_entries = sftp.read_dir(base.to_string()).await.map_err(|e| {
+        RemoteError::Sftp(format!(
+            "папка {base} недоступна (проверьте путь и права): {e}"
+        ))
+    })?;
+
+    // Queue of (relative dir path, its already-read entries, depth).
+    let mut queue: std::collections::VecDeque<(String, usize)> = std::collections::VecDeque::new();
+    // Process the root's entries, then descend.
+    let mut pending: Vec<(String, Vec<russh_sftp::client::fs::DirEntry>)> =
+        vec![(String::new(), root_entries.collect())];
+
+    'walk: loop {
+        // Drain any directory whose entries are already in hand, then pull the
+        // next queued directory and read it.
+        while let Some((rel, entries)) = pending.pop() {
+            for entry in entries {
+                let name = entry.file_name();
+                if name == "." || name == ".." {
+                    continue;
+                }
+                let child_rel = if rel.is_empty() {
+                    name.clone()
+                } else {
+                    format!("{rel}/{name}")
+                };
+                let ft = entry.file_type();
+                if ft.is_symlink() {
+                    // Never followed: a symlink could escape the tree or loop.
+                    push_capped(&mut summary.skipped_symlinks, child_rel);
+                    continue;
+                }
+                if ft.is_dir() {
+                    if is_excluded_dir(&name) {
+                        push_capped(&mut summary.skipped_dirs, child_rel);
+                    } else {
+                        let depth = child_rel.matches('/').count();
+                        if depth <= limits.max_depth {
+                            queue.push_back((child_rel, depth));
+                        } else {
+                            push_capped(
+                                &mut summary.skipped_dirs,
+                                format!("{child_rel} (слишком глубоко)"),
+                            );
+                        }
+                    }
+                    continue;
+                }
+                if !ft.is_file() {
+                    // Devices, FIFOs and sockets are not source.
+                    continue;
+                }
+                if is_binary_path(&name) {
+                    push_capped(&mut summary.skipped_binary, child_rel);
+                    continue;
+                }
+                let size = entry.metadata().len();
+                if size > limits.max_file_bytes {
+                    push_capped(&mut summary.skipped_large, child_rel);
+                    continue;
+                }
+                if summary.files + 1 > limits.max_files
+                    || summary.bytes + size > limits.max_total_bytes
+                {
+                    summary.truncated = true;
+                    summary.limit_hit = Some(format!(
+                        "Достигнут предел загрузки ({} файлов или {} МБ). Проект скопирован частично.",
+                        limits.max_files,
+                        limits.max_total_bytes / (1024 * 1024)
+                    ));
+                    break 'walk;
+                }
+                let remote = remote_join(base, &rel, &name);
+                let data = match sftp.read(remote).await {
+                    Ok(d) => d,
+                    Err(_) => continue, // unreadable file: skip, never fail the scan
+                };
+                let local = local_path(dest, &rel, &name);
+                if let Some(parent) = local.parent() {
+                    std::fs::create_dir_all(parent).map_err(|e| {
+                        RemoteError::Sftp(format!("не удалось создать временную папку: {e}"))
+                    })?;
+                }
+                std::fs::write(&local, &data).map_err(|e| {
+                    RemoteError::Sftp(format!("не удалось записать временный файл: {e}"))
+                })?;
+                summary.files += 1;
+                summary.bytes += data.len() as u64;
+            }
+        }
+        let Some((rel, _depth)) = queue.pop_front() else {
+            break;
+        };
+        let full = if rel.is_empty() {
+            base.to_string()
+        } else {
+            format!("{}/{rel}", base.trim_end_matches('/'))
+        };
+        match sftp.read_dir(full).await {
+            Ok(rd) => pending.push((rel, rd.collect())),
+            // An unreadable subdirectory is noted, not fatal.
+            Err(_) => push_capped(&mut summary.skipped_dirs, format!("{rel} (нет доступа)")),
+        }
+    }
+
+    if summary.files == 0 && !summary.truncated {
+        return Err(RemoteError::Sftp(format!(
+            "в {base} не найдено файлов исходного кода для анализа"
+        )));
+    }
+    Ok(summary)
+}
+
+/// Appends to a skip list, capped so a pathological tree cannot grow the
+/// report without bound.
+fn push_capped(list: &mut Vec<String>, item: String) {
+    const CAP: usize = 500;
+    if list.len() < CAP {
+        list.push(item);
+    }
 }
 
 /// Produces the "waiting for the operator to confirm the host key" report from

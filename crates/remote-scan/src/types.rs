@@ -156,6 +156,8 @@ pub enum RemoteError {
     Command(String),
     #[error("ошибка SSH: {0}")]
     Ssh(String),
+    #[error("ошибка SFTP: {0}")]
+    Sftp(String),
     #[error("ошибка чтения базы уязвимостей: {0}")]
     Database(#[from] rusqlite::Error),
 }

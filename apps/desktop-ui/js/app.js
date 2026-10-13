@@ -3,6 +3,7 @@ import { SystemSpace } from './system/system.js';
 import { VulnerabilitySpace } from './vulns/vulns.js';
 import { CodeSpace } from './code/code.js';
 import { WebSpace } from './web/web.js';
+import { SshSpace } from './ssh/ssh.js';
 import { ensureSession, clearSessionToken, logout } from './auth.js';
 
 /** The space shown first, and the fallback when none is selected. */
@@ -16,6 +17,7 @@ class SocDfirApplication {
       vulns: new VulnerabilitySpace(this.ipc),
       code: new CodeSpace(this.ipc),
       web: new WebSpace(this.ipc),
+      ssh: new SshSpace(this.ipc),
     };
     this.currentSpace = DEFAULT_SPACE;
   }

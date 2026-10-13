@@ -207,7 +207,8 @@ const load = (rel) => import(pathToFileURL(path.join(jsRoot, rel)).href);
 const { escapeHtml, escapeAttr } = await load('util/html.js');
 const { CodeSpace } = await load('code/code.js');
 const { WebSpace } = await load('web/web.js');
-const { RemoteHostPanel } = await load('vulns/remote.js');
+const { RemoteHostPanel } = await load('ssh/os-panel.js');
+const { ProjectCodePanel } = await load('ssh/code-panel.js');
 
 // ---------------------------------------------------------------------------
 // Harness
@@ -499,6 +500,54 @@ await sink('remote-host form prefilled after DB load (host/user value attrs, not
   const panel = remotePanel();
   panel.lastForm = { host: v, port: 22, username: v, method: 'password' };
   panel.formNotice = `База для ${v} загружена. Введите пароль и запустите проверку снова.`;
+  panel.phase = 'form';
+  panel.renderForm();
+  return panel.root.innerHTML;
+});
+
+console.log('\n=== Project code over SSH ===');
+// The project path is resolved by the remote server, and the fetched source
+// (file names, snippets, package names, advisory text) is attacker-controlled;
+// the findings reuse the shared code report view, so the same escaping holds.
+function codePanel() {
+  const panel = new ProjectCodePanel({ call: async () => ({}) });
+  panel.mount(freshEl());
+  return panel;
+}
+await sink('remote-code report (server path, fetch summary, code findings)', async (v) => {
+  const panel = codePanel();
+  panel.phase = 'done';
+  panel.lastForm = { external: true };
+  panel.status = {
+    target: v,
+    path: v,
+    external_sources: true,
+    finished_at: '2026-01-01T00:00:05Z',
+    report: {
+      files: v, lines: v, languages: [[v, v]], load_ms: v, analysis_ms: v,
+      fetch: { files: 3, bytes: 4096, skipped_dirs: [v], skipped_binary: [v], skipped_large: [v], skipped_symlinks: [v], truncated: true, limit_hit: v },
+      findings: [{
+        rule: v, cwe: v, severity: v, title: v, message: v, file: v, line: v, column: v, snippet: v,
+        source: { file: v, line: v, column: v, note: v }, trace: [{ file: v, line: v, column: v, note: v }],
+        other_sources: []
+      }]
+    }
+  };
+  panel.render();
+  return panel.root.innerHTML;
+});
+await sink('remote-code confirm (host, host-key fingerprint)', async (v) => {
+  const panel = codePanel();
+  panel.phase = 'confirm';
+  panel.pending = { host: v, port: 22, username: v, path: v };
+  panel.hostKey = { algorithm: v, fingerprint: v, sha256: v };
+  panel.render();
+  return panel.root.innerHTML;
+});
+await sink('remote-code form prefilled after DB load (host/user/path value attrs, notice)', async (v) => {
+  const panel = codePanel();
+  panel.lastForm = { host: v, port: 22, username: v, path: v, method: 'password', external: true, includeTests: true };
+  panel.formNotice = `База (${v}) загружена. Введите пароль и запустите проверку снова.`;
   panel.phase = 'form';
   panel.renderForm();
   return panel.root.innerHTML;

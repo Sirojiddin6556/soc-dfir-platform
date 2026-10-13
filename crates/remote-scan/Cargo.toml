@@ -22,12 +22,13 @@ rusqlite.workspace = true
 # The SSH transport is optional so the workspace core always compiles and is
 # testable without a network stack. engine-server turns it on.
 russh = { version = "0.45", optional = true }
+russh-sftp = { version = "2.0", optional = true }
 tokio = { workspace = true, optional = true }
 async-trait = { workspace = true, optional = true }
 
 [features]
 default = []
-ssh = ["dep:russh", "dep:tokio", "dep:async-trait"]
+ssh = ["dep:russh", "dep:russh-sftp", "dep:tokio", "dep:async-trait"]
 
 [dev-dependencies]
 zip.workspace = true

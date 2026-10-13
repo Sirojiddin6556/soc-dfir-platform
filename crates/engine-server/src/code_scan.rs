@@ -149,20 +149,12 @@ impl CodeScanService {
     }
 
     fn run(&self, root: PathBuf, options: code_analysis::Options, generation: u64) {
-        let outcome = code_analysis::analyze_dir_with(&root, options)
-            .map_err(|e| e.to_string())
-            .and_then(|mut report| {
-                let dependencies = std::mem::take(&mut report.dependencies);
-                let imports = std::mem::take(&mut report.imports);
-                let mut base = serde_json::to_value(report).map_err(|e| e.to_string())?;
-                if let Some(map) = base.as_object_mut() {
-                    map.remove("dependencies");
-                    map.remove("imports");
-                }
-                Ok((base, dependencies, imports))
-            });
-        let (base, dependencies, imports) = match outcome {
-            Ok(parts) => parts,
+        let Analyzed {
+            base,
+            dependencies,
+            imports,
+        } = match analyze(&root, options) {
+            Ok(a) => a,
             Err(e) => {
                 tracing::warn!("code analysis of {} failed: {e}", root.display());
                 let mut job = self.job.lock().unwrap_or_else(|p| p.into_inner());
@@ -225,32 +217,15 @@ impl CodeScanService {
         imports: &[ImportedModule],
         include_tests: bool,
     ) -> Value {
-        let (check, mut found) = check_dependencies(
+        compose_report(
             &self.vulndb,
+            self.probe_python_env,
             root,
+            base,
             dependencies,
             imports,
             include_tests,
-            self.probe_python_env,
-        );
-        let mut report = base.clone();
-        if let Some(map) = report.as_object_mut() {
-            let mut findings = match map.remove("findings") {
-                Some(Value::Array(list)) => list,
-                _ => Vec::new(),
-            };
-            findings.append(&mut found);
-            findings.sort_by(|a, b| {
-                severity_rank(&b["severity"])
-                    .cmp(&severity_rank(&a["severity"]))
-                    .then_with(|| a["file"].as_str().cmp(&b["file"].as_str()))
-                    .then_with(|| a["line"].as_u64().cmp(&b["line"].as_u64()))
-                    .then_with(|| a["rule"].as_str().cmp(&b["rule"].as_str()))
-            });
-            map.insert("findings".into(), Value::Array(findings));
-            map.insert("dependency_check".into(), check);
-        }
-        report
+        )
     }
 
     /// The current or last analysis; the report once it finished.
@@ -268,6 +243,81 @@ impl CodeScanService {
             "report": job.report,
         })
     }
+}
+
+/// A project analysed into its base report (without dependency findings) and
+/// the raw dependency/import lists the dependency check consumes. Shared by the
+/// local code scan and the remote (SFTP-fetched) one.
+pub(crate) struct Analyzed {
+    pub base: Value,
+    pub dependencies: Vec<Dependency>,
+    pub imports: Vec<ImportedModule>,
+}
+
+/// Runs `code_analysis` on `root` and splits the dependency/import lists out of
+/// the report, leaving a base report the dependency check folds its findings
+/// into. The analyser produces project-relative file paths, so the result is
+/// identical whether the files sit in a local folder or a temporary SFTP copy.
+pub(crate) fn analyze(root: &Path, options: code_analysis::Options) -> Result<Analyzed, String> {
+    code_analysis::analyze_dir_with(root, options)
+        .map_err(|e| e.to_string())
+        .and_then(|mut report| {
+            let dependencies = std::mem::take(&mut report.dependencies);
+            let imports = std::mem::take(&mut report.imports);
+            let mut base = serde_json::to_value(report).map_err(|e| e.to_string())?;
+            if let Some(map) = base.as_object_mut() {
+                map.remove("dependencies");
+                map.remove("imports");
+            }
+            Ok(Analyzed {
+                base,
+                dependencies,
+                imports,
+            })
+        })
+}
+
+/// Folds the dependency check into the base report: vulnerable packages join
+/// the findings (sorted by severity, then location) and `dependency_check`
+/// records what was checked. `probe_python_env` reads the host's installed
+/// Python versions — left off for a remote project, whose packages must come
+/// only from the fetched source, never from the engine machine's environment.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn compose_report(
+    vulndb: &VulnDbService,
+    probe_python_env: bool,
+    root: &Path,
+    base: &Value,
+    dependencies: &[Dependency],
+    imports: &[ImportedModule],
+    include_tests: bool,
+) -> Value {
+    let (check, mut found) = check_dependencies(
+        vulndb,
+        root,
+        dependencies,
+        imports,
+        include_tests,
+        probe_python_env,
+    );
+    let mut report = base.clone();
+    if let Some(map) = report.as_object_mut() {
+        let mut findings = match map.remove("findings") {
+            Some(Value::Array(list)) => list,
+            _ => Vec::new(),
+        };
+        findings.append(&mut found);
+        findings.sort_by(|a, b| {
+            severity_rank(&b["severity"])
+                .cmp(&severity_rank(&a["severity"]))
+                .then_with(|| a["file"].as_str().cmp(&b["file"].as_str()))
+                .then_with(|| a["line"].as_u64().cmp(&b["line"].as_u64()))
+                .then_with(|| a["rule"].as_str().cmp(&b["rule"].as_str()))
+        });
+        map.insert("findings".into(), Value::Array(findings));
+        map.insert("dependency_check".into(), check);
+    }
+    report
 }
 
 fn severity_rank(v: &Value) -> u8 {

@@ -170,7 +170,7 @@ fn run_blocking(
         .map_err(|e| e.to_string())
 }
 
-fn parse_target(params: &Value) -> Result<RemoteTarget, String> {
+pub(crate) fn parse_target(params: &Value) -> Result<RemoteTarget, String> {
     let host = params
         .get("host")
         .and_then(|v| v.as_str())
@@ -194,7 +194,7 @@ fn parse_target(params: &Value) -> Result<RemoteTarget, String> {
     Ok(RemoteTarget::new(host, port, username))
 }
 
-fn parse_credential(params: &Value) -> Result<Credential, String> {
+pub(crate) fn parse_credential(params: &Value) -> Result<Credential, String> {
     let private_key = params
         .get("private_key")
         .and_then(|v| v.as_str())

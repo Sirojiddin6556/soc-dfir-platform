@@ -24,6 +24,7 @@
 
 pub mod cis;
 pub mod command;
+pub mod fetch;
 pub mod inventory;
 pub mod scan;
 pub mod types;
