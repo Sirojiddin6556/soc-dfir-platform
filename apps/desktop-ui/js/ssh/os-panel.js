@@ -22,6 +22,60 @@ const STATUS_TEXT = {
   VULNERABILITIES_FOUND: '',
 };
 
+// Common target-OS releases whose OSV advisory bases can be pre-downloaded.
+// The ecosystem strings match the OSV naming the engine validates (Ubuntu with
+// a :LTS suffix, Alpine with a v-prefixed release, openSUSE with "Leap X.Y").
+const TARGET_DB_CATALOG = [
+  {
+    group: 'Ubuntu',
+    items: [
+      { label: '24.04 LTS', eco: 'Ubuntu:24.04:LTS' },
+      { label: '22.04 LTS', eco: 'Ubuntu:22.04:LTS' },
+      { label: '20.04 LTS', eco: 'Ubuntu:20.04:LTS' },
+      { label: '18.04 LTS', eco: 'Ubuntu:18.04:LTS' },
+    ],
+  },
+  {
+    group: 'Debian',
+    items: [
+      { label: '13 (trixie)', eco: 'Debian:13' },
+      { label: '12 (bookworm)', eco: 'Debian:12' },
+      { label: '11 (bullseye)', eco: 'Debian:11' },
+      { label: '10 (buster)', eco: 'Debian:10' },
+    ],
+  },
+  {
+    group: 'Alpine',
+    items: [
+      { label: 'v3.20', eco: 'Alpine:v3.20' },
+      { label: 'v3.19', eco: 'Alpine:v3.19' },
+      { label: 'v3.18', eco: 'Alpine:v3.18' },
+      { label: 'v3.17', eco: 'Alpine:v3.17' },
+    ],
+  },
+  {
+    group: 'Rocky Linux',
+    items: [
+      { label: '9', eco: 'Rocky Linux:9' },
+      { label: '8', eco: 'Rocky Linux:8' },
+    ],
+  },
+  {
+    group: 'AlmaLinux',
+    items: [
+      { label: '9', eco: 'AlmaLinux:9' },
+      { label: '8', eco: 'AlmaLinux:8' },
+    ],
+  },
+  {
+    group: 'openSUSE Leap',
+    items: [
+      { label: '15.6', eco: 'openSUSE:Leap 15.6' },
+      { label: '15.5', eco: 'openSUSE:Leap 15.5' },
+    ],
+  },
+];
+
 export class RemoteHostPanel {
   constructor(ipc) {
     this.ipc = ipc;
@@ -36,15 +90,37 @@ export class RemoteHostPanel {
     // after a database download (the password is never kept).
     this.lastForm = null;
     this.formNotice = null;
-    // State while a vuln-DB download for the host's ecosystem runs.
+    // State while a vuln-DB download for one or more ecosystems runs.
     this.dbStatus = null;
-    this.dbEcosystem = null;
+    this.dbEcosystems = [];
     this.dbTimer = null;
+    // The OSV ecosystems already loaded in the local database, so the catalogue
+    // can mark which target-OS bases are present. Refreshed from vulndb.status.
+    this.dbFeeds = [];
   }
 
   mount(root) {
     this.root = root;
     this.renderForm();
+    // Learn which bases are already loaded so the catalogue can show it.
+    this.refreshDbState();
+  }
+
+  // Reads vulndb.status and keeps the OSV ecosystems that are loaded, so the
+  // "target-OS bases" catalogue can show what is already present. Best-effort:
+  // a failure just leaves the catalogue without the loaded marks.
+  async refreshDbState() {
+    let st;
+    try {
+      st = await this.ipc.call('vulndb.status', {});
+    } catch {
+      return;
+    }
+    const feeds = Array.isArray(st?.feeds) ? st.feeds : [];
+    this.dbFeeds = feeds
+      .filter((f) => f && f.kind === 'osv' && typeof f.ecosystem === 'string')
+      .map((f) => ({ ecosystem: f.ecosystem, stale: !!f.stale }));
+    if (this.phase === 'form' && this.root?.isConnected) this.renderForm();
   }
 
   // Reads the form back into a plain object. The credential stays only here.
@@ -180,6 +256,7 @@ export class RemoteHostPanel {
         <h3>🖧 Удалённый хост по SSH</h3>
         <div class="vuln-subtitle">Проверка CVE в пакетах удалённого Linux-сервера с учётными данными. Выполняются только команды чтения, на сервере ничего не меняется. Сканируйте только свои серверы или те, на проверку которых у вас есть разрешение.</div>
       </div>
+      ${this.renderDbCatalog()}
       <div class="vuln-remote-form">
         ${this.formNotice ? `<div class="vuln-remote-ok">${escapeHtml(this.formNotice)}</div>` : ''}
         <div class="vuln-remote-row">
@@ -212,8 +289,65 @@ export class RemoteHostPanel {
     };
     this.root.querySelectorAll('input[name="rhAuth"]').forEach((el) => el.addEventListener('change', toggle));
     this.root.querySelector('#rhScanBtn').addEventListener('click', () => this.discover());
+    this.wireDbCatalog();
     // The notice is shown once; drop it so it does not reappear on the next render.
     this.formNotice = null;
+  }
+
+  // The standalone "pre-download target-OS bases" block: a catalogue of common
+  // releases (marked when already loaded) plus a free-text OSV string, so the
+  // operator can prepare the advisory bases before scanning. On Windows this is
+  // the only way to fetch a Linux server's base (the main update button there
+  // fetches Microsoft bulletins only).
+  renderDbCatalog() {
+    const loaded = new Set(this.dbFeeds.map((f) => f.ecosystem));
+    const groups = TARGET_DB_CATALOG.map((g) => {
+      const items = g.items
+        .map((it) => {
+          const isLoaded = loaded.has(it.eco);
+          const badge = isLoaded
+            ? ' <span class="vuln-badge vuln-cis-pass">загружено</span>'
+            : '';
+          return `<label class="ssh-db-item">
+              <input type="checkbox" class="ssh-db-eco" data-eco="${escapeAttr(it.eco)}">
+              <span>${escapeHtml(it.label)}${badge}</span>
+            </label>`;
+        })
+        .join('');
+      return `<div class="ssh-db-group">
+          <div class="ssh-db-group-name">${escapeHtml(g.group)}</div>
+          ${items}
+        </div>`;
+    }).join('');
+    return `
+      <details class="ssh-db-block">
+        <summary>📥 Базы уязвимостей целевых ОС</summary>
+        <div class="vuln-note">Заранее скачайте базы CVE для систем, которые будете проверять. Отметьте нужные и нажмите «Скачать выбранные». Отмеченные «загружено» уже есть в базе. На Windows это единственный способ получить базы для удалённых Linux-серверов.</div>
+        <div class="ssh-db-grid">${groups}</div>
+        <div class="vuln-remote-row">
+          <label>Другая система (строка OSV) <input id="rhDbCustom" type="text" placeholder="например, Ubuntu:23.10 или Debian:12" autocomplete="off"></label>
+        </div>
+        <div class="vuln-remote-actions">
+          <button id="rhDbDownloadBtn" class="ctf-btn ctf-btn-secondary">Скачать выбранные</button>
+        </div>
+        ${this.dbError ? `<div class="vuln-error">${escapeHtml(this.dbError)}</div>` : ''}
+      </details>`;
+  }
+
+  wireDbCatalog() {
+    this.root.querySelector('#rhDbDownloadBtn')?.addEventListener('click', () => {
+      const checked = [...this.root.querySelectorAll('.ssh-db-eco:checked')].map(
+        (el) => el.dataset.eco,
+      );
+      const custom = (this.root.querySelector('#rhDbCustom')?.value || '').trim();
+      const list = custom ? [...checked, custom] : checked;
+      if (!list.length) {
+        this.dbError = 'Отметьте хотя бы одну систему или укажите строку OSV.';
+        return this.renderForm();
+      }
+      this.dbError = null;
+      this.loadDbForEcosystems(list, 'form');
+    });
   }
 
   // Downloads the OSV advisory base for the host's own ecosystem. On Windows
@@ -222,17 +356,19 @@ export class RemoteHostPanel {
   // its ecosystem string — which `vulndb.update` accepts. No credential is
   // involved; this is a local download, so afterwards we return to the form for
   // the password to be re-entered rather than silently keeping it.
-  async loadDbForEcosystem(ecosystem) {
-    if (!ecosystem) return;
-    this.dbEcosystem = ecosystem;
+  async loadDbForEcosystems(ecosystems, returnTo = 'done') {
+    const list = (Array.isArray(ecosystems) ? ecosystems : [ecosystems]).filter(Boolean);
+    if (!list.length) return;
+    this.dbEcosystems = list;
+    this.dbReturnTo = returnTo;
     this.dbStatus = null;
     this.error = null;
     this.phase = 'dbloading';
     this.render();
     try {
-      await this.ipc.call('vulndb.update', { ecosystems: [ecosystem] });
+      await this.ipc.call('vulndb.update', { ecosystems: list });
     } catch (e) {
-      this.phase = 'done';
+      this.phase = returnTo === 'form' ? 'form' : 'done';
       this.fail(`Не удалось начать загрузку базы: ${e.message}`);
       return;
     }
@@ -252,11 +388,16 @@ export class RemoteHostPanel {
       this.dbStatus = st;
       if (!st?.update?.running) {
         this.stopDbPolling();
-        // Base is ready; go back to the form prefilled (minus the password) so
-        // the operator can run the scan again against the now-loaded base.
+        // Bases are ready. Refresh the loaded-ecosystem marks, then go back to
+        // the form (prefilled, minus the password).
         this.phase = 'form';
         this.report = null;
-        this.formNotice = `База для ${this.dbEcosystem} загружена. Введите пароль и запустите проверку снова.`;
+        const names = this.dbEcosystems.join(', ');
+        this.formNotice =
+          this.dbReturnTo === 'form'
+            ? `Базы загружены: ${names}. Введите пароль и запустите проверку снова.`
+            : `Базы загружены: ${names}.`;
+        this.refreshDbState();
         this.render();
       } else {
         this.render();
@@ -273,10 +414,11 @@ export class RemoteHostPanel {
 
   renderDbLoading() {
     const step = this.dbStatus?.update?.current || 'Подготовка';
+    const names = (this.dbEcosystems || []).join(', ');
     this.root.innerHTML = `
       <div class="vuln-remote-head"><h3>🖧 Загрузка базы уязвимостей</h3></div>
-      <div class="vuln-remote-wait"><span class="vuln-spinner"></span> ${escapeHtml(this.dbEcosystem || '')}: ${escapeHtml(step)}...</div>
-      <div class="vuln-note">Скачиваются бюллетени OSV для дистрибутива сервера, а также CISA KEV и FIRST EPSS. Это разовая операция — потом проверка будет быстрой.</div>
+      <div class="vuln-remote-wait"><span class="vuln-spinner"></span> ${escapeHtml(names)}: ${escapeHtml(step)}...</div>
+      <div class="vuln-note">Скачиваются бюллетени OSV для выбранных дистрибутивов, а также CISA KEV и FIRST EPSS. Это разовая операция — потом проверка будет быстрой.</div>
     `;
   }
 
@@ -354,7 +496,7 @@ export class RemoteHostPanel {
     this.root.querySelector('#rhBackBtn').addEventListener('click', () => this.cancel());
     this.root
       .querySelector('#rhLoadDbBtn')
-      ?.addEventListener('click', () => this.loadDbForEcosystem(r.ecosystem));
+      ?.addEventListener('click', () => this.loadDbForEcosystems([r.ecosystem], 'form'));
   }
 
   // The configuration audit. Each row is one check whose verdict comes only

@@ -101,3 +101,12 @@
 .vuln-remote-wide input[type="text"] { width: 100%; }
 .vuln-remote-warn { color: var(--accent-warning); border: 1px solid var(--accent-warning); border-radius: 6px; padding: 8px 12px; }
 .vuln-remote-report { margin-top: 12px; }
+
+/* Standalone "pre-download target-OS bases" block in the OS-scan panel. */
+.ssh-db-block { margin: 10px 0 14px; border: 1px solid var(--border-muted); border-radius: 6px; padding: 8px 12px; background: var(--bg-canvas); }
+.ssh-db-block > summary { cursor: pointer; font-size: 13px; font-weight: 600; color: var(--text-primary); }
+.ssh-db-grid { display: flex; flex-wrap: wrap; gap: 12px; margin: 10px 0; }
+.ssh-db-group { flex: 1 1 150px; min-width: 150px; }
+.ssh-db-group-name { font-size: 12px; font-weight: 600; color: var(--text-primary); margin-bottom: 4px; }
+.ssh-db-item { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-secondary); padding: 2px 0; }
+.ssh-db-item input { margin: 0; }
