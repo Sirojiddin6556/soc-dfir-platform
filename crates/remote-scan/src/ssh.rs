@@ -228,6 +228,10 @@ async fn collect_over_ssh(
         ReadCommand::DpkgStatus,
         ReadCommand::RpmQuery,
         ReadCommand::ApkInstalled,
+        ReadCommand::SshdConfig,
+        ReadCommand::LoginDefs,
+        ReadCommand::Passwd,
+        ReadCommand::FileModes,
     ] {
         // A per-command failure (e.g. rpm absent on a dpkg host) is not fatal;
         // record an empty output so the pipeline reports it as unavailable.
@@ -296,6 +300,7 @@ pub fn unconfirmed_report(target: &RemoteTarget, host_key: HostKey) -> RemoteSca
         kernel: None,
         architecture: None,
         package_report: None,
+        cis_report: None,
         collection_errors: Vec::new(),
     }
 }

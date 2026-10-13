@@ -438,6 +438,49 @@ await sink('remote-host confirm (host, host-key fingerprint)', async (v) => {
   panel.render();
   return panel.root.innerHTML;
 });
+await sink('remote-host CIS audit (check title, evidence, remediation, refs, framework)', async (v) => {
+  // The evidence is literally a line copied out of the host's config files,
+  // and the titles/remediation/framework labels are rendered alongside it.
+  const panel = remotePanel();
+  panel.phase = 'done';
+  panel.report = {
+    host: v,
+    os: v,
+    collection_errors: [],
+    cis_report: {
+      checks: [
+        {
+          id: v,
+          title: v,
+          status: 'FAIL',
+          severity: 'HIGH',
+          evidence: v,
+          remediation: v,
+          references: [{ framework: v, control: v }],
+        },
+        {
+          id: v,
+          title: v,
+          status: 'MANUAL',
+          severity: 'LOW',
+          evidence: v,
+          remediation: v,
+          references: [{ framework: v, control: v }],
+        },
+      ],
+      summary: {
+        pass: 1,
+        fail: 1,
+        manual: 1,
+        not_configured: 1,
+        needs_privileges: 1,
+        compliance: [{ framework: v, passed: 1, evaluated: 2, undetermined: 0, percent: 50 }],
+      },
+    },
+  };
+  panel.render();
+  return panel.root.innerHTML;
+});
 
 console.log(`\nXSS checks: ${passed} passed, ${failed} failed\n`);
 process.exit(failed > 0 ? 1 : 0);

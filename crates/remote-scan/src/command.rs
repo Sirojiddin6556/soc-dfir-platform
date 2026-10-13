@@ -25,6 +25,15 @@ pub enum ReadCommand {
     RpmQuery,
     /// apk installed-package database.
     ApkInstalled,
+    /// The effective sshd configuration (main file plus any drop-ins).
+    SshdConfig,
+    /// System-wide password-ageing and hashing defaults.
+    LoginDefs,
+    /// The local account database (names, UIDs, shells — no hashes).
+    Passwd,
+    /// Mode, owner and group of the sensitive system files, from `stat`
+    /// metadata only (never their contents).
+    FileModes,
 }
 
 impl ReadCommand {
@@ -49,6 +58,26 @@ impl ReadCommand {
                 platform_linux::software::RPM_QUERY_FORMAT
             ),
             ReadCommand::ApkInstalled => "cat /lib/apk/db/installed 2>/dev/null".to_string(),
+            // The sshd config plus any drop-in files it includes. Every value
+            // seen is collected; when a keyword is set only once we can judge it
+            // safely, and a conflict across files is reported for review rather
+            // than guessed. The loop runs only `cat`, so it stays read-only.
+            ReadCommand::SshdConfig => "for f in /etc/ssh/sshd_config \
+                 /etc/ssh/sshd_config.d/*.conf; \
+                 do cat \"$f\" 2>/dev/null; done"
+                .to_string(),
+            ReadCommand::LoginDefs => "cat /etc/login.defs 2>/dev/null".to_string(),
+            // Account names, UIDs, shells and the password *field* (the `x`
+            // placeholder) — never a hash; hashes live in shadow, which a
+            // read-only unprivileged session cannot and must not read.
+            ReadCommand::Passwd => "cat /etc/passwd 2>/dev/null".to_string(),
+            // Metadata only: name, octal mode, owner and group. `stat` on a file
+            // you cannot open still reports its mode, so this audits shadow's
+            // permissions without reading shadow.
+            ReadCommand::FileModes => "stat -c '%n %a %U %G' \
+                 /etc/passwd /etc/shadow /etc/group /etc/gshadow \
+                 /etc/ssh/sshd_config 2>/dev/null"
+                .to_string(),
         }
     }
 }
@@ -131,18 +160,27 @@ pub(crate) fn observation_to_package(
 mod tests {
     use super::*;
 
+    /// Every command the scanner can issue, for the read-only guards to sweep.
+    const ALL_COMMANDS: [ReadCommand; 10] = [
+        ReadCommand::OsRelease,
+        ReadCommand::KernelRelease,
+        ReadCommand::Architecture,
+        ReadCommand::DpkgStatus,
+        ReadCommand::RpmQuery,
+        ReadCommand::ApkInstalled,
+        ReadCommand::SshdConfig,
+        ReadCommand::LoginDefs,
+        ReadCommand::Passwd,
+        ReadCommand::FileModes,
+    ];
+
     #[test]
-    fn every_command_is_read_only() {
-        // A defence-in-depth check: no command issued by the scanner may
-        // contain a verb that changes the target. If someone adds a mutating
-        // command later, this fails loudly.
-        // Mutating *commands*, matched as command-shaped tokens (not bare
-        // substrings — "/lib/apk/db/installed" is a read path, not an install).
-        let mutating = [
-            "rm ",
-            "rm -",
-            "mv ",
-            "cp ",
+    fn no_command_contains_a_mutating_subcommand() {
+        // Defence in depth: no command may contain a package-manager or
+        // redirection form that changes the target. These are matched as
+        // substrings because they are unambiguous phrases that never occur in a
+        // read path (`rpm -qa`, a query, is deliberately allowed).
+        let mutating_phrases = [
             "apt install",
             "apt-get install",
             "yum install",
@@ -150,37 +188,87 @@ mod tests {
             "apk add",
             "apk del",
             "dpkg -i",
+            "dpkg --install",
             "rpm -i",
             "rpm -U",
             "rpm -e",
             "pip install",
-            "chmod ",
-            "chown ",
             ">>",
             "| tee",
-            "tee ",
-            "systemctl ",
-            "service ",
-            "kill ",
-            "reboot",
-            "shutdown",
-            "useradd",
-            "passwd ",
-            "truncate",
         ];
-        for cmd in [
-            ReadCommand::OsRelease,
-            ReadCommand::KernelRelease,
-            ReadCommand::Architecture,
-            ReadCommand::DpkgStatus,
-            ReadCommand::RpmQuery,
-            ReadCommand::ApkInstalled,
-        ] {
+        for cmd in ALL_COMMANDS {
             let text = cmd.remote_command();
-            for bad in mutating {
+            for bad in mutating_phrases {
                 assert!(
                     !text.contains(bad),
-                    "command {cmd:?} = {text:?} contains mutating token {bad:?}"
+                    "command {cmd:?} = {text:?} contains mutating phrase {bad:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn no_command_invokes_a_mutating_binary() {
+        // A word-level guard for pure-mutator binaries: the read path
+        // `/etc/passwd` must never be mistaken for the `passwd` *command*, so we
+        // split each command into shell words and require that no word *equals*
+        // a mutating binary name. `/etc/passwd` is the word "/etc/passwd", which
+        // is not "passwd".
+        let mutating_binaries = [
+            "rm",
+            "rmdir",
+            "mv",
+            "cp",
+            "dd",
+            "chmod",
+            "chown",
+            "chgrp",
+            "tee",
+            "truncate",
+            "ln",
+            "mkfs",
+            "kill",
+            "pkill",
+            "reboot",
+            "shutdown",
+            "poweroff",
+            "halt",
+            "init",
+            "sed",
+            "useradd",
+            "userdel",
+            "usermod",
+            "groupadd",
+            "groupdel",
+            "gpasswd",
+            "passwd",
+            "chpasswd",
+            "systemctl",
+            "service",
+            "mount",
+            "umount",
+            "iptables",
+            "sysctl",
+        ];
+        for cmd in ALL_COMMANDS {
+            let text = cmd.remote_command();
+            // Treat shell metacharacters as word separators so `a;rm` splits.
+            let normalized: String = text
+                .chars()
+                .map(|c| {
+                    if matches!(c, ';' | '|' | '&' | '(' | ')' | '`') {
+                        ' '
+                    } else {
+                        c
+                    }
+                })
+                .collect();
+            for word in normalized.split_whitespace() {
+                // Strip surrounding quotes so `"rm"` would still be caught.
+                let word = word.trim_matches(|c| c == '"' || c == '\'');
+                assert!(
+                    !mutating_binaries.contains(&word),
+                    "command {cmd:?} = {text:?} invokes mutating binary {word:?}"
                 );
             }
         }

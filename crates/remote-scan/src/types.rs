@@ -124,6 +124,10 @@ pub struct RemoteScanReport {
     pub architecture: Option<String>,
     /// The package CVE result, when the scan got far enough to produce one.
     pub package_report: Option<PackageScanReport>,
+    /// The CIS configuration-audit result. Runs on any Linux host with the
+    /// relevant files, independent of whether the distribution's packages can
+    /// be matched, so it is present even when `package_report` is not.
+    pub cis_report: Option<crate::cis::CisReport>,
     pub collection_errors: Vec<String>,
 }
 

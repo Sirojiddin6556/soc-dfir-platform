@@ -250,10 +250,91 @@ export class RemoteHostPanel {
       ${r.host_key ? `<div class="vuln-note">Ключ хоста: <span class="vuln-mono">${escapeHtml(r.host_key.fingerprint)}</span> (подтверждён)</div>` : ''}
       ${note ? `<div class="vuln-note">${escapeHtml(note)}</div>` : ''}
       ${errors}
-      ${findings.length ? this.renderFindings(findings) : ''}
+      ${findings.length ? `<h4 class="vuln-remote-section">Уязвимости в пакетах</h4>${this.renderFindings(findings)}` : ''}
+      ${r.cis_report ? this.renderCis(r.cis_report) : ''}
       ${back}
     `;
     this.root.querySelector('#rhBackBtn').addEventListener('click', () => this.cancel());
+  }
+
+  // The configuration audit. Each row is one check whose verdict comes only
+  // from a fact read off the host; FAIL/MANUAL are shown first, and the
+  // evidence behind every verdict is printed so nothing is taken on faith.
+  renderCis(cis) {
+    const checks = Array.isArray(cis.checks) ? cis.checks : [];
+    if (!checks.length) return '';
+    const summary = cis.summary || {};
+
+    const STATUS = {
+      FAIL: { label: 'НЕ ПРОЙДЕНО', cls: 'vuln-cis-fail' },
+      PASS: { label: 'ПРОЙДЕНО', cls: 'vuln-cis-pass' },
+      MANUAL: { label: 'ВРУЧНУЮ', cls: 'vuln-cis-manual' },
+      NEEDS_PRIVILEGES: { label: 'НЕТ ДОСТУПА', cls: 'vuln-cis-na' },
+      NOT_CONFIGURED: { label: 'НЕ ЗАДАНО', cls: 'vuln-cis-na' },
+    };
+    const SEV = { HIGH: 'vuln-sev-high', MEDIUM: 'vuln-sev-medium', LOW: 'vuln-sev-low' };
+    // Fails first (by severity), then items needing attention, then the rest.
+    const order = { FAIL: 0, MANUAL: 1, NEEDS_PRIVILEGES: 2, NOT_CONFIGURED: 3, PASS: 4 };
+    const sevOrder = { HIGH: 0, MEDIUM: 1, LOW: 2 };
+    const sorted = [...checks].sort(
+      (a, b) =>
+        (order[a.status] ?? 9) - (order[b.status] ?? 9) ||
+        (sevOrder[a.severity] ?? 9) - (sevOrder[b.severity] ?? 9),
+    );
+
+    const scores = (summary.compliance || [])
+      .map((f) => {
+        const pct = typeof f.percent === 'number' ? `${f.percent}%` : '—';
+        const detail =
+          f.evaluated > 0
+            ? `${f.passed} из ${f.evaluated}`
+            : 'нет проверок с точным результатом';
+        return `<div class="vuln-cis-score">
+            <div class="vuln-cis-score-pct">${escapeHtml(pct)}</div>
+            <div class="vuln-cis-score-name">${escapeHtml(String(f.framework ?? ''))}</div>
+            <div class="vuln-cis-score-detail">${escapeHtml(detail)}</div>
+          </div>`;
+      })
+      .join('');
+
+    const rows = sorted
+      .map((c) => {
+        const st = STATUS[c.status] || { label: String(c.status ?? '—'), cls: 'vuln-cis-na' };
+        const sev = SEV[c.severity] || '';
+        // Remediation is only actionable guidance for things that aren't OK.
+        const showFix = c.status === 'FAIL' || c.status === 'MANUAL';
+        const refs = Array.isArray(c.references)
+          ? c.references.map((r) => escapeHtml(`${r.framework} ${r.control}`)).join(' · ')
+          : '';
+        return `
+          <tr class="vuln-cis-row ${st.cls}-row">
+            <td><span class="vuln-badge ${st.cls}">${escapeHtml(st.label)}</span></td>
+            <td><span class="vuln-badge ${sev}">${escapeHtml(String(c.severity ?? '—'))}</span></td>
+            <td>
+              <div class="vuln-cis-title">${escapeHtml(c.title ?? c.id ?? '')}</div>
+              <div class="vuln-cis-evidence vuln-mono">${escapeHtml(c.evidence ?? '')}</div>
+              ${showFix && c.remediation ? `<div class="vuln-cis-fix">▸ ${escapeHtml(c.remediation)}</div>` : ''}
+              ${refs ? `<div class="vuln-cis-refs">${refs}</div>` : ''}
+            </td>
+          </tr>`;
+      })
+      .join('');
+
+    return `
+      <h4 class="vuln-remote-section">Аудит конфигурации (CIS)</h4>
+      <div class="vuln-note">Каждая проверка оценивается только по реальным данным хоста. «Не задано» и «нет доступа» — это не нарушение: значение по умолчанию не видно без прав или без запуска sshd -T, поэтому такие пункты не считаются провалом.</div>
+      ${scores ? `<div class="vuln-cis-scores">${scores}</div>` : ''}
+      <div class="vuln-cis-counts">
+        Пройдено: ${Number(summary.pass) || 0} ·
+        Не пройдено: ${Number(summary.fail) || 0} ·
+        Вручную: ${Number(summary.manual) || 0} ·
+        Не задано: ${Number(summary.not_configured) || 0} ·
+        Нет доступа: ${Number(summary.needs_privileges) || 0}
+      </div>
+      <table class="vuln-table vuln-cis-table">
+        <thead><tr><th>Статус</th><th>Уровень</th><th>Проверка</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>`;
   }
 
   renderFindings(findings) {

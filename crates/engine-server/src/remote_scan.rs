@@ -251,6 +251,10 @@ fn report_to_json(r: &RemoteScanReport) -> Value {
             .package_report
             .as_ref()
             .and_then(|p| serde_json::to_value(p).ok()),
+        "cis_report": r
+            .cis_report
+            .as_ref()
+            .and_then(|c| serde_json::to_value(c).ok()),
         "collection_errors": r.collection_errors,
     })
 }

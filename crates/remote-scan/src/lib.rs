@@ -22,6 +22,7 @@
 //! which tests drive with captured command output. This keeps the whole
 //! matching path unit-testable with no network.
 
+pub mod cis;
 pub mod command;
 pub mod inventory;
 pub mod scan;

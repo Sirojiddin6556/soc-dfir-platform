@@ -73,3 +73,22 @@
 .vuln-remote-fp { font-size: 13px; color: var(--text-primary); background: var(--bg-canvas); border: 1px solid var(--border-muted); border-radius: 6px; padding: 10px 12px; display: flex; flex-direction: column; gap: 4px; }
 .vuln-remote-wait { font-size: 13px; color: var(--accent-info); display: flex; align-items: center; gap: 8px; margin-top: 12px; }
 .vuln-remote-hostline { font-size: 13px; color: var(--text-primary); margin: 8px 0; }
+.vuln-remote-section { font-size: 13px; font-weight: 700; color: var(--text-primary); margin: 18px 0 6px; }
+
+/* CIS configuration-audit result. */
+.vuln-cis-scores { display: flex; flex-wrap: wrap; gap: 10px; margin: 10px 0; }
+.vuln-cis-score { flex: 1 1 120px; min-width: 120px; background: var(--bg-canvas); border: 1px solid var(--border-muted); border-radius: 6px; padding: 10px 12px; }
+.vuln-cis-score-pct { font-size: 20px; font-weight: 700; color: var(--text-primary); font-family: var(--font-mono, monospace); }
+.vuln-cis-score-name { font-size: 12px; color: var(--text-primary); margin-top: 2px; }
+.vuln-cis-score-detail { font-size: 11px; color: var(--text-secondary); margin-top: 2px; }
+.vuln-cis-counts { font-size: 12px; color: var(--text-secondary); margin: 6px 0 10px; }
+.vuln-cis-table td { vertical-align: top; }
+.vuln-cis-title { font-size: 13px; color: var(--text-primary); }
+.vuln-cis-evidence { font-size: 11px; color: var(--text-secondary); margin-top: 3px; word-break: break-word; }
+.vuln-cis-fix { font-size: 11px; color: var(--accent-info); margin-top: 3px; }
+.vuln-cis-refs { font-size: 10px; color: var(--text-muted, var(--text-secondary)); margin-top: 3px; }
+.vuln-cis-fail { color: #1a1205; background: var(--accent-critical); border-color: var(--accent-critical); }
+.vuln-cis-pass { color: var(--accent-success); border-color: var(--accent-success); }
+.vuln-cis-manual { color: var(--accent-warning); border-color: var(--accent-warning); }
+.vuln-cis-na { color: var(--text-secondary); border-color: var(--border-muted); }
+.vuln-cis-fail-row td:first-child { border-left: 2px solid var(--accent-critical); }

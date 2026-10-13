@@ -6,6 +6,7 @@
 use vulnerability_engine::package_scan::{self, is_supported_ecosystem};
 use vulnerability_engine::VulnDbRepository;
 
+use crate::cis::audit_cis;
 use crate::command::CommandRunner;
 use crate::inventory::collect_inventory;
 use crate::types::{HostKey, RemoteError, RemoteScanReport, RemoteScanStatus, RemoteTarget};
@@ -20,6 +21,12 @@ pub fn scan_remote(
 ) -> Result<RemoteScanReport, RemoteError> {
     let inv = collect_inventory(runner)?;
 
+    // The CIS configuration audit is distribution-independent: it reads generic
+    // Linux config files and judges each setting only from what it actually
+    // read. It runs even when the packages cannot be matched, so the operator
+    // still gets a hardening picture of an "unsupported" distribution.
+    let cis_report = Some(audit_cis(runner));
+
     let mut report = RemoteScanReport {
         host: target.host.clone(),
         port: target.port,
@@ -31,6 +38,7 @@ pub fn scan_remote(
         kernel: inv.kernel.clone(),
         architecture: inv.architecture.clone(),
         package_report: None,
+        cis_report,
         collection_errors: inv.collection_errors.clone(),
     };
 
