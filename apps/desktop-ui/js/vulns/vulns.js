@@ -1,4 +1,5 @@
 import { escapeAttr, escapeHtml } from '../util/html.js';
+import { RemoteHostPanel } from './remote.js';
 
 const SEVERITY_LABELS = {
   critical: 'КРИТИЧЕСКИЙ',
@@ -65,10 +66,14 @@ export class VulnerabilitySpace {
         </div>
         <div id="vulnDbPanel" class="vuln-panel"></div>
         <div id="vulnResultPanel" class="vuln-panel"></div>
+        <div id="vulnRemotePanel" class="vuln-panel vuln-remote-panel"></div>
       </div>
     `;
     container.querySelector('#vulnUpdateBtn').addEventListener('click', () => this.startUpdate());
     container.querySelector('#vulnScanBtn').addEventListener('click', () => this.runScan());
+
+    this.remote = new RemoteHostPanel(this.ipc);
+    this.remote.mount(container.querySelector('#vulnRemotePanel'));
 
     await this.refreshStatus();
     if (this.status?.update?.running) {

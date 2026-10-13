@@ -890,6 +890,7 @@ dependencies = [
  "ipc-protocol",
  "platform-linux",
  "platform-windows",
+ "remote-scan",
  "rusqlite",
  "serde",
  "serde_json",

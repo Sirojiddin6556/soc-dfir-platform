@@ -207,6 +207,7 @@ const load = (rel) => import(pathToFileURL(path.join(jsRoot, rel)).href);
 const { escapeHtml, escapeAttr } = await load('util/html.js');
 const { CodeSpace } = await load('code/code.js');
 const { WebSpace } = await load('web/web.js');
+const { RemoteHostPanel } = await load('vulns/remote.js');
 
 // ---------------------------------------------------------------------------
 // Harness
@@ -390,6 +391,52 @@ await sink('running-site progress (running target, engine error)', async (v) => 
   space.status = webStatus(v, { error: v, report: null });
   space.renderProgress();
   return `${running}\n${root.querySelector('#webProgress').innerHTML}`;
+});
+
+console.log('\n=== Remote host (SSH) ===');
+// The OS name, kernel, ecosystem, host-key fingerprint, collection errors and
+// every package finding come from the remote host being scanned, which is
+// untrusted input.
+function remotePanel() {
+  const panel = new RemoteHostPanel({ call: async () => ({}) });
+  panel.mount(freshEl());
+  return panel;
+}
+await sink('remote-host report (os, kernel, findings, host key)', async (v) => {
+  const panel = remotePanel();
+  panel.phase = 'done';
+  panel.report = {
+    host: v,
+    os: v,
+    kernel: v,
+    ecosystem: v,
+    host_key: { algorithm: v, fingerprint: v, sha256: v },
+    collection_errors: [v],
+    package_report: {
+      findings: [
+        {
+          id: v,
+          component: v,
+          installed_version: v,
+          fixed_version: v,
+          status: 'fix_available',
+          severity: v,
+          url: v,
+          kev: { name: v },
+        },
+      ],
+    },
+  };
+  panel.render();
+  return panel.root.innerHTML;
+});
+await sink('remote-host confirm (host, host-key fingerprint)', async (v) => {
+  const panel = remotePanel();
+  panel.phase = 'confirm';
+  panel.pending = { host: v, port: 22, username: v };
+  panel.hostKey = { algorithm: v, fingerprint: v, sha256: v };
+  panel.render();
+  return panel.root.innerHTML;
 });
 
 console.log(`\nXSS checks: ${passed} passed, ${failed} failed\n`);

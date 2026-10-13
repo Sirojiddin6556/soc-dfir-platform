@@ -309,6 +309,12 @@ impl VulnDbService {
         self.dir.join("vuln.db")
     }
 
+    /// Opens the advisory database for a scan that runs outside this service
+    /// (the remote-host scanner matches with the same repo).
+    pub fn open_repo(&self) -> Result<VulnDbRepository, String> {
+        self.repo()
+    }
+
     fn repo(&self) -> Result<VulnDbRepository, String> {
         let mut guard = self.repo.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(repo) = guard.as_ref() {

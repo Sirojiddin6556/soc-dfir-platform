@@ -54,3 +54,22 @@
 .vuln-step.ok { color: var(--accent-success); }
 .vuln-step.fail { color: var(--accent-critical); }
 #vulnMoreBtn { margin-top: 10px; }
+
+/* Remote-host (SSH) scan panel. */
+.vuln-remote-panel { border-style: dashed; }
+.vuln-remote-head h3 { font-size: 14px; font-weight: 700; color: var(--text-primary); margin: 0 0 4px; }
+.vuln-remote-form { margin-top: 12px; display: flex; flex-direction: column; gap: 10px; }
+.vuln-remote-row { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; }
+.vuln-remote-row label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text-secondary); }
+.vuln-remote-row input[type="text"], .vuln-remote-row input[type="password"], .vuln-remote-row input[type="number"], .vuln-remote-row textarea {
+  background: var(--bg-canvas); border: 1px solid var(--border-muted); border-radius: 4px;
+  padding: 6px 10px; color: var(--text-primary); font-size: 13px; min-width: 200px;
+}
+.vuln-remote-row input[type="number"] { min-width: 80px; width: 90px; }
+.vuln-remote-row textarea { min-width: 420px; font-family: var(--font-mono, monospace); resize: vertical; }
+.vuln-remote-row label:has(input[type="radio"]) { flex-direction: row; align-items: center; gap: 6px; }
+.vuln-remote-actions { display: flex; gap: 8px; margin-top: 4px; }
+.vuln-remote-confirm { margin-top: 12px; display: flex; flex-direction: column; gap: 10px; }
+.vuln-remote-fp { font-size: 13px; color: var(--text-primary); background: var(--bg-canvas); border: 1px solid var(--border-muted); border-radius: 6px; padding: 10px 12px; display: flex; flex-direction: column; gap: 4px; }
+.vuln-remote-wait { font-size: 13px; color: var(--accent-info); display: flex; align-items: center; gap: 8px; margin-top: 12px; }
+.vuln-remote-hostline { font-size: 13px; color: var(--text-primary); margin: 8px 0; }
