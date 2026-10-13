@@ -317,6 +317,7 @@ export class VulnerabilitySpace {
       </div>
       ${chips}
       ${meta}
+      ${findings.length ? this.renderMissingUpdates() : ''}
       ${findings.length ? `
         <div class="vuln-toolbar">
           ${filterBtn('fix', 'Есть исправление', fixCount)}
@@ -361,6 +362,55 @@ export class VulnerabilitySpace {
       const detail = tr.nextElementSibling;
       if (detail?.classList.contains('vuln-detail')) detail.hidden = !detail.hidden;
     }));
+  }
+
+  // Windows only: the CVE findings grouped by the KB update that fixes them,
+  // so the result reads as "install these updates" rather than a flat CVE list.
+  // Every row is derived purely from the findings already shown — a CVE counts
+  // toward a KB only when that KB is listed as its fix, so nothing is invented.
+  renderMissingUpdates() {
+    const scan = this.scan;
+    if (!scan?.windows) return '';
+    const findings = scan.findings || [];
+    const rank = { critical: 4, high: 3, medium: 2, low: 1, unknown: 0 };
+    const map = new Map(); // kb label -> { kb, cves:Set, sev, kev, exploited }
+    for (const f of findings) {
+      // Only findings with an available fix map to an installable update.
+      if (f.status !== 'fix_available') continue;
+      for (const src of f.sources || []) {
+        let e = map.get(src);
+        if (!e) {
+          e = { kb: src, cves: new Set(), sev: 'unknown', kev: false, exploited: false };
+          map.set(src, e);
+        }
+        e.cves.add(f.id);
+        if ((rank[f.severity] ?? 0) > (rank[e.sev] ?? 0)) e.sev = f.severity || 'unknown';
+        if (f.kev) e.kev = true;
+        if (f.exploited) e.exploited = true;
+      }
+    }
+    if (!map.size) return '';
+    const updates = [...map.values()].sort(
+      (a, b) => (rank[b.sev] ?? 0) - (rank[a.sev] ?? 0) || b.cves.size - a.cves.size,
+    );
+    const rows = updates
+      .map(
+        (u) => `
+        <tr>
+          <td class="vuln-mono">${escapeHtml(u.kb)}</td>
+          <td class="vuln-num">${u.cves.size}</td>
+          <td><span class="vuln-badge vuln-sev-${escapeAttr(u.sev)}">${escapeHtml(SEVERITY_LABELS[u.sev] || u.sev)}</span></td>
+          <td>${u.kev ? '<span class="vuln-badge vuln-kev">KEV</span>' : ''}${u.exploited ? ' <span class="vuln-badge vuln-exploited">АТАКУЕТСЯ</span>' : ''}</td>
+        </tr>`,
+      )
+      .join('');
+    return `
+      <div class="vuln-panel-title vuln-missing-title">НЕДОСТАЮЩИЕ ОБНОВЛЕНИЯ WINDOWS</div>
+      <div class="vuln-note">Установите эти обновления, чтобы закрыть известные уязвимости сборки. Один KB может закрывать несколько CVE; уязвимости без исправления показаны в таблице ниже отдельно.</div>
+      <table class="vuln-table vuln-missing-table">
+        <thead><tr><th>Обновление (KB)</th><th class="vuln-num">CVE</th><th>Макс. важность</th><th>Атаки</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>`;
   }
 
   findingRow(f) {

@@ -110,3 +110,7 @@
 .ssh-db-group-name { font-size: 12px; font-weight: 600; color: var(--text-primary); margin-bottom: 4px; }
 .ssh-db-item { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-secondary); padding: 2px 0; }
 .ssh-db-item input { margin: 0; }
+
+/* Windows "missing updates (KB)" rollup in the vulnerability results. */
+.vuln-missing-title { margin-top: 16px; }
+.vuln-missing-table { margin-top: 6px; }
