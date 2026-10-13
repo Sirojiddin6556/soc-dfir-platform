@@ -92,3 +92,4 @@
 .vuln-cis-manual { color: var(--accent-warning); border-color: var(--accent-warning); }
 .vuln-cis-na { color: var(--text-secondary); border-color: var(--border-muted); }
 .vuln-cis-fail-row td:first-child { border-left: 2px solid var(--accent-critical); }
+.vuln-remote-ok { font-size: 12px; color: var(--accent-success); border: 1px solid var(--accent-success); border-radius: 6px; padding: 8px 12px; }

@@ -482,5 +482,27 @@ await sink('remote-host CIS audit (check title, evidence, remediation, refs, fra
   return panel.root.innerHTML;
 });
 
+await sink('remote-host VULNDB_EMPTY (ecosystem in download button + hostline)', async (v) => {
+  const panel = remotePanel();
+  panel.phase = 'done';
+  panel.report = {
+    host: v,
+    os: v,
+    ecosystem: v,
+    status: 'VULNDB_EMPTY',
+    collection_errors: [],
+  };
+  panel.render();
+  return panel.root.innerHTML;
+});
+await sink('remote-host form prefilled after DB load (host/user value attrs, notice)', async (v) => {
+  const panel = remotePanel();
+  panel.lastForm = { host: v, port: 22, username: v, method: 'password' };
+  panel.formNotice = `База для ${v} загружена. Введите пароль и запустите проверку снова.`;
+  panel.phase = 'form';
+  panel.renderForm();
+  return panel.root.innerHTML;
+});
+
 console.log(`\nXSS checks: ${passed} passed, ${failed} failed\n`);
 process.exit(failed > 0 ? 1 : 0);

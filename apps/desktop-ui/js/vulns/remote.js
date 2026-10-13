@@ -26,12 +26,20 @@ export class RemoteHostPanel {
   constructor(ipc) {
     this.ipc = ipc;
     this.root = null;
-    this.phase = 'form'; // 'form' | 'confirm' | 'scanning' | 'done'
+    this.phase = 'form'; // 'form' | 'confirm' | 'scanning' | 'dbloading' | 'done'
     this.error = null;
     this.pending = null; // host/port/username/credential awaiting key confirmation
     this.hostKey = null;
     this.report = null;
     this.pollTimer = null;
+    // Non-secret connection fields, kept so the form can be re-shown prefilled
+    // after a database download (the password is never kept).
+    this.lastForm = null;
+    this.formNotice = null;
+    // State while a vuln-DB download for the host's ecosystem runs.
+    this.dbStatus = null;
+    this.dbEcosystem = null;
+    this.dbTimer = null;
   }
 
   mount(root) {
@@ -80,8 +88,13 @@ export class RemoteHostPanel {
   }
 
   cancel() {
+    this.stopPolling();
+    this.stopDbPolling();
     this.pending = null;
     this.hostKey = null;
+    this.report = null;
+    this.lastForm = null;
+    this.formNotice = null;
     this.phase = 'form';
     this.renderForm();
   }
@@ -89,6 +102,9 @@ export class RemoteHostPanel {
   async confirmAndScan() {
     if (!this.pending || !this.hostKey) return;
     const p = this.pending;
+    // Remember the non-secret fields so we can re-show the form prefilled if we
+    // need to download a vuln DB and run again. The credential is NOT kept.
+    this.lastForm = { host: p.host, port: p.port, username: p.username, method: p.method };
     this.phase = 'scanning';
     this.error = null;
     this.render();
@@ -148,30 +164,37 @@ export class RemoteHostPanel {
     if (!this.root) return;
     if (this.phase === 'confirm') return this.renderConfirm();
     if (this.phase === 'scanning') return this.renderScanning();
+    if (this.phase === 'dbloading') return this.renderDbLoading();
     if (this.phase === 'done') return this.renderDone();
     return this.renderForm();
   }
 
   renderForm() {
+    const pf = this.lastForm || {};
+    const host = pf.host || '';
+    const port = pf.port || 22;
+    const user = pf.username || '';
+    const isKey = pf.method === 'key';
     this.root.innerHTML = `
       <div class="vuln-remote-head">
         <h3>🖧 Удалённый хост по SSH</h3>
         <div class="vuln-subtitle">Проверка CVE в пакетах удалённого Linux-сервера с учётными данными. Выполняются только команды чтения, на сервере ничего не меняется. Сканируйте только свои серверы или те, на проверку которых у вас есть разрешение.</div>
       </div>
       <div class="vuln-remote-form">
+        ${this.formNotice ? `<div class="vuln-remote-ok">${escapeHtml(this.formNotice)}</div>` : ''}
         <div class="vuln-remote-row">
-          <label>Адрес <input id="rhHost" type="text" placeholder="192.0.2.10 или server.example" autocomplete="off"></label>
-          <label>Порт <input id="rhPort" type="number" value="22" min="1" max="65535"></label>
-          <label>Логин <input id="rhUser" type="text" placeholder="root или ubuntu" autocomplete="off"></label>
+          <label>Адрес <input id="rhHost" type="text" value="${escapeAttr(host)}" placeholder="192.0.2.10 или server.example" autocomplete="off"></label>
+          <label>Порт <input id="rhPort" type="number" value="${escapeAttr(String(port))}" min="1" max="65535"></label>
+          <label>Логин <input id="rhUser" type="text" value="${escapeAttr(user)}" placeholder="root или ubuntu" autocomplete="off"></label>
         </div>
         <div class="vuln-remote-row">
-          <label><input type="radio" name="rhAuth" value="password" checked> Пароль</label>
-          <label><input type="radio" name="rhAuth" value="key"> Приватный ключ</label>
+          <label><input type="radio" name="rhAuth" value="password" ${isKey ? '' : 'checked'}> Пароль</label>
+          <label><input type="radio" name="rhAuth" value="key" ${isKey ? 'checked' : ''}> Приватный ключ</label>
         </div>
-        <div class="vuln-remote-row" data-auth="password">
+        <div class="vuln-remote-row" data-auth="password" ${isKey ? 'hidden' : ''}>
           <label>Пароль <input id="rhPassword" type="password" autocomplete="off"></label>
         </div>
-        <div class="vuln-remote-row" data-auth="key" hidden>
+        <div class="vuln-remote-row" data-auth="key" ${isKey ? '' : 'hidden'}>
           <label>Приватный ключ (OpenSSH/PEM)<textarea id="rhKey" rows="4" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----" autocomplete="off"></textarea></label>
           <label>Пароль ключа (если есть) <input id="rhPass" type="password" autocomplete="off"></label>
         </div>
@@ -189,6 +212,72 @@ export class RemoteHostPanel {
     };
     this.root.querySelectorAll('input[name="rhAuth"]').forEach((el) => el.addEventListener('change', toggle));
     this.root.querySelector('#rhScanBtn').addEventListener('click', () => this.discover());
+    // The notice is shown once; drop it so it does not reappear on the next render.
+    this.formNotice = null;
+  }
+
+  // Downloads the OSV advisory base for the host's own ecosystem. On Windows
+  // the main «Обновить базу» button only fetches Microsoft bulletins for the
+  // local PC, so a remote Linux host's base has to be requested explicitly by
+  // its ecosystem string — which `vulndb.update` accepts. No credential is
+  // involved; this is a local download, so afterwards we return to the form for
+  // the password to be re-entered rather than silently keeping it.
+  async loadDbForEcosystem(ecosystem) {
+    if (!ecosystem) return;
+    this.dbEcosystem = ecosystem;
+    this.dbStatus = null;
+    this.error = null;
+    this.phase = 'dbloading';
+    this.render();
+    try {
+      await this.ipc.call('vulndb.update', { ecosystems: [ecosystem] });
+    } catch (e) {
+      this.phase = 'done';
+      this.fail(`Не удалось начать загрузку базы: ${e.message}`);
+      return;
+    }
+    this.pollDb();
+  }
+
+  pollDb() {
+    this.stopDbPolling();
+    this.dbTimer = setInterval(async () => {
+      if (!this.root?.isConnected) return this.stopDbPolling();
+      let st;
+      try {
+        st = await this.ipc.call('vulndb.status', {});
+      } catch {
+        return;
+      }
+      this.dbStatus = st;
+      if (!st?.update?.running) {
+        this.stopDbPolling();
+        // Base is ready; go back to the form prefilled (minus the password) so
+        // the operator can run the scan again against the now-loaded base.
+        this.phase = 'form';
+        this.report = null;
+        this.formNotice = `База для ${this.dbEcosystem} загружена. Введите пароль и запустите проверку снова.`;
+        this.render();
+      } else {
+        this.render();
+      }
+    }, 1000);
+  }
+
+  stopDbPolling() {
+    if (this.dbTimer) {
+      clearInterval(this.dbTimer);
+      this.dbTimer = null;
+    }
+  }
+
+  renderDbLoading() {
+    const step = this.dbStatus?.update?.current || 'Подготовка';
+    this.root.innerHTML = `
+      <div class="vuln-remote-head"><h3>🖧 Загрузка базы уязвимостей</h3></div>
+      <div class="vuln-remote-wait"><span class="vuln-spinner"></span> ${escapeHtml(this.dbEcosystem || '')}: ${escapeHtml(step)}...</div>
+      <div class="vuln-note">Скачиваются бюллетени OSV для дистрибутива сервера, а также CISA KEV и FIRST EPSS. Это разовая операция — потом проверка будет быстрой.</div>
+    `;
   }
 
   renderConfirm() {
@@ -240,6 +329,13 @@ export class RemoteHostPanel {
     const errors = (r.collection_errors || [])
       .map((e) => `<div class="vuln-note">${escapeHtml(e)}</div>`)
       .join('');
+    // When the base for this host's distribution is not loaded, offer to
+    // download exactly that ecosystem's advisories — the only way to get them on
+    // Windows, where the main update button fetches Microsoft bulletins only.
+    const canLoadDb = r.status === 'VULNDB_EMPTY' && typeof r.ecosystem === 'string' && r.ecosystem;
+    const dbAction = canLoadDb
+      ? `<div class="vuln-remote-actions"><button id="rhLoadDbBtn" class="primary-action">⟳ Скачать базу для ${escapeHtml(r.ecosystem)}</button></div>`
+      : '';
     this.root.innerHTML = `
       <div class="vuln-remote-head"><h3>🖧 ${escapeHtml(r.host)}</h3></div>
       <div class="vuln-remote-hostline">
@@ -249,12 +345,16 @@ export class RemoteHostPanel {
       </div>
       ${r.host_key ? `<div class="vuln-note">Ключ хоста: <span class="vuln-mono">${escapeHtml(r.host_key.fingerprint)}</span> (подтверждён)</div>` : ''}
       ${note ? `<div class="vuln-note">${escapeHtml(note)}</div>` : ''}
+      ${dbAction}
       ${errors}
       ${findings.length ? `<h4 class="vuln-remote-section">Уязвимости в пакетах</h4>${this.renderFindings(findings)}` : ''}
       ${r.cis_report ? this.renderCis(r.cis_report) : ''}
       ${back}
     `;
     this.root.querySelector('#rhBackBtn').addEventListener('click', () => this.cancel());
+    this.root
+      .querySelector('#rhLoadDbBtn')
+      ?.addEventListener('click', () => this.loadDbForEcosystem(r.ecosystem));
   }
 
   // The configuration audit. Each row is one check whose verdict comes only
