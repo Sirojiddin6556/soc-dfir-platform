@@ -4,6 +4,7 @@ import { VulnerabilitySpace } from './vulns/vulns.js';
 import { CodeSpace } from './code/code.js';
 import { WebSpace } from './web/web.js';
 import { SshSpace } from './ssh/ssh.js';
+import { UnifiedReportSpace } from './report/unified.js';
 import { ensureSession, clearSessionToken, logout } from './auth.js';
 
 /** The space shown first, and the fallback when none is selected. */
@@ -18,6 +19,7 @@ class SocDfirApplication {
       code: new CodeSpace(this.ipc),
       web: new WebSpace(this.ipc),
       ssh: new SshSpace(this.ipc),
+      report: new UnifiedReportSpace(this.ipc),
     };
     this.currentSpace = DEFAULT_SPACE;
   }

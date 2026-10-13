@@ -16,7 +16,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const mod = await import(
   pathToFileURL(path.join(__dirname, '..', 'js', 'report', 'report.js')).href
 );
-const { buildReportHtml, reportFilename } = mod;
+const { buildReportHtml, buildUnifiedReportHtml, reportFilename } = mod;
 
 let failures = 0;
 const check = (cond, msg) => {
@@ -86,6 +86,34 @@ check(emptyHtml.startsWith('<!doctype html>'), 'empty report is a full document'
 
 // 6. Filenames are timestamped and safe.
 check(/^otchet-web-\d{4}-\d{2}-\d{2}\.html$/.test(reportFilename('web')), 'filename shape');
+
+// 7. The unified report combines sections and escapes every value too. Its
+// findings also carry scanned payloads, so the same no-execution rule holds.
+const unified = buildUnifiedReportHtml(
+  { title: 'Единый отчёт', generatedAt: '2026-10-13', confirmedOnly: false },
+  [
+    { title: 'Запущенный сайт', target: `http://site/${PAYLOAD}`, findings: [findings[0]] },
+    { title: 'Анализ кода', target: '/srv/app', findings: [findings[1]] },
+    {
+      title: 'Удалённый хост (ОС) по SSH',
+      target: 'Ubuntu 22.04',
+      findings: [{ severity: 'high', title: 'CVE-2024-0001', rule: 'openssl', message: 'overflow', evidence: 'Установлено: 1.1.1', advisories: [{ id: 'USN-1' }] }],
+    },
+  ]
+);
+for (const bad of ['<svg', '<img', '<script', '<iframe']) {
+  check(!unified.includes(bad), `unified report must not contain raw "${bad}"`);
+}
+check(unified.includes('&lt;svg/onload=alert(1)&gt;'), 'unified payload shown escaped');
+check(unified.includes('Запущенный сайт'), 'unified section title present');
+check(unified.includes('Удалённый хост (ОС) по SSH'), 'unified remote section present');
+check(unified.includes('CVE-2024-0001'), 'unified package finding present');
+check(/Критический<\/span><\/td><td class="num">1/.test(unified), 'unified counts one critical across sections');
+check(unified.includes('Находок: 3'), 'unified total across sections');
+
+const emptyUnified = buildUnifiedReportHtml({ title: 'Пусто' }, []);
+check(emptyUnified.includes('Находок нет.'), 'empty unified report says so');
+check(emptyUnified.startsWith('<!doctype html>'), 'empty unified report is a full document');
 
 if (failures) {
   console.error(`\ntest-report: ${failures} check(s) failed`);

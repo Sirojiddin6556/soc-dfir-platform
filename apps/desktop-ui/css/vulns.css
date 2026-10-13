@@ -114,3 +114,7 @@
 /* Windows "missing updates (KB)" rollup in the vulnerability results. */
 .vuln-missing-title { margin-top: 16px; }
 .vuln-missing-table { margin-top: 6px; }
+
+/* «Единый отчёт» space. */
+.ur-toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text-primary); margin: 8px 0; cursor: pointer; }
+.ur-sev-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 12px; }
