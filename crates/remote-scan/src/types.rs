@@ -2,6 +2,8 @@
 //! handling, the collected inventory and the final report.
 
 use serde::Serialize;
+use vulnerability_engine::app_scan::AppScanReport;
+use vulnerability_engine::msrc::WindowsScanReport;
 use vulnerability_engine::package_scan::{InstalledPackage, PackageScanReport};
 
 /// A host to scan. `host` is exactly what the operator typed (an address or
@@ -110,6 +112,49 @@ pub enum RemoteScanStatus {
     VulnerabilitiesFound,
 }
 
+/// Which OS family the connected host turned out to be. The scan auto-detects
+/// this after authenticating and branches to the matching collector.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RemotePlatform {
+    Linux,
+    Windows,
+}
+
+/// The outcome category of the Windows OS/KB (MSRC) match, mirroring the local
+/// Windows scan so the UI treats remote and local the same way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum WindowsOsStatus {
+    /// The host's Windows version/build could not be read.
+    Unsupported,
+    /// No MSRC bulletins are loaded.
+    VulndbEmpty,
+    /// The product is not present in the loaded bulletins.
+    ProductNotInDatabase,
+    /// Build matched against the bulletins, nothing missing.
+    NoKnownMatchedVulnerabilities,
+    /// The build is missing fixes for known CVEs.
+    VulnerabilitiesFound,
+}
+
+/// The Windows half of a remote scan: the OS/KB (MSRC) result and the
+/// installed-program (NVD) result, plus the host facts the UI shows.
+#[derive(Debug, Clone)]
+pub struct WindowsRemoteReport {
+    pub caption: String,
+    pub full_build: String,
+    pub display_version: String,
+    /// The MSRC product the host was matched to, when recognised.
+    pub product: Option<String>,
+    pub installed_updates: usize,
+    pub os_status: WindowsOsStatus,
+    /// The MSRC OS/KB scan, when the product was recognised and matched.
+    pub os_cve: Option<WindowsScanReport>,
+    /// The installed-program CVE scan (NVD), when there were programs to check.
+    pub app_cve: Option<AppScanReport>,
+}
+
 /// The full result of a remote scan.
 #[derive(Debug, Clone)]
 pub struct RemoteScanReport {
@@ -117,6 +162,7 @@ pub struct RemoteScanReport {
     pub port: u16,
     pub username: String,
     pub host_key: Option<HostKey>,
+    pub platform: RemotePlatform,
     pub status: RemoteScanStatus,
     pub os_name: String,
     pub ecosystem: Option<String>,
@@ -124,10 +170,12 @@ pub struct RemoteScanReport {
     pub architecture: Option<String>,
     /// The package CVE result, when the scan got far enough to produce one.
     pub package_report: Option<PackageScanReport>,
-    /// The CIS configuration-audit result. Runs on any Linux host with the
-    /// relevant files, independent of whether the distribution's packages can
-    /// be matched, so it is present even when `package_report` is not.
+    /// The CIS configuration-audit result. Runs on any Linux or Windows host
+    /// with the relevant settings, independent of whether CVEs could be
+    /// matched, so it is present even when the CVE reports are not.
     pub cis_report: Option<crate::cis::CisReport>,
+    /// The Windows CVE results, present only for a Windows target.
+    pub windows: Option<WindowsRemoteReport>,
     pub collection_errors: Vec<String>,
 }
 

@@ -18,7 +18,9 @@ use chrono::Utc;
 use serde_json::{json, Value};
 
 use remote_scan::ssh::{discover_host_key, scan_over_ssh, SshTimeouts};
-use remote_scan::types::{Credential, RemoteScanReport, RemoteScanStatus};
+use remote_scan::types::{
+    Credential, RemotePlatform, RemoteScanReport, RemoteScanStatus, WindowsOsStatus,
+};
 use remote_scan::RemoteTarget;
 
 use crate::vulndb::VulnDbService;
@@ -232,11 +234,38 @@ fn status_label(status: RemoteScanStatus) -> &'static str {
     }
 }
 
+fn win_status_label(status: WindowsOsStatus) -> &'static str {
+    match status {
+        WindowsOsStatus::Unsupported => "UNSUPPORTED_PLATFORM",
+        WindowsOsStatus::VulndbEmpty => "VULNDB_EMPTY",
+        WindowsOsStatus::ProductNotInDatabase => "PRODUCT_NOT_IN_DATABASE",
+        WindowsOsStatus::NoKnownMatchedVulnerabilities => "NO_KNOWN_MATCHED_VULNERABILITIES",
+        WindowsOsStatus::VulnerabilitiesFound => "VULNERABILITIES_FOUND",
+    }
+}
+
 fn report_to_json(r: &RemoteScanReport) -> Value {
+    let platform = match r.platform {
+        RemotePlatform::Linux => "linux",
+        RemotePlatform::Windows => "windows",
+    };
+    let windows = r.windows.as_ref().map(|w| {
+        json!({
+            "caption": w.caption,
+            "build": w.full_build,
+            "display_version": w.display_version,
+            "product": w.product,
+            "installed_updates": w.installed_updates,
+            "os_status": win_status_label(w.os_status),
+            "os_cve": w.os_cve.as_ref().and_then(|v| serde_json::to_value(v).ok()),
+            "app_cve": w.app_cve.as_ref().and_then(|v| serde_json::to_value(v).ok()),
+        })
+    });
     json!({
         "host": r.host,
         "port": r.port,
         "username": r.username,
+        "platform": platform,
         "status": status_label(r.status),
         "os": r.os_name,
         "ecosystem": r.ecosystem,
@@ -255,6 +284,7 @@ fn report_to_json(r: &RemoteScanReport) -> Value {
             .cis_report
             .as_ref()
             .and_then(|c| serde_json::to_value(c).ok()),
+        "windows": windows,
         "collection_errors": r.collection_errors,
     })
 }

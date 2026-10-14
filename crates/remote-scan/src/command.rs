@@ -136,6 +136,128 @@ impl ReadCommand {
     }
 }
 
+/// A single read-only command the collector may run on a **Windows** target
+/// (reached over OpenSSH). Like [`ReadCommand`], every variant maps to one
+/// fixed command string with no caller input, so the session can only read.
+/// Each is a PowerShell one-liner (or a built-in query like `net accounts`)
+/// that prints facts to stdout and changes nothing on the host.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum WinReadCommand {
+    /// OS identity, version, build/UBR, edition, architecture, product type —
+    /// from the CurrentVersion registry key and Win32_OperatingSystem.
+    OsInfo,
+    /// Installed updates (`Get-HotFix` → "KB…"), one per line.
+    Hotfixes,
+    /// Installed programs from both Uninstall registry hives (x64 + WOW6432):
+    /// `DisplayName \t DisplayVersion \t Publisher` per line.
+    Programs,
+    /// Password and lockout policy (`net accounts`, read-only).
+    NetAccounts,
+    /// Advisory audit policy per subcategory (`auditpol /get /category:*`).
+    AuditPolicy,
+    /// Windows Firewall profile states (`Get-NetFirewallProfile`).
+    Firewall,
+    /// Whether the SMBv1 server protocol is enabled.
+    Smb1,
+    /// RDP: whether connections are allowed and whether NLA is required.
+    Rdp,
+    /// User Account Control (EnableLUA).
+    Uac,
+    /// Microsoft Defender antivirus / real-time protection status.
+    Defender,
+    /// LLMNR policy (multicast name resolution).
+    Llmnr,
+    /// WDigest credential caching (UseLogonCredential).
+    Wdigest,
+    /// Whether the built-in Guest account is enabled.
+    GuestAccount,
+    /// Remote Registry service start type.
+    RemoteRegistry,
+}
+
+impl WinReadCommand {
+    /// The exact command sent to the Windows host. Each only reads — it queries
+    /// the registry, a service, a policy or an inventory and prints the result.
+    /// None contains a mutating PowerShell verb (`Set-`, `New-`, `Remove-`,
+    /// `Stop-`, `Start-`, `Disable-`, `Enable-`, …), an output redirection, or a
+    /// mutating `net`/`auditpol`/`reg` form; the read-only guards sweep for all
+    /// of those. PowerShell is invoked explicitly so the host's default OpenSSH
+    /// shell (cmd or PowerShell) does not matter.
+    pub fn remote_command(&self) -> String {
+        // Wrap a PowerShell script so it runs regardless of the login shell and
+        // never loads a profile. `-NonInteractive` cannot prompt.
+        let ps = |script: &str| {
+            format!("powershell -NoProfile -NonInteractive -Command \"{script}\"")
+        };
+        match self {
+            // One key=value per line; `$ErrorActionPreference='SilentlyContinue'`
+            // keeps a missing property from writing to stderr. Pure reads.
+            WinReadCommand::OsInfo => ps(
+                "$ErrorActionPreference='SilentlyContinue';\
+                 $k='HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion';\
+                 $p=Get-ItemProperty $k;\
+                 $o=Get-CimInstance Win32_OperatingSystem;\
+                 'ProductName='+$p.ProductName;\
+                 'CurrentVersion='+$o.Version;\
+                 'CurrentBuild='+$p.CurrentBuildNumber;\
+                 'UBR='+$p.UBR;\
+                 'DisplayVersion='+$p.DisplayVersion;\
+                 'InstallationType='+$p.InstallationType;\
+                 'Caption='+$o.Caption;\
+                 'ProductType='+$o.ProductType;\
+                 'Architecture='+$o.OSArchitecture",
+            ),
+            WinReadCommand::Hotfixes => {
+                ps("Get-HotFix | Select-Object -ExpandProperty HotFixID")
+            }
+            // Both uninstall hives; only entries with a DisplayName. Tab-joined.
+            WinReadCommand::Programs => ps(
+                "$ErrorActionPreference='SilentlyContinue';\
+                 $r='HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*',\
+                 'HKLM:\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*';\
+                 Get-ItemProperty $r | Where-Object {$_.DisplayName} | ForEach-Object {\
+                 $_.DisplayName+[char]9+$_.DisplayVersion+[char]9+$_.Publisher}",
+            ),
+            WinReadCommand::NetAccounts => "net accounts".to_string(),
+            WinReadCommand::AuditPolicy => "auditpol /get /category:*".to_string(),
+            WinReadCommand::Firewall => ps(
+                "Get-NetFirewallProfile | ForEach-Object {$_.Name+[char]9+$_.Enabled}",
+            ),
+            WinReadCommand::Smb1 => ps(
+                "$ErrorActionPreference='SilentlyContinue';\
+                 'EnableSMB1Protocol='+(Get-SmbServerConfiguration).EnableSMB1Protocol",
+            ),
+            WinReadCommand::Rdp => ps(
+                "$ErrorActionPreference='SilentlyContinue';\
+                 'fDenyTSConnections='+(Get-ItemProperty 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Terminal Server').fDenyTSConnections;\
+                 'UserAuthentication='+(Get-ItemProperty 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Terminal Server\\WinStations\\RDP-Tcp').UserAuthentication",
+            ),
+            WinReadCommand::Uac => ps(
+                "'EnableLUA='+(Get-ItemProperty 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System').EnableLUA",
+            ),
+            WinReadCommand::Defender => ps(
+                "$ErrorActionPreference='SilentlyContinue';\
+                 $s=Get-MpComputerStatus;\
+                 'AntivirusEnabled='+$s.AntivirusEnabled;\
+                 'RealTimeProtectionEnabled='+$s.RealTimeProtectionEnabled",
+            ),
+            WinReadCommand::Llmnr => ps(
+                "'EnableMulticast='+(Get-ItemProperty 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows NT\\DNSClient').EnableMulticast",
+            ),
+            WinReadCommand::Wdigest => ps(
+                "'UseLogonCredential='+(Get-ItemProperty 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\SecurityProviders\\WDigest').UseLogonCredential",
+            ),
+            WinReadCommand::GuestAccount => ps(
+                "$ErrorActionPreference='SilentlyContinue';\
+                 'GuestEnabled='+(Get-LocalUser -Name Guest).Enabled",
+            ),
+            WinReadCommand::RemoteRegistry => ps(
+                "'RemoteRegistryStart='+(Get-Service RemoteRegistry).StartType",
+            ),
+        }
+    }
+}
+
 /// The captured result of one command.
 #[derive(Debug, Clone)]
 pub struct CommandOutput {
@@ -160,12 +282,21 @@ pub trait CommandRunner {
     fn run(&mut self, command: ReadCommand) -> Result<CommandOutput, RemoteError>;
 }
 
-/// A [`CommandRunner`] backed by a fixed map of outputs — used by the SSH
-/// transport (which gathers every command's output up front, then replays it
-/// through the sync pipeline) and by tests.
+/// Runs read-only **Windows** commands on the target. Mirrors [`CommandRunner`]
+/// for the Windows collection path; the SSH transport gathers every command's
+/// output up front and replays it, and tests supply captured output.
+pub trait WinCommandRunner {
+    fn run_win(&mut self, command: WinReadCommand) -> Result<CommandOutput, RemoteError>;
+}
+
+/// A runner backed by fixed maps of outputs — used by the SSH transport (which
+/// gathers every command's output up front, then replays it through the sync
+/// pipeline) and by tests. Holds both the Linux and Windows command outputs so
+/// one type serves either collection path.
 #[derive(Debug, Default, Clone)]
 pub struct MapRunner {
     outputs: HashMap<ReadCommand, CommandOutput>,
+    win_outputs: HashMap<WinReadCommand, CommandOutput>,
 }
 
 impl MapRunner {
@@ -181,11 +312,30 @@ impl MapRunner {
     pub fn insert(&mut self, command: ReadCommand, output: CommandOutput) {
         self.outputs.insert(command, output);
     }
+
+    /// Builder form of [`MapRunner::insert_win`], for tests.
+    pub fn with_win(mut self, command: WinReadCommand, stdout: impl Into<String>) -> Self {
+        self.win_outputs.insert(command, CommandOutput::ok(stdout));
+        self
+    }
+
+    pub fn insert_win(&mut self, command: WinReadCommand, output: CommandOutput) {
+        self.win_outputs.insert(command, output);
+    }
 }
 
 impl CommandRunner for MapRunner {
     fn run(&mut self, command: ReadCommand) -> Result<CommandOutput, RemoteError> {
         self.outputs
+            .get(&command)
+            .cloned()
+            .ok_or_else(|| RemoteError::Command(format!("нет вывода для команды {command:?}")))
+    }
+}
+
+impl WinCommandRunner for MapRunner {
+    fn run_win(&mut self, command: WinReadCommand) -> Result<CommandOutput, RemoteError> {
+        self.win_outputs
             .get(&command)
             .cloned()
             .ok_or_else(|| RemoteError::Command(format!("нет вывода для команды {command:?}")))
@@ -341,5 +491,61 @@ mod tests {
         assert!(text.starts_with("rpm -qa --queryformat '"));
         assert!(text.contains("%{NAME}"));
         assert!(text.contains("%{SOURCERPM}"));
+    }
+
+    /// Every Windows command the scanner can issue, for the read-only guards.
+    const ALL_WIN_COMMANDS: [WinReadCommand; 14] = [
+        WinReadCommand::OsInfo,
+        WinReadCommand::Hotfixes,
+        WinReadCommand::Programs,
+        WinReadCommand::NetAccounts,
+        WinReadCommand::AuditPolicy,
+        WinReadCommand::Firewall,
+        WinReadCommand::Smb1,
+        WinReadCommand::Rdp,
+        WinReadCommand::Uac,
+        WinReadCommand::Defender,
+        WinReadCommand::Llmnr,
+        WinReadCommand::Wdigest,
+        WinReadCommand::GuestAccount,
+        WinReadCommand::RemoteRegistry,
+    ];
+
+    #[test]
+    fn no_windows_command_contains_a_mutating_form() {
+        // A Windows command may only read. The mutating PowerShell verbs all
+        // take the `Verb-Noun` form, so the hyphen makes them unambiguous and
+        // keeps read-only *property* names such as `EnableLUA`, `EnableMulticast`
+        // or `Enabled` from tripping the guard. Also forbid output redirection
+        // and the mutating forms of `net`, `auditpol`, `reg`, `sc` and `secedit`.
+        let mutating = [
+            "Set-", "New-", "Remove-", "Stop-", "Start-", "Restart-", "Disable-", "Enable-",
+            "Clear-", "Add-", "Rename-", "Move-", "Out-File", "Set-ItemProperty", "reg add",
+            "reg delete", "sc config", "sc delete", "auditpol /set", "secedit /configure",
+            "secedit /export", "net user ", "net localgroup ", "/active:", "/add", "/delete",
+            " > ", ">>", "| tee",
+        ];
+        for cmd in ALL_WIN_COMMANDS {
+            let text = cmd.remote_command();
+            for bad in mutating {
+                assert!(
+                    !text.contains(bad),
+                    "windows command {cmd:?} = {text:?} contains mutating form {bad:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn windows_commands_run_powershell_or_a_readonly_builtin() {
+        // Each command is either an explicit non-profile PowerShell invocation
+        // or one of the two read-only built-in queries.
+        for cmd in ALL_WIN_COMMANDS {
+            let text = cmd.remote_command();
+            let ok = text.starts_with("powershell -NoProfile -NonInteractive -Command ")
+                || text == "net accounts"
+                || text == "auditpol /get /category:*";
+            assert!(ok, "windows command {cmd:?} = {text:?} is not a known read form");
+        }
     }
 }

@@ -95,7 +95,7 @@ pub struct ComplianceRef {
     pub control: &'static str,
 }
 
-const fn cref(framework: Framework, control: &'static str) -> ComplianceRef {
+pub(crate) const fn cref(framework: Framework, control: &'static str) -> ComplianceRef {
     ComplianceRef { framework, control }
 }
 
@@ -165,7 +165,7 @@ pub struct CisReport {
 }
 
 impl CisReport {
-    fn from_checks(checks: Vec<CisCheck>) -> Self {
+    pub(crate) fn from_checks(checks: Vec<CisCheck>) -> Self {
         let mut summary = CisSummary::default();
         for c in &checks {
             match c.status {

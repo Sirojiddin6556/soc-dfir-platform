@@ -28,12 +28,14 @@ pub mod fetch;
 pub mod inventory;
 pub mod scan;
 pub mod types;
+pub mod win_cis;
+pub mod win_inventory;
 
 #[cfg(feature = "ssh")]
 pub mod ssh;
 
-pub use scan::scan_remote;
+pub use scan::{scan_remote, scan_remote_windows};
 pub use types::{
-    Credential, HostKey, HostKeyPolicy, RemoteError, RemoteInventory, RemoteScanReport,
-    RemoteScanStatus, RemoteTarget,
+    Credential, HostKey, HostKeyPolicy, RemoteError, RemoteInventory, RemotePlatform,
+    RemoteScanReport, RemoteScanStatus, RemoteTarget, WindowsOsStatus, WindowsRemoteReport,
 };

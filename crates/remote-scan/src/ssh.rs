@@ -19,12 +19,12 @@ use russh::keys::key::{self, KeyPair};
 use russh::{ChannelMsg, Disconnect};
 use russh_sftp::client::SftpSession;
 
-use crate::command::{CommandOutput, MapRunner, ReadCommand};
+use crate::command::{CommandOutput, MapRunner, ReadCommand, WinReadCommand};
 use crate::fetch::{is_binary_path, is_excluded_dir, FetchLimits, FetchSummary};
-use crate::scan::scan_remote;
+use crate::scan::{scan_remote, scan_remote_windows};
 use crate::types::{
-    Credential, HostKey, HostKeyPolicy, RemoteError, RemoteScanReport, RemoteScanStatus,
-    RemoteTarget,
+    Credential, HostKey, HostKeyPolicy, RemoteError, RemotePlatform, RemoteScanReport,
+    RemoteScanStatus, RemoteTarget,
 };
 use vulnerability_engine::VulnDbRepository;
 
@@ -220,43 +220,81 @@ async fn collect_over_ssh(
     credential: &Credential,
     policy: HostKeyPolicy,
     timeouts: SshTimeouts,
-) -> Result<(HostKey, MapRunner), RemoteError> {
+) -> Result<(HostKey, MapRunner, RemotePlatform), RemoteError> {
     let (mut handle, host_key) = open_session(target, policy, timeouts).await?;
     authenticate(&mut handle, target, credential).await?;
 
-    let mut runner = MapRunner::new();
-    for command in [
-        ReadCommand::OsRelease,
-        ReadCommand::KernelRelease,
-        ReadCommand::Architecture,
-        ReadCommand::DpkgStatus,
-        ReadCommand::RpmQuery,
-        ReadCommand::ApkInstalled,
-        ReadCommand::SshdConfig,
-        ReadCommand::SshdEffective,
-        ReadCommand::LoginDefs,
-        ReadCommand::Passwd,
-        ReadCommand::FileModes,
-        ReadCommand::Mounts,
-        ReadCommand::Sysctl,
-        ReadCommand::PwQuality,
-        ReadCommand::Faillock,
-        ReadCommand::AutoUpgrades,
-        ReadCommand::Apparmor,
-    ] {
-        // A per-command failure (e.g. rpm absent on a dpkg host) is not fatal;
-        // record an empty output so the pipeline reports it as unavailable.
-        let output = run_command(&mut handle, &command.remote_command(), timeouts.command)
+    // Run one command, tolerating any failure as an empty result — a probe or a
+    // command that does not exist on this OS must not abort the scan.
+    async fn soft(
+        handle: &mut Handle<ClientHandler>,
+        command: &str,
+        timeout: Duration,
+    ) -> CommandOutput {
+        run_command(handle, command, timeout)
             .await
             .unwrap_or_else(|_| CommandOutput {
                 stdout: String::new(),
                 exit_status: None,
-            });
-        runner.insert(command, output);
+            })
     }
 
+    // Detect the OS family. `uname -r` prints the kernel on any Unix and prints
+    // nothing on Windows (the builtin does not exist), so a non-empty result
+    // means Linux; otherwise probe Windows via the registry/CIM one-liner.
+    let uname = soft(&mut handle, &ReadCommand::KernelRelease.remote_command(), timeouts.command).await;
+    let is_unix = !uname.stdout.trim().is_empty();
+
+    let mut runner = MapRunner::new();
+    let platform = if is_unix {
+        runner.insert(ReadCommand::KernelRelease, uname);
+        for command in [
+            ReadCommand::OsRelease,
+            ReadCommand::Architecture,
+            ReadCommand::DpkgStatus,
+            ReadCommand::RpmQuery,
+            ReadCommand::ApkInstalled,
+            ReadCommand::SshdConfig,
+            ReadCommand::SshdEffective,
+            ReadCommand::LoginDefs,
+            ReadCommand::Passwd,
+            ReadCommand::FileModes,
+            ReadCommand::Mounts,
+            ReadCommand::Sysctl,
+            ReadCommand::PwQuality,
+            ReadCommand::Faillock,
+            ReadCommand::AutoUpgrades,
+            ReadCommand::Apparmor,
+        ] {
+            let output = soft(&mut handle, &command.remote_command(), timeouts.command).await;
+            runner.insert(command, output);
+        }
+        RemotePlatform::Linux
+    } else {
+        for command in [
+            WinReadCommand::OsInfo,
+            WinReadCommand::Hotfixes,
+            WinReadCommand::Programs,
+            WinReadCommand::NetAccounts,
+            WinReadCommand::AuditPolicy,
+            WinReadCommand::Firewall,
+            WinReadCommand::Smb1,
+            WinReadCommand::Rdp,
+            WinReadCommand::Uac,
+            WinReadCommand::Defender,
+            WinReadCommand::Llmnr,
+            WinReadCommand::Wdigest,
+            WinReadCommand::GuestAccount,
+            WinReadCommand::RemoteRegistry,
+        ] {
+            let output = soft(&mut handle, &command.remote_command(), timeouts.command).await;
+            runner.insert_win(command, output);
+        }
+        RemotePlatform::Windows
+    };
+
     let _ = handle.disconnect(Disconnect::ByApplication, "", "en").await;
-    Ok((host_key, runner))
+    Ok((host_key, runner, platform))
 }
 
 /// Fetches the server's host key without authenticating, for the operator to
@@ -287,14 +325,17 @@ pub async fn scan_over_ssh(
     expected_fingerprint: &str,
     timeouts: SshTimeouts,
 ) -> Result<RemoteScanReport, RemoteError> {
-    let (host_key, mut runner) = collect_over_ssh(
+    let (host_key, mut runner, platform) = collect_over_ssh(
         target,
         credential,
         HostKeyPolicy::Expect(expected_fingerprint.to_string()),
         timeouts,
     )
     .await?;
-    scan_remote(repo, target, Some(host_key), &mut runner)
+    match platform {
+        RemotePlatform::Linux => scan_remote(repo, target, Some(host_key), &mut runner),
+        RemotePlatform::Windows => scan_remote_windows(repo, target, Some(host_key), &mut runner),
+    }
 }
 
 /// The outcome of fetching a remote project tree over SFTP into a local
@@ -523,6 +564,7 @@ pub fn unconfirmed_report(target: &RemoteTarget, host_key: HostKey) -> RemoteSca
         port: target.port,
         username: target.username.clone(),
         host_key: Some(host_key),
+        platform: RemotePlatform::Linux,
         status: RemoteScanStatus::HostKeyUnconfirmed,
         os_name: String::new(),
         ecosystem: None,
@@ -530,6 +572,7 @@ pub fn unconfirmed_report(target: &RemoteTarget, host_key: HostKey) -> RemoteSca
         architecture: None,
         package_report: None,
         cis_report: None,
+        windows: None,
         collection_errors: Vec::new(),
     }
 }

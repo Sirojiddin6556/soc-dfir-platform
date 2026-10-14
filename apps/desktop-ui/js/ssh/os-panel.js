@@ -457,6 +457,7 @@ export class RemoteHostPanel {
 
   renderDone() {
     const r = this.report;
+    if (r && r.platform === 'windows') return this.renderWindowsDone(r);
     const back = '<div class="vuln-remote-actions"><button id="rhBackBtn" class="ctf-btn ctf-btn-secondary">← Проверить другой хост</button></div>';
     if (!r) {
       this.root.innerHTML = `
@@ -499,10 +500,129 @@ export class RemoteHostPanel {
       ?.addEventListener('click', () => this.loadDbForEcosystems([r.ecosystem], 'form'));
   }
 
+  // A remote Windows Server result: OS/KB (MSRC) + installed programs (NVD) +
+  // the Windows CIS audit. Mirrors the Linux view but speaks Windows.
+  renderWindowsDone(r) {
+    const back = '<div class="vuln-remote-actions"><button id="rhBackBtn" class="ctf-btn ctf-btn-secondary">← Проверить другой хост</button></div>';
+    const w = r.windows || {};
+    const WIN_NOTE = {
+      UNSUPPORTED_PLATFORM: 'Не удалось определить сборку Windows: нет доступа или это не Windows-сервер с OpenSSH.',
+      VULNDB_EMPTY: 'Бюллетени безопасности Microsoft (MSRC) не загружены: обновите базу, иначе проверка обновлений ничего не доказывает.',
+      PRODUCT_NOT_IN_DATABASE: 'Для этого продукта Windows в загруженных бюллетенях нет исправлений — сопоставить сборку не с чем.',
+      NO_KNOWN_MATCHED_VULNERABILITIES: 'Сборка содержит все исправления из загруженных бюллетеней MSRC.',
+      VULNERABILITIES_FOUND: '',
+    };
+    const osFindings = w.os_cve?.findings || [];
+    const appReport = w.app_cve || null;
+    const appFindings = appReport?.findings || [];
+    const note = WIN_NOTE[w.os_status] || '';
+    const errors = (r.collection_errors || [])
+      .map((e) => `<div class="vuln-note">${escapeHtml(e)}</div>`)
+      .join('');
+    // On an empty MSRC base, offer to load it (the operator must run the
+    // desktop app on Windows for the Microsoft bulletins to be fetchable).
+    const canLoadDb = w.os_status === 'VULNDB_EMPTY';
+    const dbAction = canLoadDb
+      ? `<div class="vuln-remote-actions"><button id="rhLoadWinDbBtn" class="primary-action">⟳ Обновить базу Microsoft (MSRC)</button></div>`
+      : '';
+
+    const appSummary = appReport
+      ? `<div class="vuln-cis-counts">Программы: проверено ${Number((appReport.checked || []).length)}, не распознано ${Number(appReport.unrecognised || 0)}</div>`
+      : '';
+
+    this.root.innerHTML = `
+      <div class="vuln-remote-head"><h3>🖥 ${escapeHtml(r.host)}</h3></div>
+      <div class="vuln-remote-hostline">
+        <strong>${escapeHtml(w.caption || r.os || 'Windows')}</strong>
+        ${w.build ? ` · сборка <span class="vuln-mono">${escapeHtml(w.build)}</span>` : ''}
+        ${w.display_version ? ` · ${escapeHtml(w.display_version)}` : ''}
+        ${w.product ? ` · продукт MSRC: <strong>${escapeHtml(w.product)}</strong>` : ''}
+        · установленных обновлений: <strong>${Number(w.installed_updates) || 0}</strong>
+      </div>
+      ${r.host_key ? `<div class="vuln-note">Ключ хоста: <span class="vuln-mono">${escapeHtml(r.host_key.fingerprint)}</span> (подтверждён)</div>` : ''}
+      ${note ? `<div class="vuln-note">${escapeHtml(note)}</div>` : ''}
+      ${dbAction}
+      ${errors}
+      ${osFindings.length ? this.renderWinMissingUpdates(osFindings) : ''}
+      ${osFindings.length ? `<h4 class="vuln-remote-section">Недостающие обновления: уязвимости</h4>${this.renderFindings(osFindings)}` : ''}
+      ${appFindings.length ? `<h4 class="vuln-remote-section">Уязвимости в установленных программах</h4>${appSummary}${this.renderFindings(appFindings)}` : appReport ? appSummary : ''}
+      ${r.cis_report ? this.renderCis(r.cis_report, 'Проверки Windows Server по CIS с привязкой к PCI DSS и ISO 27001. Каждая оценка — только по реальным данным хоста (реестр, службы, политики). «Не задано» и «нет доступа» — не нарушение; проценты считаются лишь по проверкам с точным результатом.') : ''}
+      ${back}
+    `;
+    this.root.querySelector('#rhBackBtn').addEventListener('click', () => this.cancel());
+    this.root
+      .querySelector('#rhLoadWinDbBtn')
+      ?.addEventListener('click', () => this.loadWindowsBase());
+  }
+
+  // The missing Windows updates grouped by the KB that fixes them, so the
+  // result reads as "install these updates". Derived only from the findings:
+  // a CVE counts toward a KB only when that KB is listed as its fix.
+  renderWinMissingUpdates(findings) {
+    const rank = { critical: 4, high: 3, medium: 2, low: 1, unknown: 0 };
+    const map = new Map();
+    for (const f of findings) {
+      if (f.status !== 'fix_available') continue;
+      for (const src of f.sources || []) {
+        let e = map.get(src);
+        if (!e) {
+          e = { kb: src, cves: new Set(), sev: 'unknown' };
+          map.set(src, e);
+        }
+        e.cves.add(f.id);
+        if ((rank[f.severity] ?? 0) > (rank[e.sev] ?? 0)) e.sev = f.severity || 'unknown';
+      }
+    }
+    if (!map.size) return '';
+    // Severity serialises lowercase ("critical"…); the CSS classes match it.
+    const LABEL = { critical: 'Критический', high: 'Высокий', medium: 'Средний', low: 'Низкий', unknown: '—' };
+    const updates = [...map.values()].sort(
+      (a, b) => (rank[b.sev] ?? 0) - (rank[a.sev] ?? 0) || b.cves.size - a.cves.size,
+    );
+    const rows = updates
+      .map(
+        (u) => `<tr>
+          <td class="vuln-mono">${escapeHtml(u.kb)}</td>
+          <td class="vuln-num">${u.cves.size}</td>
+          <td><span class="vuln-badge vuln-sev-${escapeAttr(u.sev)}">${escapeHtml(LABEL[u.sev] || u.sev)}</span></td>
+        </tr>`,
+      )
+      .join('');
+    return `
+      <h4 class="vuln-remote-section">Недостающие обновления Windows</h4>
+      <div class="vuln-note">Установите эти обновления, чтобы закрыть известные уязвимости сборки. Один KB может закрывать несколько CVE.</div>
+      <table class="vuln-table">
+        <thead><tr><th>Обновление (KB)</th><th class="vuln-num">CVE</th><th>Макс. важность</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+  }
+
+  // Loads the Windows advisory bases (MSRC bulletins + NVD app CPE) into the
+  // local database. `vulndb.update {}` fetches them when the desktop app runs
+  // on Windows; mirrors the ecosystem-download flow for Linux targets.
+  async loadWindowsBase() {
+    this.dbEcosystems = ['обновления Microsoft (MSRC)'];
+    this.dbReturnTo = 'form';
+    this.dbStatus = null;
+    this.error = null;
+    this.phase = 'dbloading';
+    this.render();
+    try {
+      await this.ipc.call('vulndb.update', {});
+    } catch (e) {
+      this.phase = 'form';
+      this.fail(`Не удалось начать загрузку базы: ${e.message}`);
+      return;
+    }
+    this.pollDb();
+  }
+
   // The configuration audit. Each row is one check whose verdict comes only
   // from a fact read off the host; FAIL/MANUAL are shown first, and the
   // evidence behind every verdict is printed so nothing is taken on faith.
-  renderCis(cis) {
+  // `note` lets the caller explain the platform-specific sourcing (Linux reads
+  // sshd/OpenSSH defaults; Windows reads the registry, services and policy).
+  renderCis(cis, note) {
     const checks = Array.isArray(cis.checks) ? cis.checks : [];
     if (!checks.length) return '';
     const summary = cis.summary || {};
@@ -568,9 +688,10 @@ export class RemoteHostPanel {
       })
       .join('');
 
+    const defaultNote = 'Каждая проверка оценивается только по реальным данным хоста. Где доступно, читается итоговая конфигурация демона (sshd -T) и безопасные значения OpenSSH по умолчанию. «Не задано» и «нет доступа» — это не нарушение: такие пункты не считаются провалом, а проценты считаются только по проверкам с точным результатом.';
     return `
       <h4 class="vuln-remote-section">Аудит конфигурации (CIS)</h4>
-      <div class="vuln-note">Каждая проверка оценивается только по реальным данным хоста. Где доступно, читается итоговая конфигурация демона (sshd -T) и безопасные значения OpenSSH по умолчанию. «Не задано» и «нет доступа» — это не нарушение: такие пункты не считаются провалом, а проценты считаются только по проверкам с точным результатом.</div>
+      <div class="vuln-note">${escapeHtml(note || defaultNote)}</div>
       ${scores ? `<div class="vuln-cis-scores">${scores}</div>` : ''}
       <div class="vuln-cis-counts">
         Пройдено: ${Number(summary.pass) || 0} ·

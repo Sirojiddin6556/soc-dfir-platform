@@ -504,6 +504,53 @@ await sink('remote-host form prefilled after DB load (host/user value attrs, not
   panel.renderForm();
   return panel.root.innerHTML;
 });
+await sink('remote-host Windows result (caption/build/product, KB rollup, program + OS findings)', async (v) => {
+  // Every Windows value comes off the host over OpenSSH: the OS caption/build,
+  // the KB ids (findings[].sources), the installed-program names/versions and
+  // the CIS evidence. All must render as inert text.
+  const panel = remotePanel();
+  panel.phase = 'done';
+  panel.report = {
+    host: v,
+    platform: 'windows',
+    status: 'VULNERABILITIES_FOUND',
+    os: v,
+    collection_errors: [v],
+    host_key: { algorithm: v, fingerprint: v, sha256: v },
+    windows: {
+      caption: v,
+      build: v,
+      display_version: v,
+      product: v,
+      installed_updates: 3,
+      os_status: 'VULNERABILITIES_FOUND',
+      os_cve: {
+        findings: [{
+          id: v, component: v, installed_version: v, fixed_version: v, status: 'fix_available',
+          severity: 'critical', sources: [v, v], summary: v,
+        }],
+      },
+      app_cve: {
+        findings: [{
+          id: v, component: v, installed_version: v, fixed_version: v, status: 'fix_available',
+          severity: 'high', sources: [v], summary: v,
+        }],
+        checked: [{ product: v, version: v, cve_count: 1 }],
+        unrecognised: 2,
+      },
+    },
+    cis_report: {
+      checks: [{
+        id: v, title: v, status: 'FAIL', severity: 'HIGH', evidence: v, remediation: v,
+        references: [{ framework: v, control: v }],
+      }],
+      summary: { pass: 0, fail: 1, manual: 0, not_configured: 0, needs_privileges: 0,
+        compliance: [{ framework: v, passed: 0, evaluated: 1, undetermined: 0, applicable: 1, percent: 0 }] },
+    },
+  };
+  panel.render();
+  return panel.root.innerHTML;
+});
 
 console.log('\n=== Project code over SSH ===');
 // The project path is resolved by the remote server, and the fetched source
