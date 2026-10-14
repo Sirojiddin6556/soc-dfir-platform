@@ -55,7 +55,11 @@ fn net_accounts_number(text: &str, needle: &str) -> Option<i64> {
 fn net_accounts_is_never(text: &str, needle: &str) -> bool {
     for line in text.lines() {
         if line.to_ascii_lowercase().contains(needle) {
-            let last = line.split_whitespace().last().unwrap_or("").to_ascii_lowercase();
+            let last = line
+                .split_whitespace()
+                .last()
+                .unwrap_or("")
+                .to_ascii_lowercase();
             return matches!(last.as_str(), "never" | "none" | "unlimited" | "0");
         }
     }
@@ -119,12 +123,18 @@ pub fn audit_windows_cis(runner: &mut dyn WinCommandRunner) -> CisReport {
             if (1..=5).contains(&n) {
                 (CheckStatus::Pass, format!("Порог блокировки: {n} попыток"))
             } else if n == 0 {
-                (CheckStatus::Fail, "Блокировка после неудачных входов отключена".into())
+                (
+                    CheckStatus::Fail,
+                    "Блокировка после неудачных входов отключена".into(),
+                )
             } else {
                 (CheckStatus::Pass, format!("Порог блокировки: {n} попыток"))
             }
         } else if never {
-            (CheckStatus::Fail, "Блокировка после неудачных входов не настроена (Never)".into())
+            (
+                CheckStatus::Fail,
+                "Блокировка после неудачных входов не настроена (Never)".into(),
+            )
         } else {
             (
                 CheckStatus::NeedsPrivileges,
@@ -162,12 +172,22 @@ pub fn audit_windows_cis(runner: &mut dyn WinCommandRunner) -> CisReport {
             })
             .collect();
         let (status, evidence) = if profiles.is_empty() {
-            (CheckStatus::NeedsPrivileges, "Состояние брандмауэра не прочитано".into())
+            (
+                CheckStatus::NeedsPrivileges,
+                "Состояние брандмауэра не прочитано".into(),
+            )
         } else if profiles.iter().all(|(_, on)| *on) {
             (CheckStatus::Pass, "Все профили брандмауэра включены".into())
         } else {
-            let off: Vec<&str> = profiles.iter().filter(|(_, on)| !on).map(|(n, _)| *n).collect();
-            (CheckStatus::Fail, format!("Отключены профили брандмауэра: {}", off.join(", ")))
+            let off: Vec<&str> = profiles
+                .iter()
+                .filter(|(_, on)| !on)
+                .map(|(n, _)| *n)
+                .collect();
+            (
+                CheckStatus::Fail,
+                format!("Отключены профили брандмауэра: {}", off.join(", ")),
+            )
         };
         checks.push(check(
             "WIN-FIREWALL",
@@ -187,11 +207,18 @@ pub fn audit_windows_cis(runner: &mut dyn WinCommandRunner) -> CisReport {
     // --- SMBv1 -----------------------------------------------------------
     {
         let smb = read(runner, WinReadCommand::Smb1);
-        let (status, evidence) = match kv(&smb, "EnableSMB1Protocol").map(|v| v.to_ascii_lowercase()) {
-            Some(v) if v == "false" => (CheckStatus::Pass, "SMBv1 отключён".into()),
-            Some(v) if v == "true" => (CheckStatus::Fail, "SMBv1 включён (устаревший уязвимый протокол)".into()),
-            _ => (CheckStatus::NotConfigured, "Состояние SMBv1 не прочитано".into()),
-        };
+        let (status, evidence) =
+            match kv(&smb, "EnableSMB1Protocol").map(|v| v.to_ascii_lowercase()) {
+                Some(v) if v == "false" => (CheckStatus::Pass, "SMBv1 отключён".into()),
+                Some(v) if v == "true" => (
+                    CheckStatus::Fail,
+                    "SMBv1 включён (устаревший уязвимый протокол)".into(),
+                ),
+                _ => (
+                    CheckStatus::NotConfigured,
+                    "Состояние SMBv1 не прочитано".into(),
+                ),
+            };
         checks.push(check(
             "WIN-SMB1",
             "Протокол SMBv1 отключён",
@@ -199,7 +226,10 @@ pub fn audit_windows_cis(runner: &mut dyn WinCommandRunner) -> CisReport {
             Severity::High,
             evidence,
             "Отключите SMBv1 на сервере; используйте SMBv2/3.",
-            vec![cref(Framework::Cis, "18.3.1"), cref(Framework::Iso27001, "A.8.27")],
+            vec![
+                cref(Framework::Cis, "18.3.1"),
+                cref(Framework::Iso27001, "A.8.27"),
+            ],
         ));
     }
 
@@ -210,12 +240,18 @@ pub fn audit_windows_cis(runner: &mut dyn WinCommandRunner) -> CisReport {
         let ua = kv(&rdp, "UserAuthentication");
         let (status, evidence) = match (deny, ua) {
             (Some("1"), _) => (CheckStatus::Pass, "Подключения RDP отключены".into()),
-            (_, Some("1")) => (CheckStatus::Pass, "RDP требует проверки на уровне сети (NLA)".into()),
+            (_, Some("1")) => (
+                CheckStatus::Pass,
+                "RDP требует проверки на уровне сети (NLA)".into(),
+            ),
             (Some("0"), Some("0")) => (
                 CheckStatus::Fail,
                 "RDP включён без проверки на уровне сети (NLA)".into(),
             ),
-            _ => (CheckStatus::NotConfigured, "Настройки RDP/NLA не прочитаны".into()),
+            _ => (
+                CheckStatus::NotConfigured,
+                "Настройки RDP/NLA не прочитаны".into(),
+            ),
         };
         checks.push(check(
             "WIN-RDP-NLA",
@@ -238,7 +274,10 @@ pub fn audit_windows_cis(runner: &mut dyn WinCommandRunner) -> CisReport {
         let (status, evidence) = match kv(&uac, "EnableLUA") {
             Some("1") => (CheckStatus::Pass, "UAC (EnableLUA) включён".into()),
             Some("0") => (CheckStatus::Fail, "UAC (EnableLUA) отключён".into()),
-            _ => (CheckStatus::NotConfigured, "Состояние UAC не прочитано".into()),
+            _ => (
+                CheckStatus::NotConfigured,
+                "Состояние UAC не прочитано".into(),
+            ),
         };
         checks.push(check(
             "WIN-UAC",
@@ -247,7 +286,10 @@ pub fn audit_windows_cis(runner: &mut dyn WinCommandRunner) -> CisReport {
             Severity::High,
             evidence,
             "Включите UAC: EnableLUA=1.",
-            vec![cref(Framework::Cis, "2.3.17"), cref(Framework::Iso27001, "A.8.2")],
+            vec![
+                cref(Framework::Cis, "2.3.17"),
+                cref(Framework::Iso27001, "A.8.2"),
+            ],
         ));
     }
 
@@ -282,8 +324,14 @@ pub fn audit_windows_cis(runner: &mut dyn WinCommandRunner) -> CisReport {
         let llmnr = read(runner, WinReadCommand::Llmnr);
         let (status, evidence) = match kv(&llmnr, "EnableMulticast") {
             Some("0") => (CheckStatus::Pass, "LLMNR отключён политикой".into()),
-            Some("1") => (CheckStatus::Fail, "LLMNR включён политикой (риск перехвата учётных данных)".into()),
-            _ => (CheckStatus::NotConfigured, "Политика LLMNR не задана".into()),
+            Some("1") => (
+                CheckStatus::Fail,
+                "LLMNR включён политикой (риск перехвата учётных данных)".into(),
+            ),
+            _ => (
+                CheckStatus::NotConfigured,
+                "Политика LLMNR не задана".into(),
+            ),
         };
         checks.push(check(
             "WIN-LLMNR",
@@ -292,7 +340,10 @@ pub fn audit_windows_cis(runner: &mut dyn WinCommandRunner) -> CisReport {
             Severity::Medium,
             evidence,
             "Отключите LLMNR групповой политикой: EnableMulticast=0.",
-            vec![cref(Framework::Cis, "18.5.4"), cref(Framework::Iso27001, "A.8.21")],
+            vec![
+                cref(Framework::Cis, "18.5.4"),
+                cref(Framework::Iso27001, "A.8.21"),
+            ],
         ));
     }
 
@@ -300,9 +351,18 @@ pub fn audit_windows_cis(runner: &mut dyn WinCommandRunner) -> CisReport {
     {
         let wd = read(runner, WinReadCommand::Wdigest);
         let (status, evidence) = match kv(&wd, "UseLogonCredential") {
-            Some("0") => (CheckStatus::Pass, "WDigest не кэширует пароли в открытом виде".into()),
-            Some("1") => (CheckStatus::Fail, "WDigest кэширует пароли в открытом виде (UseLogonCredential=1)".into()),
-            _ => (CheckStatus::NotConfigured, "Параметр WDigest не задан".into()),
+            Some("0") => (
+                CheckStatus::Pass,
+                "WDigest не кэширует пароли в открытом виде".into(),
+            ),
+            Some("1") => (
+                CheckStatus::Fail,
+                "WDigest кэширует пароли в открытом виде (UseLogonCredential=1)".into(),
+            ),
+            _ => (
+                CheckStatus::NotConfigured,
+                "Параметр WDigest не задан".into(),
+            ),
         };
         checks.push(check(
             "WIN-WDIGEST",
@@ -311,7 +371,10 @@ pub fn audit_windows_cis(runner: &mut dyn WinCommandRunner) -> CisReport {
             Severity::High,
             evidence,
             "Задайте UseLogonCredential=0 для провайдера WDigest.",
-            vec![cref(Framework::Cis, "18.3.4"), cref(Framework::Iso27001, "A.8.5")],
+            vec![
+                cref(Framework::Cis, "18.3.4"),
+                cref(Framework::Iso27001, "A.8.5"),
+            ],
         ));
     }
 
@@ -319,9 +382,17 @@ pub fn audit_windows_cis(runner: &mut dyn WinCommandRunner) -> CisReport {
     {
         let guest = read(runner, WinReadCommand::GuestAccount);
         let (status, evidence) = match kv(&guest, "GuestEnabled").map(|v| v.to_ascii_lowercase()) {
-            Some(v) if v == "false" => (CheckStatus::Pass, "Гостевая учётная запись отключена".into()),
-            Some(v) if v == "true" => (CheckStatus::Fail, "Гостевая учётная запись включена".into()),
-            _ => (CheckStatus::NotConfigured, "Состояние гостевой учётной записи не прочитано".into()),
+            Some(v) if v == "false" => (
+                CheckStatus::Pass,
+                "Гостевая учётная запись отключена".into(),
+            ),
+            Some(v) if v == "true" => {
+                (CheckStatus::Fail, "Гостевая учётная запись включена".into())
+            }
+            _ => (
+                CheckStatus::NotConfigured,
+                "Состояние гостевой учётной записи не прочитано".into(),
+            ),
         };
         checks.push(check(
             "WIN-GUEST",
@@ -341,12 +412,25 @@ pub fn audit_windows_cis(runner: &mut dyn WinCommandRunner) -> CisReport {
     // --- Remote Registry service ----------------------------------------
     {
         let rr = read(runner, WinReadCommand::RemoteRegistry);
-        let (status, evidence) = match kv(&rr, "RemoteRegistryStart").map(|v| v.to_ascii_lowercase()) {
-            Some(v) if v == "disabled" => (CheckStatus::Pass, "Служба удалённого реестра отключена".into()),
-            Some(v) if v == "automatic" => (CheckStatus::Fail, "Служба удалённого реестра запускается автоматически".into()),
-            Some(v) => (CheckStatus::Manual, format!("Тип запуска удалённого реестра: {v}")),
-            None => (CheckStatus::NotConfigured, "Тип запуска удалённого реестра не прочитан".into()),
-        };
+        let (status, evidence) =
+            match kv(&rr, "RemoteRegistryStart").map(|v| v.to_ascii_lowercase()) {
+                Some(v) if v == "disabled" => (
+                    CheckStatus::Pass,
+                    "Служба удалённого реестра отключена".into(),
+                ),
+                Some(v) if v == "automatic" => (
+                    CheckStatus::Fail,
+                    "Служба удалённого реестра запускается автоматически".into(),
+                ),
+                Some(v) => (
+                    CheckStatus::Manual,
+                    format!("Тип запуска удалённого реестра: {v}"),
+                ),
+                None => (
+                    CheckStatus::NotConfigured,
+                    "Тип запуска удалённого реестра не прочитан".into(),
+                ),
+            };
         checks.push(check(
             "WIN-REMOTE-REGISTRY",
             "Служба удалённого реестра отключена",
@@ -354,7 +438,10 @@ pub fn audit_windows_cis(runner: &mut dyn WinCommandRunner) -> CisReport {
             Severity::Medium,
             evidence,
             "Отключите службу «Удалённый реестр», если она не требуется.",
-            vec![cref(Framework::Cis, "5.26"), cref(Framework::Iso27001, "A.8.20")],
+            vec![
+                cref(Framework::Cis, "5.26"),
+                cref(Framework::Iso27001, "A.8.20"),
+            ],
         ));
     }
 
@@ -362,9 +449,18 @@ pub fn audit_windows_cis(runner: &mut dyn WinCommandRunner) -> CisReport {
     {
         let audit = read(runner, WinReadCommand::AuditPolicy);
         let lower = audit.to_ascii_lowercase();
-        let (status, evidence) = if lower.lines().any(|l| l.contains("logon") && l.contains("no auditing")) {
-            (CheckStatus::Fail, "Аудит входа в систему отключён (No Auditing)".into())
-        } else if lower.lines().any(|l| l.contains("logon") && l.contains("success")) {
+        let (status, evidence) = if lower
+            .lines()
+            .any(|l| l.contains("logon") && l.contains("no auditing"))
+        {
+            (
+                CheckStatus::Fail,
+                "Аудит входа в систему отключён (No Auditing)".into(),
+            )
+        } else if lower
+            .lines()
+            .any(|l| l.contains("logon") && l.contains("success"))
+        {
             (CheckStatus::Pass, "Аудит входа в систему включён".into())
         } else {
             (
@@ -397,7 +493,11 @@ mod tests {
     use crate::command::MapRunner;
 
     fn status_of<'a>(report: &'a CisReport, id: &str) -> &'a CisCheck {
-        report.checks.iter().find(|c| c.id == id).expect("check present")
+        report
+            .checks
+            .iter()
+            .find(|c| c.id == id)
+            .expect("check present")
     }
 
     #[test]
@@ -407,9 +507,18 @@ mod tests {
             .with_win(WinReadCommand::Uac, "EnableLUA=0\n")
             .with_win(WinReadCommand::Wdigest, "UseLogonCredential=1\n")
             .with_win(WinReadCommand::GuestAccount, "GuestEnabled=True\n")
-            .with_win(WinReadCommand::Firewall, "Domain\tTrue\nPrivate\tFalse\nPublic\tTrue\n")
-            .with_win(WinReadCommand::Rdp, "fDenyTSConnections=0\nUserAuthentication=0\n")
-            .with_win(WinReadCommand::NetAccounts, "Minimum password length:    8\nLockout threshold:    Never\n");
+            .with_win(
+                WinReadCommand::Firewall,
+                "Domain\tTrue\nPrivate\tFalse\nPublic\tTrue\n",
+            )
+            .with_win(
+                WinReadCommand::Rdp,
+                "fDenyTSConnections=0\nUserAuthentication=0\n",
+            )
+            .with_win(
+                WinReadCommand::NetAccounts,
+                "Minimum password length:    8\nLockout threshold:    Never\n",
+            );
         let report = audit_windows_cis(&mut r);
         assert_eq!(status_of(&report, "WIN-SMB1").status, CheckStatus::Fail);
         assert_eq!(status_of(&report, "WIN-UAC").status, CheckStatus::Fail);
@@ -417,8 +526,14 @@ mod tests {
         assert_eq!(status_of(&report, "WIN-GUEST").status, CheckStatus::Fail);
         assert_eq!(status_of(&report, "WIN-FIREWALL").status, CheckStatus::Fail);
         assert_eq!(status_of(&report, "WIN-RDP-NLA").status, CheckStatus::Fail);
-        assert_eq!(status_of(&report, "WIN-PW-MINLEN").status, CheckStatus::Fail);
-        assert_eq!(status_of(&report, "WIN-LOCKOUT-THRESHOLD").status, CheckStatus::Fail);
+        assert_eq!(
+            status_of(&report, "WIN-PW-MINLEN").status,
+            CheckStatus::Fail
+        );
+        assert_eq!(
+            status_of(&report, "WIN-LOCKOUT-THRESHOLD").status,
+            CheckStatus::Fail
+        );
     }
 
     #[test]
@@ -427,19 +542,34 @@ mod tests {
             .with_win(WinReadCommand::Smb1, "EnableSMB1Protocol=False\n")
             .with_win(WinReadCommand::Uac, "EnableLUA=1\n")
             .with_win(WinReadCommand::GuestAccount, "GuestEnabled=False\n")
-            .with_win(WinReadCommand::Firewall, "Domain\tTrue\nPrivate\tTrue\nPublic\tTrue\n")
+            .with_win(
+                WinReadCommand::Firewall,
+                "Domain\tTrue\nPrivate\tTrue\nPublic\tTrue\n",
+            )
             .with_win(WinReadCommand::Rdp, "fDenyTSConnections=1\n")
-            .with_win(WinReadCommand::NetAccounts, "Minimum password length:    14\nLockout threshold:    5\n");
+            .with_win(
+                WinReadCommand::NetAccounts,
+                "Minimum password length:    14\nLockout threshold:    5\n",
+            );
         let report = audit_windows_cis(&mut r);
         assert_eq!(status_of(&report, "WIN-SMB1").status, CheckStatus::Pass);
         assert_eq!(status_of(&report, "WIN-UAC").status, CheckStatus::Pass);
         assert_eq!(status_of(&report, "WIN-GUEST").status, CheckStatus::Pass);
         assert_eq!(status_of(&report, "WIN-FIREWALL").status, CheckStatus::Pass);
         assert_eq!(status_of(&report, "WIN-RDP-NLA").status, CheckStatus::Pass);
-        assert_eq!(status_of(&report, "WIN-PW-MINLEN").status, CheckStatus::Pass);
-        assert_eq!(status_of(&report, "WIN-LOCKOUT-THRESHOLD").status, CheckStatus::Pass);
+        assert_eq!(
+            status_of(&report, "WIN-PW-MINLEN").status,
+            CheckStatus::Pass
+        );
+        assert_eq!(
+            status_of(&report, "WIN-LOCKOUT-THRESHOLD").status,
+            CheckStatus::Pass
+        );
         // WDigest was never read → NotConfigured, never a fail.
-        assert_eq!(status_of(&report, "WIN-WDIGEST").status, CheckStatus::NotConfigured);
+        assert_eq!(
+            status_of(&report, "WIN-WDIGEST").status,
+            CheckStatus::NotConfigured
+        );
     }
 
     #[test]
@@ -451,7 +581,12 @@ mod tests {
             .with_win(WinReadCommand::Smb1, "EnableSMB1Protocol=False\n")
             .with_win(WinReadCommand::Uac, "EnableLUA=1\n");
         let report = audit_windows_cis(&mut r);
-        let pcts: Vec<Option<u8>> = report.summary.compliance.iter().map(|f| f.percent).collect();
+        let pcts: Vec<Option<u8>> = report
+            .summary
+            .compliance
+            .iter()
+            .map(|f| f.percent)
+            .collect();
         // At least one framework evaluated something.
         assert!(pcts.iter().any(|p| p.is_some()));
     }

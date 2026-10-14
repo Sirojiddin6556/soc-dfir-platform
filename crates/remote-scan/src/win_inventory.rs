@@ -58,10 +58,7 @@ fn normalize_arch(raw: &str) -> String {
 pub fn collect_windows(runner: &mut dyn WinCommandRunner) -> WindowsInventory {
     let mut errors = Vec::new();
     let read = |runner: &mut dyn WinCommandRunner, cmd: WinReadCommand| -> String {
-        runner
-            .run_win(cmd)
-            .map(|o| o.stdout)
-            .unwrap_or_default()
+        runner.run_win(cmd).map(|o| o.stdout).unwrap_or_default()
     };
 
     let os = parse_kv(&read(runner, WinReadCommand::OsInfo));

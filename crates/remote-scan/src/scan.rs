@@ -285,7 +285,10 @@ mod tests {
         let repo = VulnDbRepository::open_in_memory().unwrap();
         let mut r = crate::command::MapRunner::new()
             .with_win(crate::command::WinReadCommand::OsInfo, WIN_OS_INFO)
-            .with_win(crate::command::WinReadCommand::Smb1, "EnableSMB1Protocol=True\n")
+            .with_win(
+                crate::command::WinReadCommand::Smb1,
+                "EnableSMB1Protocol=True\n",
+            )
             .with_win(crate::command::WinReadCommand::Uac, "EnableLUA=1\n");
         let report = scan_remote_windows(&repo, &target(), None, &mut r).unwrap();
         assert_eq!(report.platform, RemotePlatform::Windows);

@@ -242,7 +242,12 @@ async fn collect_over_ssh(
     // Detect the OS family. `uname -r` prints the kernel on any Unix and prints
     // nothing on Windows (the builtin does not exist), so a non-empty result
     // means Linux; otherwise probe Windows via the registry/CIM one-liner.
-    let uname = soft(&mut handle, &ReadCommand::KernelRelease.remote_command(), timeouts.command).await;
+    let uname = soft(
+        &mut handle,
+        &ReadCommand::KernelRelease.remote_command(),
+        timeouts.command,
+    )
+    .await;
     let is_unix = !uname.stdout.trim().is_empty();
 
     let mut runner = MapRunner::new();

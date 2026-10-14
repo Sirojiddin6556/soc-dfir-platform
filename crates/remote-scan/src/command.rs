@@ -186,9 +186,8 @@ impl WinReadCommand {
     pub fn remote_command(&self) -> String {
         // Wrap a PowerShell script so it runs regardless of the login shell and
         // never loads a profile. `-NonInteractive` cannot prompt.
-        let ps = |script: &str| {
-            format!("powershell -NoProfile -NonInteractive -Command \"{script}\"")
-        };
+        let ps =
+            |script: &str| format!("powershell -NoProfile -NonInteractive -Command \"{script}\"");
         match self {
             // One key=value per line; `$ErrorActionPreference='SilentlyContinue'`
             // keeps a missing property from writing to stderr. Pure reads.
@@ -519,11 +518,35 @@ mod tests {
         // or `Enabled` from tripping the guard. Also forbid output redirection
         // and the mutating forms of `net`, `auditpol`, `reg`, `sc` and `secedit`.
         let mutating = [
-            "Set-", "New-", "Remove-", "Stop-", "Start-", "Restart-", "Disable-", "Enable-",
-            "Clear-", "Add-", "Rename-", "Move-", "Out-File", "Set-ItemProperty", "reg add",
-            "reg delete", "sc config", "sc delete", "auditpol /set", "secedit /configure",
-            "secedit /export", "net user ", "net localgroup ", "/active:", "/add", "/delete",
-            " > ", ">>", "| tee",
+            "Set-",
+            "New-",
+            "Remove-",
+            "Stop-",
+            "Start-",
+            "Restart-",
+            "Disable-",
+            "Enable-",
+            "Clear-",
+            "Add-",
+            "Rename-",
+            "Move-",
+            "Out-File",
+            "Set-ItemProperty",
+            "reg add",
+            "reg delete",
+            "sc config",
+            "sc delete",
+            "auditpol /set",
+            "secedit /configure",
+            "secedit /export",
+            "net user ",
+            "net localgroup ",
+            "/active:",
+            "/add",
+            "/delete",
+            " > ",
+            ">>",
+            "| tee",
         ];
         for cmd in ALL_WIN_COMMANDS {
             let text = cmd.remote_command();
@@ -545,7 +568,10 @@ mod tests {
             let ok = text.starts_with("powershell -NoProfile -NonInteractive -Command ")
                 || text == "net accounts"
                 || text == "auditpol /get /category:*";
-            assert!(ok, "windows command {cmd:?} = {text:?} is not a known read form");
+            assert!(
+                ok,
+                "windows command {cmd:?} = {text:?} is not a known read form"
+            );
         }
     }
 }
