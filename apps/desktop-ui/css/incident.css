@@ -85,6 +85,15 @@
   border-radius: 3px;
   padding: 0 4px;
 }
+.incident-space .inc-links { margin-top: 10px; }
+.incident-space .inc-link-host {
+  font-size: 10px;
+  font-family: ui-monospace, Menlo, monospace;
+  color: var(--accent-cyan);
+  border: 1px solid var(--accent-cyan);
+  border-radius: 3px;
+  padding: 0 4px;
+}
 .incident-space .inc-find-body { padding: 0 10px 8px; }
 .incident-space .inc-find-summary { font-size: 13px; color: var(--text-primary); margin-bottom: 4px; }
 .incident-space .inc-find-meta { font-size: 11px; color: var(--text-secondary); margin-bottom: 6px; }

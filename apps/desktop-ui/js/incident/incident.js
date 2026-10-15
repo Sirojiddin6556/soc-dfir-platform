@@ -264,6 +264,9 @@ export class IncidentSpace {
     // Detections («Находки») — the headline, right under the summary.
     html += this.findingsPanelHtml(report);
 
+    // Cross-host links («Связи») — the same IP/account across several hosts.
+    html += this.linksPanelHtml(report);
+
     // Per-file breakdown, with the SHA-256 (chain of custody).
     if (Array.isArray(report.files) && report.files.length) {
       html += '<details class="inc-files"><summary>Файлы и их SHA-256 (' + report.files.length + ')</summary>';
@@ -391,41 +394,56 @@ export class IncidentSpace {
     return html;
   }
 
+  /** One lead (a finding or a cross-host link) as a <details> block. */
+  leadHtml(f) {
+    const sev = String(f.severity || 'low');
+    let html = `<details class="inc-find inc-sev-${escapeAttr(sev)}">`;
+    html += '<summary>';
+    html += `<span class="inc-sev-badge inc-sev-${escapeAttr(sev)}">${escapeHtml(SEV_LABEL[sev] || sev)}</span> `;
+    html += `<span class="inc-find-title">${escapeHtml(f.title || f.rule || '')}</span>`;
+    for (const h of f.hosts || []) html += ` <span class="inc-link-host">${escapeHtml(h)}</span>`;
+    for (const m of f.mitre || []) html += ` <span class="inc-mitre">${escapeHtml(m)}</span>`;
+    html += '</summary>';
+    html += `<div class="inc-find-body">`;
+    html += `<div class="inc-find-summary">${escapeHtml(f.summary || '')}</div>`;
+    const range = f.first_time === f.last_time
+      ? escapeHtml(f.first_time || '')
+      : `${escapeHtml(f.first_time || '')} — ${escapeHtml(f.last_time || '')}`;
+    html += `<div class="inc-find-meta">${range}`;
+    if (f.actor) {
+      html += ` · <span class="inc-actor">${escapeHtml(f.actor)}</span>`;
+      html += ` <button class="inc-find-filter" data-actor="${escapeAttr(f.actor)}" title="Показать на шкале">на шкалу ↓</button>`;
+    }
+    html += '</div>';
+    if (Array.isArray(f.evidence) && f.evidence.length) {
+      html += '<div class="inc-find-evidence">';
+      for (const ev of f.evidence) {
+        const loc = `${ev.source_file || ''}:${ev.line_no || ''}`;
+        html += `<div class="inc-find-ev"><span class="inc-loc">${escapeHtml(loc)}</span> <code>${escapeHtml(ev.raw || '')}</code></div>`;
+      }
+      html += '</div>';
+    }
+    html += '</div></details>';
+    return html;
+  }
+
   findingsPanelHtml(report) {
     const findings = Array.isArray(report.findings) ? report.findings : [];
     if (!findings.length) {
       return '<div class="inc-findings inc-findings-empty">Подсказок нет: автоматические признаки атаки по этим логам не найдены. Разберите шкалу вручную.</div>';
     }
     let html = `<div class="inc-findings"><div class="inc-findings-head">Находки (${findings.length})</div>`;
-    for (const f of findings) {
-      const sev = String(f.severity || 'low');
-      html += `<details class="inc-find inc-sev-${escapeAttr(sev)}">`;
-      html += '<summary>';
-      html += `<span class="inc-sev-badge inc-sev-${escapeAttr(sev)}">${escapeHtml(SEV_LABEL[sev] || sev)}</span> `;
-      html += `<span class="inc-find-title">${escapeHtml(f.title || f.rule || '')}</span>`;
-      for (const m of f.mitre || []) html += ` <span class="inc-mitre">${escapeHtml(m)}</span>`;
-      html += '</summary>';
-      html += `<div class="inc-find-body">`;
-      html += `<div class="inc-find-summary">${escapeHtml(f.summary || '')}</div>`;
-      const range = f.first_time === f.last_time
-        ? escapeHtml(f.first_time || '')
-        : `${escapeHtml(f.first_time || '')} — ${escapeHtml(f.last_time || '')}`;
-      html += `<div class="inc-find-meta">${range}`;
-      if (f.actor) {
-        html += ` · <span class="inc-actor">${escapeHtml(f.actor)}</span>`;
-        html += ` <button class="inc-find-filter" data-actor="${escapeAttr(f.actor)}" title="Показать на шкале">на шкалу ↓</button>`;
-      }
-      html += '</div>';
-      if (Array.isArray(f.evidence) && f.evidence.length) {
-        html += '<div class="inc-find-evidence">';
-        for (const ev of f.evidence) {
-          const loc = `${ev.source_file || ''}:${ev.line_no || ''}`;
-          html += `<div class="inc-find-ev"><span class="inc-loc">${escapeHtml(loc)}</span> <code>${escapeHtml(ev.raw || '')}</code></div>`;
-        }
-        html += '</div>';
-      }
-      html += '</div></details>';
-    }
+    for (const f of findings) html += this.leadHtml(f);
+    html += '</div>';
+    return html;
+  }
+
+  /** Cross-host links («связи») — shown only when there is more than one host. */
+  linksPanelHtml(report) {
+    const links = Array.isArray(report.links) ? report.links : [];
+    if (!links.length) return '';
+    let html = `<div class="inc-findings inc-links"><div class="inc-findings-head">Связи между хостами (${links.length})</div>`;
+    for (const f of links) html += this.leadHtml(f);
     html += '</div>';
     return html;
   }

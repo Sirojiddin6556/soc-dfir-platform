@@ -135,6 +135,7 @@ fn timeline_to_json(t: &Timeline) -> Value {
         "events": t.events,
         "files": t.files,
         "findings": t.findings,
+        "links": t.links,
         "first_event": t.first_event,
         "last_event": t.last_event,
         "warnings": t.warnings,
@@ -142,6 +143,7 @@ fn timeline_to_json(t: &Timeline) -> Value {
             "total_events": t.events.len(),
             "files": t.files.len(),
             "findings": t.findings.len(),
+            "links": t.links.len(),
             "by_source": by_source,
         },
     })

@@ -19,6 +19,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod correlate;
 pub mod detect;
 mod ingest;
 mod parse;
@@ -125,6 +126,10 @@ pub struct Timeline {
     /// lead backed by concrete log lines; the analyst confirms them.
     #[serde(default)]
     pub findings: Vec<detect::Finding>,
+    /// Cross-host correlations («связи»): the same IP or account seen across
+    /// more than one host. Each is backed by log lines grouped per host.
+    #[serde(default)]
+    pub links: Vec<detect::Finding>,
     /// Earliest and latest event time (RFC 3339), when any event was parsed.
     pub first_event: Option<String>,
     pub last_event: Option<String>,
@@ -253,6 +258,7 @@ pub fn analyze_path(root: &Path, opts: &Options) -> Result<Timeline, IngestError
     timeline.first_event = timeline.events.first().map(|e| e.timestamp.clone());
     timeline.last_event = timeline.events.last().map(|e| e.timestamp.clone());
     timeline.findings = detect::detect(&timeline.events);
+    timeline.links = correlate::correlate(&timeline.events);
     Ok(timeline)
 }
 

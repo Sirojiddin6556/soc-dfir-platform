@@ -629,7 +629,12 @@ const incidentStatus = (v, extra = {}) => ({
       first_time: v, last_time: v,
       evidence: [{ timestamp: v, source_file: v, line_no: 7, summary: v, raw: v }],
     }],
-    summary: { total_events: 1, files: 1, by_source: { web_access: 1, auth: 1 } },
+    links: [{
+      rule: v, title: v, severity: 'high', mitre: [v], summary: v, actor: v,
+      first_time: v, last_time: v, hosts: [v, v],
+      evidence: [{ timestamp: v, source_file: v, line_no: 7, summary: v, raw: v }],
+    }],
+    summary: { total_events: 1, files: 1, findings: 1, links: 1, by_source: { web_access: 1, auth: 1 } },
     events: [{
       timestamp: v, source: 'web_access', source_file: v, line_no: 7,
       host: v, actor: v, summary: v, outcome: 'failure',
@@ -654,6 +659,10 @@ await sink('incident progress (running path, engine error)', async (v) => {
   space.status = incidentStatus(v, { error: v, report: null });
   space.renderProgress();
   return running + root.querySelector('#incProgress').innerHTML;
+});
+await sink('incident cross-host links panel (host chips, actor, mitre, evidence)', async (v) => {
+  const { space } = await incidentSpace(incidentStatus(v));
+  return space.linksPanelHtml(space.status.report);
 });
 await sink('incident evidence panel (marked event summary, file:line)', async (v) => {
   // Marked-evidence fields are copied from log events, so they carry the same

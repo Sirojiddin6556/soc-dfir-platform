@@ -34,7 +34,7 @@ pub struct EvidenceRef {
 }
 
 impl EvidenceRef {
-    fn of(e: &LogEvent) -> Self {
+    pub(crate) fn of(e: &LogEvent) -> Self {
         Self {
             timestamp: e.timestamp.clone(),
             source_file: e.source_file.clone(),
@@ -61,6 +61,10 @@ pub struct Finding {
     pub last_time: String,
     /// The log lines this rests on (bounded).
     pub evidence: Vec<EvidenceRef>,
+    /// For cross-host links (stage 3): the hosts this indicator spans. Empty
+    /// for ordinary single-host findings.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hosts: Vec<String>,
 }
 
 /// Evidence lines kept per finding, at most.
@@ -159,6 +163,7 @@ fn ssh_bruteforce(events: &[LogEvent]) -> Vec<Finding> {
                     first_time: first_fail.timestamp.clone(),
                     last_time: success.timestamp.clone(),
                     evidence,
+                    hosts: Vec::new(),
                 });
                 continue;
             }
@@ -173,6 +178,7 @@ fn ssh_bruteforce(events: &[LogEvent]) -> Vec<Finding> {
             first_time: first_fail.timestamp.clone(),
             last_time: last_fail.timestamp.clone(),
             evidence,
+            hosts: Vec::new(),
         });
     }
     findings
@@ -361,6 +367,7 @@ fn web_attacks(events: &[LogEvent]) -> Vec<Finding> {
             first_time: first.timestamp.clone(),
             last_time: last.timestamp.clone(),
             evidence,
+            hosts: Vec::new(),
         });
     }
     findings
@@ -422,6 +429,7 @@ fn path_scanning(events: &[LogEvent]) -> Vec<Finding> {
             first_time: first.timestamp.clone(),
             last_time: last.timestamp.clone(),
             evidence,
+            hosts: Vec::new(),
         });
     }
     findings
@@ -453,6 +461,7 @@ fn account_creation(events: &[LogEvent]) -> Vec<Finding> {
             first_time: e.timestamp.clone(),
             last_time: e.timestamp.clone(),
             evidence: vec![EvidenceRef::of(e)],
+            hosts: Vec::new(),
         });
     }
     findings

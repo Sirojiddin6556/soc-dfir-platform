@@ -1,0 +1,375 @@
+//! DFIR stage 3 — cross-host correlation («связи»).
+//!
+//! The stage-2 detectors look at one host's events in isolation. This module
+//! links the *same* indicator seen across more than one host, so a spray
+//! across the fleet or lateral movement with a shared account stands out:
+//!
+//! * a source IP that touched SSH on several hosts, and
+//! * an account that successfully logged in on several hosts.
+//!
+//! Like the detections these are leads, not verdicts: every link carries the
+//! concrete log lines it rests on (grouped per host), a UTC range and the
+//! relevant MITRE ATT&CK technique. The analyst decides whether the shared
+//! access is legitimate.
+//!
+//! A host is attributed per event by [`event_host`]: logs collected into a
+//! per-host folder (`web01/auth.log`) are grouped by that folder; a flat
+//! syslog carrying real hostnames is grouped by the hostname in the frame.
+//! When neither is available an event cannot be tied to a host and is left out
+//! of correlation (never guessed).
+
+use std::collections::BTreeMap;
+
+use crate::detect::{EvidenceRef, Finding, Severity};
+use crate::{LogEvent, LogSource, Outcome};
+
+/// Evidence lines kept per host within one link.
+const MAX_EVIDENCE_PER_HOST: usize = 4;
+/// Hosts whose evidence is included before the rest are summarized by count.
+const MAX_HOSTS_EVIDENCE: usize = 8;
+
+/// Which host an event belongs to: the first path segment of its
+/// `source_file` (the per-host folder a collection uses), else the syslog
+/// hostname when the line carried a real one. `None` when the event cannot be
+/// tied to a host — such events are never invented onto a host.
+pub(crate) fn event_host(e: &LogEvent) -> Option<String> {
+    if let Some((dir, _)) = e.source_file.split_once(['/', '\\']) {
+        let dir = dir.trim();
+        if !dir.is_empty() && dir != "." {
+            return Some(dir.to_string());
+        }
+    }
+    // `e.host` is the syslog hostname when present, but auth parsing falls back
+    // to the program name (e.g. `sshd`) when a line has no hostname — reject
+    // that so a daemon name is never treated as a host.
+    let prog = e.fields.get("program").map(String::as_str);
+    match &e.host {
+        Some(h) if !h.is_empty() && Some(h.as_str()) != prog => Some(h.clone()),
+        _ => None,
+    }
+}
+
+/// Run every correlation over the timeline and return the links, worst first.
+pub fn correlate(events: &[LogEvent]) -> Vec<Finding> {
+    let mut out = Vec::new();
+    out.extend(cross_host_ip(events));
+    out.extend(cross_host_account(events));
+    out.sort_by(|a, b| {
+        b.severity
+            .cmp(&a.severity)
+            .then_with(|| a.first_time.cmp(&b.first_time))
+    });
+    out
+}
+
+/// Chronological, origin-stable order for evidence gathered across hosts.
+fn chrono(a: &&LogEvent, b: &&LogEvent) -> std::cmp::Ordering {
+    a.timestamp
+        .cmp(&b.timestamp)
+        .then_with(|| a.source_file.cmp(&b.source_file))
+        .then_with(|| a.line_no.cmp(&b.line_no))
+}
+
+/// Build the per-host evidence list (a few lines per host, bounded) and the
+/// overall first/last time, from events already grouped by host.
+fn evidence_and_range(
+    by_host: &BTreeMap<String, Vec<&LogEvent>>,
+) -> (Vec<EvidenceRef>, String, String) {
+    let mut all: Vec<&LogEvent> = by_host.values().flatten().copied().collect();
+    all.sort_by(chrono);
+    let first_time = all.first().map(|e| e.timestamp.clone()).unwrap_or_default();
+    let last_time = all.last().map(|e| e.timestamp.clone()).unwrap_or_default();
+
+    let mut evidence = Vec::new();
+    for host_events in by_host.values().take(MAX_HOSTS_EVIDENCE) {
+        let mut sorted = host_events.clone();
+        sorted.sort_by(chrono);
+        for e in sorted.into_iter().take(MAX_EVIDENCE_PER_HOST) {
+            evidence.push(EvidenceRef::of(e));
+        }
+    }
+    (evidence, first_time, last_time)
+}
+
+// ---------------------------------------------------------------------------
+// One source IP, several hosts
+// ---------------------------------------------------------------------------
+
+fn cross_host_ip(events: &[LogEvent]) -> Vec<Finding> {
+    struct PerIp<'a> {
+        by_host: BTreeMap<String, Vec<&'a LogEvent>>,
+        any_success: bool,
+    }
+    let mut by_ip: BTreeMap<String, PerIp> = BTreeMap::new();
+
+    for e in events {
+        if e.source != LogSource::Auth {
+            continue;
+        }
+        let Some(ip) = e.fields.get("src_ip").filter(|s| !s.is_empty()) else {
+            continue;
+        };
+        let Some(host) = event_host(e) else {
+            continue;
+        };
+        let entry = by_ip.entry(ip.clone()).or_insert_with(|| PerIp {
+            by_host: BTreeMap::new(),
+            any_success: false,
+        });
+        entry.by_host.entry(host).or_default().push(e);
+        if e.outcome == Some(Outcome::Success) {
+            entry.any_success = true;
+        }
+    }
+
+    let mut findings = Vec::new();
+    for (ip, per) in by_ip {
+        if per.by_host.len() < 2 {
+            continue;
+        }
+        let hosts: Vec<String> = per.by_host.keys().cloned().collect();
+        let (evidence, first_time, last_time) = evidence_and_range(&per.by_host);
+        let (severity, mitre) = if per.any_success {
+            (
+                Severity::High,
+                vec!["T1021".into(), "T1078".into(), "T1110".into()],
+            )
+        } else {
+            (Severity::Medium, vec!["T1110".into(), "T1021".into()])
+        };
+        let summary = format!(
+            "Адрес {ip} обращался по SSH к {} хостам ({}).{}",
+            hosts.len(),
+            hosts.join(", "),
+            if per.any_success {
+                " Есть успешный вход — возможно продвижение по сети."
+            } else {
+                " Везде только неудачные попытки — похоже на перебор по всему парку."
+            }
+        );
+        findings.push(Finding {
+            rule: "link-ip-multi-host".into(),
+            title: "Один адрес — несколько хостов".into(),
+            severity,
+            mitre,
+            summary,
+            actor: Some(ip),
+            first_time,
+            last_time,
+            evidence,
+            hosts,
+        });
+    }
+    findings
+}
+
+// ---------------------------------------------------------------------------
+// One account, successful logins on several hosts
+// ---------------------------------------------------------------------------
+
+fn cross_host_account(events: &[LogEvent]) -> Vec<Finding> {
+    let mut by_user: BTreeMap<String, BTreeMap<String, Vec<&LogEvent>>> = BTreeMap::new();
+
+    for e in events {
+        if e.source != LogSource::Auth || e.outcome != Some(Outcome::Success) {
+            continue;
+        }
+        let Some(user) = e.fields.get("user").filter(|s| !s.is_empty()) else {
+            continue;
+        };
+        let Some(host) = event_host(e) else {
+            continue;
+        };
+        by_user
+            .entry(user.clone())
+            .or_default()
+            .entry(host)
+            .or_default()
+            .push(e);
+    }
+
+    let mut findings = Vec::new();
+    for (user, by_host) in by_user {
+        if by_host.len() < 2 {
+            continue;
+        }
+        let hosts: Vec<String> = by_host.keys().cloned().collect();
+        let (evidence, first_time, last_time) = evidence_and_range(&by_host);
+        let summary = format!(
+            "Учётная запись {user} успешно входила по SSH на {} хостов ({}). Проверьте, легитимен ли такой доступ ко всем этим машинам.",
+            hosts.len(),
+            hosts.join(", ")
+        );
+        findings.push(Finding {
+            rule: "link-account-multi-host".into(),
+            title: "Учётная запись входит на несколько хостов".into(),
+            severity: Severity::High,
+            mitre: vec!["T1078".into()],
+            summary,
+            actor: Some(user),
+            first_time,
+            last_time,
+            evidence,
+            hosts,
+        });
+    }
+    findings
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{analyze_path, Options};
+    use std::io::Write;
+
+    struct TempDir(std::path::PathBuf);
+    impl TempDir {
+        fn new(tag: &str) -> Self {
+            let mut p = std::env::temp_dir();
+            p.push(format!(
+                "incident-corr-{tag}-{}-{:?}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            std::fs::create_dir_all(&p).unwrap();
+            TempDir(p)
+        }
+        /// Write `body` to `<host>/auth.log`, creating the per-host folder.
+        fn write_host(&self, host: &str, name: &str, body: &str) {
+            let dir = self.0.join(host);
+            std::fs::create_dir_all(&dir).unwrap();
+            let mut f = std::fs::File::create(dir.join(name)).unwrap();
+            f.write_all(body.as_bytes()).unwrap();
+        }
+    }
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    fn opts() -> Options {
+        Options {
+            assume_year: Some(2026),
+            ..Options::default()
+        }
+    }
+    fn find<'a>(f: &'a [Finding], rule: &str) -> &'a Finding {
+        f.iter()
+            .find(|x| x.rule == rule)
+            .unwrap_or_else(|| panic!("no link {rule} in {f:#?}"))
+    }
+
+    #[test]
+    fn same_ip_hitting_two_hosts_is_linked() {
+        let d = TempDir::new("ip");
+        d.write_host(
+            "web01",
+            "auth.log",
+            "Oct 10 10:00:00 web01 sshd[1]: Failed password for root from 203.0.113.9 port 1 ssh2\n",
+        );
+        d.write_host(
+            "db01",
+            "auth.log",
+            "Oct 10 10:05:00 db01 sshd[1]: Failed password for root from 203.0.113.9 port 2 ssh2\n",
+        );
+        let t = analyze_path(&d.0, &opts()).unwrap();
+        let link = find(&t.links, "link-ip-multi-host");
+        assert_eq!(link.severity, Severity::Medium);
+        assert_eq!(link.actor.as_deref(), Some("203.0.113.9"));
+        assert_eq!(link.hosts, vec!["db01".to_string(), "web01".to_string()]);
+        // Evidence spans both hosts.
+        assert!(link
+            .evidence
+            .iter()
+            .any(|e| e.source_file.contains("web01")));
+        assert!(link.evidence.iter().any(|e| e.source_file.contains("db01")));
+    }
+
+    #[test]
+    fn a_success_on_any_host_raises_severity_to_high() {
+        let d = TempDir::new("ipok");
+        d.write_host(
+            "web01",
+            "auth.log",
+            "Oct 10 10:00:00 web01 sshd[1]: Failed password for root from 203.0.113.9 port 1 ssh2\n",
+        );
+        d.write_host(
+            "db01",
+            "auth.log",
+            "Oct 10 10:05:00 db01 sshd[1]: Accepted password for deploy from 203.0.113.9 port 2 ssh2\n",
+        );
+        let t = analyze_path(&d.0, &opts()).unwrap();
+        let link = find(&t.links, "link-ip-multi-host");
+        assert_eq!(link.severity, Severity::High);
+        assert!(link.mitre.iter().any(|m| m == "T1078"));
+    }
+
+    #[test]
+    fn an_ip_on_one_host_is_not_a_link() {
+        let d = TempDir::new("oneip");
+        d.write_host(
+            "web01",
+            "auth.log",
+            "Oct 10 10:00:00 web01 sshd[1]: Failed password for root from 203.0.113.9 port 1 ssh2\n\
+             Oct 10 10:01:00 web01 sshd[1]: Failed password for root from 203.0.113.9 port 2 ssh2\n",
+        );
+        let t = analyze_path(&d.0, &opts()).unwrap();
+        assert!(t.links.iter().all(|l| l.rule != "link-ip-multi-host"));
+    }
+
+    #[test]
+    fn account_logging_into_two_hosts_is_linked() {
+        let d = TempDir::new("acct");
+        d.write_host(
+            "web01",
+            "auth.log",
+            "Oct 10 10:00:00 web01 sshd[1]: Accepted password for deploy from 198.51.100.4 port 1 ssh2\n",
+        );
+        d.write_host(
+            "db01",
+            "auth.log",
+            "Oct 10 10:05:00 db01 sshd[1]: Accepted publickey for deploy from 198.51.100.5 port 2 ssh2\n",
+        );
+        let t = analyze_path(&d.0, &opts()).unwrap();
+        let link = find(&t.links, "link-account-multi-host");
+        assert_eq!(link.severity, Severity::High);
+        assert_eq!(link.actor.as_deref(), Some("deploy"));
+        assert!(link.mitre.iter().any(|m| m == "T1078"));
+        assert_eq!(link.hosts.len(), 2);
+    }
+
+    #[test]
+    fn only_failed_logins_do_not_link_an_account() {
+        let d = TempDir::new("acctfail");
+        d.write_host(
+            "web01",
+            "auth.log",
+            "Oct 10 10:00:00 web01 sshd[1]: Failed password for deploy from 198.51.100.4 port 1 ssh2\n",
+        );
+        d.write_host(
+            "db01",
+            "auth.log",
+            "Oct 10 10:05:00 db01 sshd[1]: Failed password for deploy from 198.51.100.5 port 2 ssh2\n",
+        );
+        let t = analyze_path(&d.0, &opts()).unwrap();
+        assert!(t.links.iter().all(|l| l.rule != "link-account-multi-host"));
+    }
+
+    #[test]
+    fn a_single_host_corpus_produces_no_links() {
+        let d = TempDir::new("single");
+        // Flat file, one host in the frame — nothing to correlate across.
+        let dir = &d.0;
+        let mut f = std::fs::File::create(dir.join("auth.log")).unwrap();
+        f.write_all(
+            b"Oct 10 10:00:00 web01 sshd[1]: Accepted password for deploy from 198.51.100.4 port 1 ssh2\n",
+        )
+        .unwrap();
+        drop(f);
+        let t = analyze_path(dir, &opts()).unwrap();
+        assert!(t.links.is_empty(), "{:#?}", t.links);
+    }
+}
