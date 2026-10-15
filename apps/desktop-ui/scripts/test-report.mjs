@@ -115,6 +115,107 @@ const emptyUnified = buildUnifiedReportHtml({ title: 'Пусто' }, []);
 check(emptyUnified.includes('Находок нет.'), 'empty unified report says so');
 check(emptyUnified.startsWith('<!doctype html>'), 'empty unified report is a full document');
 
+// 8. The DFIR incident report (9 sections). Everything in it — log lines,
+// IPs, paths, user agents — came from the analysed logs and is therefore
+// attacker-controlled, so the same no-execution rule holds: nothing executes
+// when the report is opened in a browser.
+const incMod = await import(
+  pathToFileURL(path.join(__dirname, '..', 'js', 'incident', 'incident-report.js')).href
+);
+const { buildIncidentReportHtml } = incMod;
+
+const incHtml = buildIncidentReportHtml({
+  meta: {
+    path: `/var/log/${PAYLOAD}`,
+    generatedAt: '2026-10-15T00:00:00Z',
+    firstEvent: '2026-10-01T00:00:00Z',
+    lastEvent: '2026-10-02T00:00:00Z',
+  },
+  files: [
+    { path: `web01/${PAYLOAD}.log`, parsed: 10, lines: 12, sha256: 'abc123', compressed: false },
+  ],
+  findings: [
+    {
+      rule: 'ssh-bruteforce-success',
+      severity: 'critical',
+      title: 'Подбор пароля SSH с последующим входом',
+      summary: `Успешный вход после перебора: ${PAYLOAD}`,
+      mitre: ['T1110', 'T1078'],
+      hosts: ['web01'],
+      actor: '203.0.113.9',
+      first_time: '2026-10-01T00:00:00Z',
+      last_time: '2026-10-01T00:05:00Z',
+      evidence: [{ source_file: `web01/auth.log`, line_no: 5, raw: `Accepted password ${PAYLOAD}` }],
+    },
+    {
+      rule: 'account-created',
+      severity: 'medium',
+      title: 'Создана учётная запись',
+      summary: 'Новый пользователь',
+      mitre: ['T1136'],
+      hosts: [],
+      actor: 'eviluser',
+      first_time: '2026-10-01T01:00:00Z',
+      last_time: '2026-10-01T01:00:00Z',
+      evidence: [],
+    },
+  ],
+  links: [
+    {
+      rule: 'link-account-multi-host',
+      severity: 'high',
+      title: 'Учётная запись входит на несколько хостов',
+      summary: 'root на web01 и db01',
+      mitre: ['T1078'],
+      hosts: ['web01', 'db01'],
+      actor: 'root',
+      first_time: '2026-10-01T00:00:00Z',
+      last_time: '2026-10-02T00:00:00Z',
+      evidence: [{ source_file: 'db01/auth.log', line_no: 2, raw: 'Accepted publickey for root' }],
+    },
+  ],
+  events: [
+    { source_file: `web01/auth.log`, line_no: 5, timestamp: '2026-10-01T00:00:00Z', source: 'auth', summary: 'x', fields: { src_ip: '203.0.113.9' } },
+    { source_file: `db01/auth.log`, line_no: 2, timestamp: '2026-10-02T00:00:00Z', source: 'auth', summary: 'y', fields: { src_ip: '198.51.100.7' } },
+  ],
+  evidence: [
+    { key: 'k1', timestamp: '2026-10-01T00:00:00Z', source: 'auth', source_file: `web01/auth.log`, line_no: 5, summary: `отмечено: ${PAYLOAD}` },
+  ],
+});
+
+for (const bad of ['<svg', '<img', '<script', '<iframe']) {
+  check(!incHtml.includes(bad), `incident report must not contain raw "${bad}"`);
+}
+check(incHtml.includes('&lt;svg/onload=alert(1)&gt;'), 'incident payload shown escaped');
+check(incHtml.startsWith('<!doctype html>'), 'incident report is a full document');
+// All nine sections are present and numbered.
+for (const title of [
+  '1. Резюме',
+  '2. Исходные данные и цепочка хранения',
+  '3. Отмеченные улики',
+  '4. Находки',
+  '5. Связи между хостами',
+  '6. Индикаторы компрометации (IOC)',
+  '7. Техники MITRE ATT&amp;CK',
+  '8. Оценка воздействия',
+  '9. Рекомендации',
+]) {
+  check(incHtml.includes(title), `incident section "${title}" present`);
+}
+// Chain of custody, MITRE and IOCs surface real values.
+check(incHtml.includes('abc123'), 'incident report shows a file SHA-256');
+check(incHtml.includes('Подбор учётных данных (Brute Force)'), 'incident report labels T1110');
+check(incHtml.includes('203.0.113.9') && incHtml.includes('198.51.100.7'), 'incident report lists IOC IPs');
+check(incHtml.includes('db01') && incHtml.includes('web01'), 'incident report lists hosts');
+// A critical finding drives the verdict; impact names the compromise moment.
+check(incHtml.includes('вероятна компрометация') || incHtml.includes('Вероятная компрометация'), 'incident verdict/impact reflects compromise');
+
+// Empty investigation still yields a valid, honest document.
+const incEmpty = buildIncidentReportHtml({ meta: { path: '/var/log' }, files: [], findings: [], links: [], events: [], evidence: [] });
+check(incEmpty.startsWith('<!doctype html>'), 'empty incident report is a full document');
+check(incEmpty.includes('9. Рекомендации'), 'empty incident report still has all sections');
+check(incEmpty.includes('Явных автоматических признаков'), 'empty incident report states no auto signs');
+
 if (failures) {
   console.error(`\ntest-report: ${failures} check(s) failed`);
   process.exit(1);

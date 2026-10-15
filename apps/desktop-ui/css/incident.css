@@ -12,6 +12,19 @@
   color: var(--text-primary);
   font-size: 15px;
 }
+.incident-space .inc-report-btn {
+  margin-left: auto;
+  padding: 5px 12px;
+  font-size: 12px;
+  cursor: pointer;
+  background: var(--accent, #2b6cb0);
+  color: #fff;
+  border: 1px solid var(--accent, #2b6cb0);
+  border-radius: 4px;
+}
+.incident-space .inc-report-btn:hover {
+  filter: brightness(1.08);
+}
 
 .incident-space .inc-files {
   display: flex;

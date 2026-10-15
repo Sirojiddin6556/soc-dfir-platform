@@ -1,4 +1,6 @@
 import { escapeAttr, escapeHtml } from '../util/html.js';
+import { downloadReport, reportFilename } from '../report/report.js';
+import { buildIncidentReportHtml } from './incident-report.js';
 
 const PATH_KEY = 'incident.lastPath';
 
@@ -259,6 +261,7 @@ export class IncidentSpace {
     if (report.first_event && report.last_event) {
       html += `<span class="inc-stat">${escapeHtml(report.first_event)} — ${escapeHtml(report.last_event)}</span>`;
     }
+    html += '<button id="incReportBtn" class="inc-report-btn" title="Сформировать отчёт о расследовании из 9 пунктов и скачать его как HTML">📄 Скачать отчёт (9 пунктов)</button>';
     html += '</div>';
 
     // Detections («Находки») — the headline, right under the summary.
@@ -319,6 +322,9 @@ export class IncidentSpace {
 
     panel.innerHTML = html;
 
+    const reportBtn = panel.querySelector('#incReportBtn');
+    if (reportBtn) reportBtn.addEventListener('click', () => this.downloadIncidentReport());
+
     const srcSel = panel.querySelector('#incSourceFilter');
     if (srcSel) srcSel.addEventListener('change', (ev) => {
       this.sourceFilter = ev.target.value;
@@ -345,6 +351,29 @@ export class IncidentSpace {
         if (q) q.value = this.query;
       }
     });
+  }
+
+  /**
+   * Build the nine-section investigation report from the current result plus
+   * the analyst's marked evidence, and hand it to the browser as an HTML file.
+   */
+  downloadIncidentReport() {
+    const report = this.status?.report;
+    if (!report) return;
+    const html = buildIncidentReportHtml({
+      meta: {
+        path: this.path,
+        generatedAt: new Date().toISOString(),
+        firstEvent: report.first_event,
+        lastEvent: report.last_event,
+      },
+      files: report.files,
+      findings: report.findings,
+      links: report.links,
+      events: report.events,
+      evidence: [...this.evidence.values()],
+    });
+    downloadReport(reportFilename('rassledovanie'), html);
   }
 
   /** Re-render only the timeline rows (keeps focus in the text filter). */
