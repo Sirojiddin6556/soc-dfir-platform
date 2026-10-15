@@ -79,6 +79,7 @@ pub fn detect(events: &[LogEvent]) -> Vec<Finding> {
     let mut out = Vec::new();
     out.extend(ssh_bruteforce(events));
     out.extend(web_attacks(events));
+    out.extend(web_webshell(events));
     out.extend(path_scanning(events));
     out.extend(account_creation(events));
     out.extend(suspicious_commands(events));
@@ -258,21 +259,21 @@ const WEB_SIGS: &[WebSig] = &[
             ";id", "|id", "$(", "`id`", ";cat ", "%3bcat", "wget ", "curl ", ";whoami", "|whoami",
         ],
     },
-    WebSig {
-        rule: "web-webshell",
-        title: "Обращение к веб-шеллу",
-        mitre: "T1505.003",
-        needles: &[
-            "c99.php",
-            "r57.php",
-            "shell.php",
-            "cmd.php",
-            "wso.php",
-            "b374k",
-            "/eval",
-            "cmd=",
-        ],
-    },
+];
+
+/// Known web-shell file names. A request to one of these that the server
+/// *answers* (2xx) is the signal of a live shell — see [`web_webshell`].
+const WEBSHELL_NAMES: &[&str] = &[
+    "c99.php",
+    "c100.php",
+    "r57.php",
+    "wso.php",
+    "b374k",
+    "shell.php",
+    "cmd.php",
+    "backdoor.php",
+    "alfa.php",
+    "webshell",
 ];
 
 /// Decode `%XX` escapes and `+` in a request target, so an encoded payload is
@@ -363,6 +364,80 @@ fn web_attacks(events: &[LogEvent]) -> Vec<Finding> {
                     ip.clone()
                 },
                 sig.title
+            ),
+            actor: if ip.is_empty() { None } else { Some(ip) },
+            first_time: first.timestamp.clone(),
+            last_time: last.timestamp.clone(),
+            evidence,
+            hosts: Vec::new(),
+        });
+    }
+    findings
+}
+
+// ---------------------------------------------------------------------------
+// Web shell access (a known shell file the server actually answered)
+// ---------------------------------------------------------------------------
+
+/// A finding here means a web shell responded — a known shell file name that
+/// the server answered with a 2xx. A 404 to the same name is just someone
+/// *looking* for a shell, which `path_scanning` already covers; raising a High
+/// "shell" on that (or on a bare `cmd=`/`eval` substring) is a false positive
+/// the real-capture test exposed. So this is deliberately gated on a 2xx.
+fn web_webshell(events: &[LogEvent]) -> Vec<Finding> {
+    struct Group<'a> {
+        hits: Vec<&'a LogEvent>,
+    }
+    let mut groups: BTreeMap<String, Group> = BTreeMap::new();
+
+    for e in events {
+        if e.source != LogSource::WebAccess {
+            continue;
+        }
+        let path = e.fields.get("path").map(|s| s.as_str()).unwrap_or("");
+        if path.is_empty() {
+            continue;
+        }
+        // The shell has to have answered, not 404'd on a recon probe.
+        let status = e.fields.get("status").map(|s| s.as_str()).unwrap_or("");
+        if !status.starts_with('2') {
+            continue;
+        }
+        let hay = percent_decode(path).to_ascii_lowercase();
+        if !WEBSHELL_NAMES.iter().any(|n| hay.contains(n)) {
+            continue;
+        }
+        let ip = e.actor.clone().unwrap_or_default();
+        groups
+            .entry(ip)
+            .or_insert_with(|| Group { hits: Vec::new() })
+            .hits
+            .push(e);
+    }
+
+    let mut findings = Vec::new();
+    for (ip, group) in groups {
+        let n = group.hits.len();
+        let first = group.hits.first().unwrap();
+        let last = group.hits.last().unwrap();
+        let evidence: Vec<EvidenceRef> = group
+            .hits
+            .iter()
+            .take(MAX_EVIDENCE)
+            .map(|e| EvidenceRef::of(e))
+            .collect();
+        findings.push(Finding {
+            rule: "web-webshell".into(),
+            title: "Обращение к веб-шеллу".into(),
+            severity: Severity::High,
+            mitre: vec!["T1505.003".into()],
+            summary: format!(
+                "С адреса {} — {n} успешных обращений (2xx) к известному веб-шеллу.",
+                if ip.is_empty() {
+                    "?".into()
+                } else {
+                    ip.clone()
+                }
             ),
             actor: if ip.is_empty() { None } else { Some(ip) },
             first_time: first.timestamp.clone(),
@@ -752,6 +827,41 @@ mod tests {
         assert_eq!(sqli.actor.as_deref(), Some("192.0.2.9"));
         let trav = find(&t.findings, "web-path-traversal");
         assert!(trav.evidence.iter().any(|e| e.raw.contains("/etc/passwd")));
+    }
+
+    #[test]
+    fn a_live_webshell_2xx_is_flagged_but_a_404_probe_is_not() {
+        let d = TempDir::new("shell");
+        d.write(
+            "access.log",
+            // A recon probe for a shell → 404: not a webshell finding.
+            "203.0.113.5 - - [10/Oct/2026:14:00:00 +0000] \"GET /shell.php HTTP/1.1\" 404 10 \"-\" \"x\"\n\
+             203.0.113.5 - - [10/Oct/2026:14:00:05 +0000] \"GET /uploads/shell.php?cmd=id HTTP/1.1\" 200 42 \"-\" \"x\"\n",
+        );
+        let t = analyze_path(&d.0, &opts()).unwrap();
+        let f = find(&t.findings, "web-webshell");
+        assert_eq!(f.severity, Severity::High);
+        assert_eq!(f.actor.as_deref(), Some("203.0.113.5"));
+        // Exactly the 2xx hit is evidence, not the 404 probe.
+        assert!(f.evidence.iter().all(|e| e.raw.contains("200")));
+    }
+
+    #[test]
+    fn a_cmd_param_without_a_shell_name_is_not_a_webshell() {
+        // The real-capture false positive: a cmd= param on a 404, and an
+        // eval-stdin recon probe, must not raise web-webshell.
+        let d = TempDir::new("noshell");
+        d.write(
+            "access.log",
+            "203.0.113.6 - - [10/Oct/2026:14:00:00 +0000] \"GET /run?cmd=%3Bcat%20%2Fetc%2Fpasswd HTTP/1.1\" 404 10 \"-\" \"x\"\n\
+             203.0.113.6 - - [10/Oct/2026:14:00:01 +0000] \"GET /vendor/phpunit/phpunit/src/Util/PHP/eval-stdin.php HTTP/1.1\" 404 10 \"-\" \"x\"\n",
+        );
+        let t = analyze_path(&d.0, &opts()).unwrap();
+        assert!(
+            t.findings.iter().all(|f| f.rule != "web-webshell"),
+            "{:#?}",
+            t.findings
+        );
     }
 
     #[test]

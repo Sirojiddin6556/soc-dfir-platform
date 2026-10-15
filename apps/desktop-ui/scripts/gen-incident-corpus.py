@@ -141,6 +141,9 @@ def write_nginx(path):
         '"POST /upload.php HTTP/1.1" 200 42',
         '"GET /tpl?name=%7B%7B7%2A7%7D%7D HTTP/1.1" 200 88',
         '"GET /run?cmd=%3Bcat%20%2Fetc%2Fpasswd HTTP/1.1" 200 241',
+        # The attacker uploads a web shell, then uses it — a known shell file
+        # name the server actually answers (2xx): a real web-shell hit.
+        '"GET /uploads/shell.php?cmd=id HTTP/1.1" 200 57',
     ]
     for i, a in enumerate(attacks):
         rows.append((14, 9, 10, i,

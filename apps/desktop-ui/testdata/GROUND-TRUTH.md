@@ -26,7 +26,7 @@ ran on the same host (a lab), so it is an internal source.
   `UNION SELECT`), path traversal (`../../../../etc/passwd`), SSTI (`{{7*7}}`),
   OS command injection (`;cat /etc/passwd`), PHP wrapper LFI (`php://filter`).
 
-**Expected findings (7), all actor `127.0.0.1`:**
+**Expected findings (6), all actor `127.0.0.1`:**
 
 | severity | rule | MITRE | from |
 |---|---|---|---|
@@ -35,18 +35,18 @@ ran on the same host (a lab), so it is an internal source.
 | high | web-rfi-lfi | T1190 | `php://` wrapper |
 | high | web-ssti | T1190 | `{{7*7}}` |
 | high | web-cmd-injection | T1190 | `;cat /etc/passwd` |
-| high | web-webshell | T1505.003 | *see note* |
 | medium | web-path-scan | T1595 | the 20 distinct 404s |
 
 **Expected links: none.** One host, one internal source — correct: cross-host
 links are raised only for an external source spanning several hosts.
 
-**Known loose match (honest note):** `web-webshell` fires here partly on the
-`cmd=` parameter of the command-injection request and on `eval` inside the
-`…/eval-stdin.php` recon probe. Those are a recon probe and a cmd-injection
-attempt, not an actual web shell — the webshell signatures (`cmd=`, `/eval`)
-are broad. A real incident would still want a human to confirm it; worth
-tightening later.
+**No `web-webshell` here — and that is correct.** Every request in this capture
+got a 404 (the bare nginx has no such routes), so there is no live shell. The
+webshell detector is gated on a known shell file name that the server actually
+answered (2xx); a 404 probe is recon, which `web-path-scan` already covers.
+(An earlier version fired here on the `cmd=` parameter and on `eval` in the
+`…/eval-stdin.php` probe — a false positive this real capture exposed and that
+is now fixed.)
 
 ---
 
@@ -63,7 +63,8 @@ Scenario: attacker `45.137.21.134` brute-forces SSH on both hosts and breaks
 the shared `deploy` account, then (as `deploy`, via sudo) installs netcat,
 runs `curl http://… | bash`, and wipes journals; on `web01` the account
 `svc-update` is created. Separately `185.220.101.47` scans `web01` for admin
-panels and fires web-attack payloads. Benign: `ubuntu` logs in by key from
+panels, fires web-attack payloads, and uses an uploaded web shell
+(`/uploads/shell.php?cmd=id` → 200). Benign: `ubuntu` logs in by key from
 internal `10.0.3.11`/`192.168.1.50`; normal `GET /index.html` 200s.
 
 **Expected findings (11):**
@@ -72,7 +73,8 @@ internal `10.0.3.11`/`192.168.1.50`; normal `GET /index.html` 200s.
 |---|---|---|
 | critical | ssh-bruteforce-success | 45.137.21.134 |
 | critical | cmd-log-clearing | deploy |
-| high | web-sqli / web-path-traversal / web-ssti / web-cmd-injection / web-webshell | 185.220.101.47 |
+| high | web-sqli / web-path-traversal / web-ssti / web-cmd-injection | 185.220.101.47 |
+| high | web-webshell (200 to `/uploads/shell.php?cmd=id`) | 185.220.101.47 |
 | high | cmd-download-exec | deploy |
 | medium | web-path-scan | 185.220.101.47 |
 | medium | account-created | svc-update |
