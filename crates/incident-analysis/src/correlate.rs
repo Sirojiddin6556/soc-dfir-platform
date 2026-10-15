@@ -19,6 +19,7 @@
 //! of correlation (never guessed).
 
 use std::collections::BTreeMap;
+use std::net::IpAddr;
 
 use crate::detect::{EvidenceRef, Finding, Severity};
 use crate::{LogEvent, LogSource, Outcome};
@@ -27,6 +28,43 @@ use crate::{LogEvent, LogSource, Outcome};
 const MAX_EVIDENCE_PER_HOST: usize = 4;
 /// Hosts whose evidence is included before the rest are summarized by count.
 const MAX_HOSTS_EVIDENCE: usize = 8;
+
+/// Whether a source address is on the local/internal network rather than the
+/// public internet: private (RFC1918), loopback, link-local, unspecified and
+/// carrier-grade-NAT v4, plus unique-local and link-local v6. Documentation
+/// ranges (`198.51.100.x` etc.) are treated as external — they stand in for
+/// public addresses. An unparseable value is not internal.
+///
+/// Why it matters: a *shared internal* IP or account spanning several hosts is
+/// everyday operations — a jump host, a config-management box, an admin's
+/// workstation, a service account. Flagging those as cross-host "links" buries
+/// the real signal. A cross-host indicator is a lead worth raising when the
+/// access came from *outside*: an external address spraying the fleet, or a
+/// shared account broken into from the internet (lateral movement / valid-
+/// accounts reuse). So correlation links are gated on an external source.
+fn is_internal_ip(s: &str) -> bool {
+    match s.parse::<IpAddr>() {
+        Ok(IpAddr::V4(a)) => {
+            a.is_private() || a.is_loopback() || a.is_link_local() || a.is_unspecified() || {
+                // 100.64.0.0/10 — carrier-grade NAT, not a specific host.
+                let o = a.octets();
+                o[0] == 100 && (64..=127).contains(&o[1])
+            }
+        }
+        Ok(IpAddr::V6(a)) => {
+            a.is_loopback()
+                || a.is_unspecified()
+                || (a.segments()[0] & 0xfe00) == 0xfc00 // fc00::/7 unique local
+                || (a.segments()[0] & 0xffc0) == 0xfe80 // fe80::/10 link local
+        }
+        Err(_) => false,
+    }
+}
+
+/// A source address on the public internet: it parses and is not internal.
+fn is_external_ip(s: &str) -> bool {
+    s.parse::<IpAddr>().is_ok() && !is_internal_ip(s)
+}
 
 /// Which host an event belongs to: the first path segment of its
 /// `source_file` (the per-host folder a collection uses), else the syslog
@@ -127,6 +165,11 @@ fn cross_host_ip(events: &[LogEvent]) -> Vec<Finding> {
         if per.by_host.len() < 2 {
             continue;
         }
+        // An internal address reaching several hosts is normal operations
+        // (jump host, admin box); only an external source is a lead.
+        if !is_external_ip(&ip) {
+            continue;
+        }
         let hosts: Vec<String> = per.by_host.keys().cloned().collect();
         let (evidence, first_time, last_time) = evidence_and_range(&per.by_host);
         let (severity, mitre) = if per.any_success {
@@ -168,7 +211,11 @@ fn cross_host_ip(events: &[LogEvent]) -> Vec<Finding> {
 // ---------------------------------------------------------------------------
 
 fn cross_host_account(events: &[LogEvent]) -> Vec<Finding> {
-    let mut by_user: BTreeMap<String, BTreeMap<String, Vec<&LogEvent>>> = BTreeMap::new();
+    struct PerUser<'a> {
+        by_host: BTreeMap<String, Vec<&'a LogEvent>>,
+        any_external: bool,
+    }
+    let mut by_user: BTreeMap<String, PerUser> = BTreeMap::new();
 
     for e in events {
         if e.source != LogSource::Auth || e.outcome != Some(Outcome::Success) {
@@ -180,17 +227,26 @@ fn cross_host_account(events: &[LogEvent]) -> Vec<Finding> {
         let Some(host) = event_host(e) else {
             continue;
         };
-        by_user
-            .entry(user.clone())
-            .or_default()
-            .entry(host)
-            .or_default()
-            .push(e);
+        let entry = by_user.entry(user.clone()).or_insert_with(|| PerUser {
+            by_host: BTreeMap::new(),
+            any_external: false,
+        });
+        entry.by_host.entry(host).or_default().push(e);
+        if e.fields.get("src_ip").is_some_and(|ip| is_external_ip(ip)) {
+            entry.any_external = true;
+        }
     }
 
     let mut findings = Vec::new();
-    for (user, by_host) in by_user {
+    for (user, per) in by_user {
+        let by_host = per.by_host;
         if by_host.len() < 2 {
+            continue;
+        }
+        // A shared account used across hosts only from inside the network is
+        // ordinary (ops/service accounts); raise it when at least one of those
+        // logins came from the public internet — the valid-accounts-reuse lead.
+        if !per.any_external {
             continue;
         }
         let hosts: Vec<String> = by_host.keys().cloned().collect();
@@ -356,6 +412,80 @@ mod tests {
         );
         let t = analyze_path(&d.0, &opts()).unwrap();
         assert!(t.links.iter().all(|l| l.rule != "link-account-multi-host"));
+    }
+
+    #[test]
+    fn an_internal_ip_across_hosts_is_not_a_link() {
+        // A private address reaching two hosts (a jump host / admin box) is
+        // normal operations, not a cross-host lead.
+        let d = TempDir::new("intip");
+        d.write_host(
+            "web01",
+            "auth.log",
+            "Oct 10 10:00:00 web01 sshd[1]: Accepted publickey for ubuntu from 10.0.3.11 port 1 ssh2\n",
+        );
+        d.write_host(
+            "db01",
+            "auth.log",
+            "Oct 10 10:05:00 db01 sshd[1]: Accepted publickey for ubuntu from 10.0.3.11 port 2 ssh2\n",
+        );
+        let t = analyze_path(&d.0, &opts()).unwrap();
+        assert!(
+            t.links.iter().all(|l| l.rule != "link-ip-multi-host"),
+            "{:#?}",
+            t.links
+        );
+    }
+
+    #[test]
+    fn an_account_only_from_internal_ips_is_not_linked() {
+        // The same admin account on two hosts, but every login from the LAN —
+        // ordinary shared access, suppressed.
+        let d = TempDir::new("intacct");
+        d.write_host(
+            "web01",
+            "auth.log",
+            "Oct 10 10:00:00 web01 sshd[1]: Accepted publickey for ubuntu from 10.0.3.11 port 1 ssh2\n",
+        );
+        d.write_host(
+            "db01",
+            "auth.log",
+            "Oct 10 10:05:00 db01 sshd[1]: Accepted publickey for ubuntu from 192.168.1.50 port 2 ssh2\n",
+        );
+        let t = analyze_path(&d.0, &opts()).unwrap();
+        assert!(
+            t.links.iter().all(|l| l.rule != "link-account-multi-host"),
+            "{:#?}",
+            t.links
+        );
+    }
+
+    #[test]
+    fn classifies_internal_and_external_addresses() {
+        for ip in [
+            "10.0.3.11",
+            "192.168.1.50",
+            "172.16.5.9",
+            "127.0.0.1",
+            "100.100.1.1",
+            "fe80::1",
+            "fc00::1",
+        ] {
+            assert!(is_internal_ip(ip), "{ip} should be internal");
+            assert!(!is_external_ip(ip), "{ip} should not be external");
+        }
+        for ip in [
+            "45.137.21.134",
+            "203.0.113.9",
+            "198.51.100.4",
+            "8.8.8.8",
+            "2606:4700::1111",
+        ] {
+            assert!(!is_internal_ip(ip), "{ip} should not be internal");
+            assert!(is_external_ip(ip), "{ip} should be external");
+        }
+        assert!(!is_external_ip("not-an-ip"));
+        assert!(!is_internal_ip("not-an-ip"));
     }
 
     #[test]
