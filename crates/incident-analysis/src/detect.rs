@@ -1,0 +1,606 @@
+//! DFIR stage 2 — heuristic detections («подсказки») over the parsed timeline.
+//!
+//! Each detector reads the normalized [`LogEvent`]s and raises a [`Finding`]
+//! only from facts already on the timeline. Every finding carries the exact
+//! log lines it rests on ([`EvidenceRef`]), a UTC time range and the relevant
+//! MITRE ATT&CK technique id — so the analyst can confirm it against the
+//! source, and nothing is asserted without a concrete line. The analyst
+//! decides; these are leads, not verdicts.
+
+use std::collections::BTreeMap;
+
+use serde::{Deserialize, Serialize};
+
+use crate::{LogEvent, LogSource, Outcome};
+
+/// How serious a lead is. Serializes lowercase to match the rest of the UI.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Severity {
+    Low,
+    Medium,
+    High,
+    Critical,
+}
+
+/// A pointer to one log line that supports a finding.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EvidenceRef {
+    pub timestamp: String,
+    pub source_file: String,
+    pub line_no: usize,
+    pub summary: String,
+    pub raw: String,
+}
+
+impl EvidenceRef {
+    fn of(e: &LogEvent) -> Self {
+        Self {
+            timestamp: e.timestamp.clone(),
+            source_file: e.source_file.clone(),
+            line_no: e.line_no,
+            summary: e.summary.clone(),
+            raw: e.raw.clone(),
+        }
+    }
+}
+
+/// One detection lead.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Finding {
+    /// Rule id, e.g. `ssh-bruteforce-success`.
+    pub rule: String,
+    pub title: String,
+    pub severity: Severity,
+    /// MITRE ATT&CK technique ids, e.g. `T1110`.
+    pub mitre: Vec<String>,
+    pub summary: String,
+    /// Who/what the lead is about (an IP, a user), when there is one.
+    pub actor: Option<String>,
+    pub first_time: String,
+    pub last_time: String,
+    /// The log lines this rests on (bounded).
+    pub evidence: Vec<EvidenceRef>,
+}
+
+/// Evidence lines kept per finding, at most.
+const MAX_EVIDENCE: usize = 12;
+/// Failed SSH logins from one IP before it counts as brute force.
+const SSH_FAIL_THRESHOLD: usize = 5;
+/// Distinct 404 paths from one IP before it counts as path scanning.
+const SCAN_404_THRESHOLD: usize = 15;
+
+/// Run every detector over the timeline and return the leads, worst first.
+pub fn detect(events: &[LogEvent]) -> Vec<Finding> {
+    let mut out = Vec::new();
+    out.extend(ssh_bruteforce(events));
+    out.extend(web_attacks(events));
+    out.extend(path_scanning(events));
+    out.extend(account_creation(events));
+
+    // Worst severity first, then earliest.
+    out.sort_by(|a, b| {
+        b.severity
+            .cmp(&a.severity)
+            .then_with(|| a.first_time.cmp(&b.first_time))
+    });
+    out
+}
+
+// ---------------------------------------------------------------------------
+// SSH brute force (optionally leading to a successful login)
+// ---------------------------------------------------------------------------
+
+fn ssh_bruteforce(events: &[LogEvent]) -> Vec<Finding> {
+    struct PerIp<'a> {
+        failures: Vec<&'a LogEvent>,
+        first_success: Option<&'a LogEvent>,
+    }
+    let mut by_ip: BTreeMap<String, PerIp> = BTreeMap::new();
+
+    for e in events {
+        if e.source != LogSource::Auth {
+            continue;
+        }
+        let Some(ip) = e.fields.get("src_ip") else {
+            continue;
+        };
+        if ip.is_empty() {
+            continue;
+        }
+        let entry = by_ip.entry(ip.clone()).or_insert_with(|| PerIp {
+            failures: Vec::new(),
+            first_success: None,
+        });
+        match e.outcome {
+            Some(Outcome::Failure) => entry.failures.push(e),
+            Some(Outcome::Success) if entry.first_success.is_none() => {
+                entry.first_success = Some(e);
+            }
+            _ => {}
+        }
+    }
+
+    let mut findings = Vec::new();
+    for (ip, per) in by_ip {
+        if per.failures.len() < SSH_FAIL_THRESHOLD {
+            continue;
+        }
+        let n = per.failures.len();
+        // Evidence: the first few and the last few failures.
+        let mut evidence: Vec<EvidenceRef> = Vec::new();
+        for e in per.failures.iter().take(MAX_EVIDENCE / 2) {
+            evidence.push(EvidenceRef::of(e));
+        }
+        if n > MAX_EVIDENCE / 2 {
+            for e in per.failures.iter().skip(n.saturating_sub(MAX_EVIDENCE / 2)) {
+                evidence.push(EvidenceRef::of(e));
+            }
+        }
+        let first_fail = per.failures.first().unwrap();
+        let last_fail = per.failures.last().unwrap();
+
+        if let Some(success) = per.first_success {
+            // A success from the same IP after a burst of failures — treat the
+            // success as the likely moment of compromise.
+            if success.timestamp >= first_fail.timestamp {
+                evidence.push(EvidenceRef::of(success));
+                let user = success.fields.get("user").cloned().unwrap_or_default();
+                findings.push(Finding {
+                    rule: "ssh-bruteforce-success".into(),
+                    title: "Подбор пароля SSH с последующим успешным входом".into(),
+                    severity: Severity::Critical,
+                    mitre: vec!["T1110".into(), "T1078".into()],
+                    summary: format!(
+                        "С адреса {ip} — {n} неудачных попыток входа по SSH, затем успешный вход{}. Вероятный момент компрометации.",
+                        if user.is_empty() { String::new() } else { format!(" под пользователем {user}") }
+                    ),
+                    actor: Some(ip.clone()),
+                    first_time: first_fail.timestamp.clone(),
+                    last_time: success.timestamp.clone(),
+                    evidence,
+                });
+                continue;
+            }
+        }
+        findings.push(Finding {
+            rule: "ssh-bruteforce".into(),
+            title: "Подбор пароля SSH".into(),
+            severity: Severity::High,
+            mitre: vec!["T1110".into()],
+            summary: format!("С адреса {ip} — {n} неудачных попыток входа по SSH, успешного входа не зафиксировано."),
+            actor: Some(ip.clone()),
+            first_time: first_fail.timestamp.clone(),
+            last_time: last_fail.timestamp.clone(),
+            evidence,
+        });
+    }
+    findings
+}
+
+// ---------------------------------------------------------------------------
+// Web attacks in access logs
+// ---------------------------------------------------------------------------
+
+/// A class of web attack and the lowercase substrings that signal it in a
+/// request path/query. Kept deliberately specific to limit false positives.
+struct WebSig {
+    rule: &'static str,
+    title: &'static str,
+    mitre: &'static str,
+    needles: &'static [&'static str],
+}
+
+const WEB_SIGS: &[WebSig] = &[
+    WebSig {
+        rule: "web-sqli",
+        title: "Попытка SQL-инъекции",
+        mitre: "T1190",
+        needles: &[
+            "union select",
+            "union all select",
+            "' or '1'='1",
+            "or 1=1",
+            "information_schema",
+            "sleep(",
+            "benchmark(",
+            "' or 1=1",
+            "\" or \"1\"=\"1",
+            "/**/",
+            "concat(",
+        ],
+    },
+    WebSig {
+        rule: "web-path-traversal",
+        title: "Обход каталога (path traversal)",
+        mitre: "T1083",
+        needles: &[
+            "../../",
+            "..%2f",
+            "%2e%2e%2f",
+            "%2e%2e/",
+            "..\\",
+            "/etc/passwd",
+            "..%5c",
+        ],
+    },
+    WebSig {
+        rule: "web-rfi-lfi",
+        title: "Подключение файла (LFI/RFI)",
+        mitre: "T1190",
+        needles: &[
+            "php://",
+            "file://",
+            "data://",
+            "expect://",
+            "=http://",
+            "=https://",
+        ],
+    },
+    WebSig {
+        rule: "web-ssti",
+        title: "Подстановка в шаблон (SSTI)",
+        mitre: "T1190",
+        needles: &["{{", "${", "<%=", "#{", "{%"],
+    },
+    WebSig {
+        rule: "web-cmd-injection",
+        title: "Внедрение команды ОС",
+        mitre: "T1190",
+        needles: &[
+            ";id", "|id", "$(", "`id`", ";cat ", "%3bcat", "wget ", "curl ", ";whoami", "|whoami",
+        ],
+    },
+    WebSig {
+        rule: "web-webshell",
+        title: "Обращение к веб-шеллу",
+        mitre: "T1505.003",
+        needles: &[
+            "c99.php",
+            "r57.php",
+            "shell.php",
+            "cmd.php",
+            "wso.php",
+            "b374k",
+            "/eval",
+            "cmd=",
+        ],
+    },
+];
+
+/// Decode `%XX` escapes and `+` in a request target, so an encoded payload is
+/// matched the same as a literal one. One pass, lossy UTF-8; unknown escapes
+/// are left as-is.
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'%' if i + 2 < bytes.len() => {
+                let hi = (bytes[i + 1] as char).to_digit(16);
+                let lo = (bytes[i + 2] as char).to_digit(16);
+                if let (Some(h), Some(l)) = (hi, lo) {
+                    out.push((h * 16 + l) as u8);
+                    i += 3;
+                } else {
+                    out.push(b'%');
+                    i += 1;
+                }
+            }
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            c => {
+                out.push(c);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn web_attacks(events: &[LogEvent]) -> Vec<Finding> {
+    // Group matches by (signature, client ip) so a scan is one finding.
+    struct Group<'a> {
+        hits: Vec<&'a LogEvent>,
+    }
+    let mut groups: BTreeMap<(&'static str, String), Group> = BTreeMap::new();
+
+    for e in events {
+        if e.source != LogSource::WebAccess {
+            continue;
+        }
+        let path = e.fields.get("path").map(|s| s.as_str()).unwrap_or("");
+        if path.is_empty() {
+            continue;
+        }
+        // Attack payloads in a request are URL-encoded (a raw space would
+        // break the log line), so decode before matching.
+        let hay = percent_decode(path).to_ascii_lowercase();
+        let ip = e.actor.clone().unwrap_or_default();
+        for sig in WEB_SIGS {
+            if sig.needles.iter().any(|n| hay.contains(n)) {
+                groups
+                    .entry((sig.rule, ip.clone()))
+                    .or_insert_with(|| Group { hits: Vec::new() })
+                    .hits
+                    .push(e);
+            }
+        }
+    }
+
+    let mut findings = Vec::new();
+    for ((rule, ip), group) in groups {
+        let sig = WEB_SIGS.iter().find(|s| s.rule == rule).unwrap();
+        let n = group.hits.len();
+        let first = group.hits.first().unwrap();
+        let last = group.hits.last().unwrap();
+        let evidence: Vec<EvidenceRef> = group
+            .hits
+            .iter()
+            .take(MAX_EVIDENCE)
+            .map(|e| EvidenceRef::of(e))
+            .collect();
+        findings.push(Finding {
+            rule: rule.into(),
+            title: sig.title.into(),
+            severity: Severity::High,
+            mitre: vec![sig.mitre.into()],
+            summary: format!(
+                "С адреса {} — {n} запрос(ов) с признаками «{}».",
+                if ip.is_empty() {
+                    "?".into()
+                } else {
+                    ip.clone()
+                },
+                sig.title
+            ),
+            actor: if ip.is_empty() { None } else { Some(ip) },
+            first_time: first.timestamp.clone(),
+            last_time: last.timestamp.clone(),
+            evidence,
+        });
+    }
+    findings
+}
+
+// ---------------------------------------------------------------------------
+// Path scanning / enumeration (many distinct 404s from one IP)
+// ---------------------------------------------------------------------------
+
+fn path_scanning(events: &[LogEvent]) -> Vec<Finding> {
+    struct PerIp<'a> {
+        paths: std::collections::BTreeSet<String>,
+        hits: Vec<&'a LogEvent>,
+    }
+    let mut by_ip: BTreeMap<String, PerIp> = BTreeMap::new();
+
+    for e in events {
+        if e.source != LogSource::WebAccess {
+            continue;
+        }
+        let status = e.fields.get("status").map(|s| s.as_str()).unwrap_or("");
+        if status != "404" {
+            continue;
+        }
+        let ip = e.actor.clone().unwrap_or_default();
+        if ip.is_empty() {
+            continue;
+        }
+        let path = e.fields.get("path").cloned().unwrap_or_default();
+        let entry = by_ip.entry(ip).or_insert_with(|| PerIp {
+            paths: std::collections::BTreeSet::new(),
+            hits: Vec::new(),
+        });
+        entry.paths.insert(path);
+        entry.hits.push(e);
+    }
+
+    let mut findings = Vec::new();
+    for (ip, per) in by_ip {
+        if per.paths.len() < SCAN_404_THRESHOLD {
+            continue;
+        }
+        let distinct = per.paths.len();
+        let first = per.hits.first().unwrap();
+        let last = per.hits.last().unwrap();
+        let evidence: Vec<EvidenceRef> = per
+            .hits
+            .iter()
+            .take(MAX_EVIDENCE)
+            .map(|e| EvidenceRef::of(e))
+            .collect();
+        findings.push(Finding {
+            rule: "web-path-scan".into(),
+            title: "Сканирование/перебор путей".into(),
+            severity: Severity::Medium,
+            mitre: vec!["T1595".into()],
+            summary: format!("С адреса {ip} — {distinct} различных несуществующих путей (404). Похоже на автоматический перебор."),
+            actor: Some(ip),
+            first_time: first.timestamp.clone(),
+            last_time: last.timestamp.clone(),
+            evidence,
+        });
+    }
+    findings
+}
+
+// ---------------------------------------------------------------------------
+// Local account creation
+// ---------------------------------------------------------------------------
+
+fn account_creation(events: &[LogEvent]) -> Vec<Finding> {
+    let mut findings = Vec::new();
+    for e in events {
+        if e.source != LogSource::Auth && e.source != LogSource::Syslog {
+            continue;
+        }
+        let hay = e.raw.to_ascii_lowercase();
+        let is_new_user =
+            hay.contains("new user:") || hay.contains("useradd[") || hay.contains("useradd:");
+        if !is_new_user {
+            continue;
+        }
+        findings.push(Finding {
+            rule: "account-created".into(),
+            title: "Создана учётная запись".into(),
+            severity: Severity::Medium,
+            mitre: vec!["T1136".into()],
+            summary: format!("Создание новой учётной записи: {}", e.summary),
+            actor: None,
+            first_time: e.timestamp.clone(),
+            last_time: e.timestamp.clone(),
+            evidence: vec![EvidenceRef::of(e)],
+        });
+    }
+    findings
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{analyze_path, Options};
+    use std::io::Write;
+
+    struct TempDir(std::path::PathBuf);
+    impl TempDir {
+        fn new(tag: &str) -> Self {
+            let mut p = std::env::temp_dir();
+            p.push(format!(
+                "incident-det-{tag}-{}-{:?}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            std::fs::create_dir_all(&p).unwrap();
+            TempDir(p)
+        }
+        fn write(&self, name: &str, body: &str) {
+            let mut f = std::fs::File::create(self.0.join(name)).unwrap();
+            f.write_all(body.as_bytes()).unwrap();
+        }
+    }
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    fn opts() -> Options {
+        Options {
+            assume_year: Some(2026),
+            ..Options::default()
+        }
+    }
+    fn find<'a>(f: &'a [Finding], rule: &str) -> &'a Finding {
+        f.iter()
+            .find(|x| x.rule == rule)
+            .unwrap_or_else(|| panic!("no finding {rule} in {f:#?}"))
+    }
+
+    #[test]
+    fn bruteforce_then_success_is_critical_with_the_success_line() {
+        let d = TempDir::new("bf");
+        let mut body = String::new();
+        for i in 0..6 {
+            body.push_str(&format!(
+                "Oct 10 13:55:{:02} web01 sshd[2200]: Failed password for invalid user admin from 192.0.2.50 port 5000{} ssh2\n",
+                30 + i, i
+            ));
+        }
+        body.push_str("Oct 10 13:56:10 web01 sshd[2211]: Accepted password for deploy from 192.0.2.50 port 50422 ssh2\n");
+        d.write("auth.log", &body);
+
+        let t = analyze_path(&d.0, &opts()).unwrap();
+        let f = find(&t.findings, "ssh-bruteforce-success");
+        assert_eq!(f.severity, Severity::Critical);
+        assert_eq!(f.actor.as_deref(), Some("192.0.2.50"));
+        assert!(f.mitre.iter().any(|m| m == "T1110"));
+        // The success line is in the evidence.
+        assert!(f
+            .evidence
+            .iter()
+            .any(|e| e.raw.contains("Accepted password for deploy")));
+    }
+
+    #[test]
+    fn failures_without_success_are_high_not_critical() {
+        let d = TempDir::new("bfonly");
+        let mut body = String::new();
+        for i in 0..6 {
+            body.push_str(&format!(
+                "Oct 10 13:55:{:02} web01 sshd[2200]: Failed password for root from 198.51.100.7 port 600{} ssh2\n",
+                30 + i, i
+            ));
+        }
+        d.write("auth.log", &body);
+        let t = analyze_path(&d.0, &opts()).unwrap();
+        let f = find(&t.findings, "ssh-bruteforce");
+        assert_eq!(f.severity, Severity::High);
+        assert!(t
+            .findings
+            .iter()
+            .all(|x| x.rule != "ssh-bruteforce-success"));
+    }
+
+    #[test]
+    fn four_failures_do_not_trigger() {
+        let d = TempDir::new("few");
+        let mut body = String::new();
+        for i in 0..4 {
+            body.push_str(&format!(
+                "Oct 10 13:55:{:02} web01 sshd[2200]: Failed password for root from 203.0.113.1 port 600{} ssh2\n",
+                30 + i, i
+            ));
+        }
+        d.write("auth.log", &body);
+        let t = analyze_path(&d.0, &opts()).unwrap();
+        assert!(t
+            .findings
+            .iter()
+            .all(|x| !x.rule.starts_with("ssh-bruteforce")));
+    }
+
+    #[test]
+    fn sqli_and_traversal_in_access_log_are_flagged() {
+        let d = TempDir::new("web");
+        d.write(
+            "access.log",
+            "192.0.2.9 - - [10/Oct/2026:14:00:00 +0000] \"GET /p?id=1'%20UNION%20SELECT%20password%20FROM%20users HTTP/1.1\" 200 10 \"-\" \"x\"\n\
+             192.0.2.9 - - [10/Oct/2026:14:00:01 +0000] \"GET /../../etc/passwd HTTP/1.1\" 404 10 \"-\" \"x\"\n",
+        );
+        let t = analyze_path(&d.0, &opts()).unwrap();
+        let sqli = find(&t.findings, "web-sqli");
+        assert_eq!(sqli.severity, Severity::High);
+        assert_eq!(sqli.actor.as_deref(), Some("192.0.2.9"));
+        let trav = find(&t.findings, "web-path-traversal");
+        assert!(trav.evidence.iter().any(|e| e.raw.contains("/etc/passwd")));
+    }
+
+    #[test]
+    fn a_benign_request_raises_nothing() {
+        let d = TempDir::new("benign");
+        d.write(
+            "access.log",
+            "192.0.2.9 - - [10/Oct/2026:14:00:00 +0000] \"GET /index.html HTTP/1.1\" 200 10 \"-\" \"Mozilla\"\n",
+        );
+        let t = analyze_path(&d.0, &opts()).unwrap();
+        assert!(t.findings.is_empty(), "{:#?}", t.findings);
+    }
+
+    #[test]
+    fn new_account_is_detected() {
+        let d = TempDir::new("acct");
+        d.write(
+            "auth.log",
+            "Oct 10 14:05:00 web01 useradd[3001]: new user: name=backdoor, UID=0, GID=0, home=/root, shell=/bin/bash\n",
+        );
+        let t = analyze_path(&d.0, &opts()).unwrap();
+        let f = find(&t.findings, "account-created");
+        assert!(f.mitre.iter().any(|m| m == "T1136"));
+        assert!(f.evidence[0].raw.contains("backdoor"));
+    }
+}

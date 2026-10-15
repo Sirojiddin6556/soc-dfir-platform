@@ -19,6 +19,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod detect;
 mod ingest;
 mod parse;
 
@@ -120,6 +121,10 @@ pub struct Timeline {
     pub events: Vec<LogEvent>,
     /// One entry per ingested log file.
     pub files: Vec<FileSummary>,
+    /// Heuristic detections («подсказки») derived from the events. Each is a
+    /// lead backed by concrete log lines; the analyst confirms them.
+    #[serde(default)]
+    pub findings: Vec<detect::Finding>,
     /// Earliest and latest event time (RFC 3339), when any event was parsed.
     pub first_event: Option<String>,
     pub last_event: Option<String>,
@@ -247,6 +252,7 @@ pub fn analyze_path(root: &Path, opts: &Options) -> Result<Timeline, IngestError
     });
     timeline.first_event = timeline.events.first().map(|e| e.timestamp.clone());
     timeline.last_event = timeline.events.last().map(|e| e.timestamp.clone());
+    timeline.findings = detect::detect(&timeline.events);
     Ok(timeline)
 }
 

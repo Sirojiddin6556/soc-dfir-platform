@@ -624,6 +624,11 @@ const incidentStatus = (v, extra = {}) => ({
     last_event: v,
     warnings: [v],
     files: [{ path: v, source: 'web_access', lines: 10, parsed: 9, compressed: true, sha256: v, bytes: 4096 }],
+    findings: [{
+      rule: v, title: v, severity: 'high', mitre: [v], summary: v, actor: v,
+      first_time: v, last_time: v,
+      evidence: [{ timestamp: v, source_file: v, line_no: 7, summary: v, raw: v }],
+    }],
     summary: { total_events: 1, files: 1, by_source: { web_access: 1, auth: 1 } },
     events: [{
       timestamp: v, source: 'web_access', source_file: v, line_no: 7,

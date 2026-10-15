@@ -28,6 +28,14 @@ function sourceLabel(s) {
   return SOURCE[s]?.label || s;
 }
 
+/** Severity labels for findings. */
+const SEV_LABEL = {
+  critical: 'КРИТ',
+  high: 'ВЫСОКИЙ',
+  medium: 'СРЕДНИЙ',
+  low: 'НИЗКИЙ',
+};
+
 /** Human-readable byte size. */
 function fmtBytes(n) {
   const b = Number(n) || 0;
@@ -253,6 +261,9 @@ export class IncidentSpace {
     }
     html += '</div>';
 
+    // Detections («Находки») — the headline, right under the summary.
+    html += this.findingsPanelHtml(report);
+
     // Per-file breakdown, with the SHA-256 (chain of custody).
     if (Array.isArray(report.files) && report.files.length) {
       html += '<details class="inc-files"><summary>Файлы и их SHA-256 (' + report.files.length + ')</summary>';
@@ -315,12 +326,21 @@ export class IncidentSpace {
       this.query = ev.target.value;
       this.renderTimelineOnly();
     });
-    // Evidence: mark a row (★) or remove from the evidence panel (✕).
+    // Delegated clicks: evidence star/remove, and "на шкалу" finding filter.
     panel.addEventListener('click', (ev) => {
-      const btn = ev.target.closest('.inc-star, .inc-ev-del');
-      if (!btn) return;
-      const key = btn.dataset.evkey;
-      if (key) this.toggleEvidence(key);
+      const star = ev.target.closest('.inc-star, .inc-ev-del');
+      if (star && star.dataset.evkey) {
+        this.toggleEvidence(star.dataset.evkey);
+        return;
+      }
+      const filter = ev.target.closest('.inc-find-filter');
+      if (filter && filter.dataset.actor) {
+        this.query = filter.dataset.actor;
+        this.sourceFilter = '';
+        this.renderResult();
+        const q = this.container?.querySelector('#incQuery');
+        if (q) q.value = this.query;
+      }
     });
   }
 
@@ -367,6 +387,45 @@ export class IncidentSpace {
     html += `<div class="inc-summary-text">${escapeHtml(e.summary || '')}</div>`;
     const loc = `${e.source_file || ''}:${e.line_no || ''}`;
     html += `<div class="inc-raw"><span class="inc-loc">${escapeHtml(loc)}</span><code>${escapeHtml(e.raw || '')}</code></div>`;
+    html += '</div>';
+    return html;
+  }
+
+  findingsPanelHtml(report) {
+    const findings = Array.isArray(report.findings) ? report.findings : [];
+    if (!findings.length) {
+      return '<div class="inc-findings inc-findings-empty">Подсказок нет: автоматические признаки атаки по этим логам не найдены. Разберите шкалу вручную.</div>';
+    }
+    let html = `<div class="inc-findings"><div class="inc-findings-head">Находки (${findings.length})</div>`;
+    for (const f of findings) {
+      const sev = String(f.severity || 'low');
+      html += `<details class="inc-find inc-sev-${escapeAttr(sev)}">`;
+      html += '<summary>';
+      html += `<span class="inc-sev-badge inc-sev-${escapeAttr(sev)}">${escapeHtml(SEV_LABEL[sev] || sev)}</span> `;
+      html += `<span class="inc-find-title">${escapeHtml(f.title || f.rule || '')}</span>`;
+      for (const m of f.mitre || []) html += ` <span class="inc-mitre">${escapeHtml(m)}</span>`;
+      html += '</summary>';
+      html += `<div class="inc-find-body">`;
+      html += `<div class="inc-find-summary">${escapeHtml(f.summary || '')}</div>`;
+      const range = f.first_time === f.last_time
+        ? escapeHtml(f.first_time || '')
+        : `${escapeHtml(f.first_time || '')} — ${escapeHtml(f.last_time || '')}`;
+      html += `<div class="inc-find-meta">${range}`;
+      if (f.actor) {
+        html += ` · <span class="inc-actor">${escapeHtml(f.actor)}</span>`;
+        html += ` <button class="inc-find-filter" data-actor="${escapeAttr(f.actor)}" title="Показать на шкале">на шкалу ↓</button>`;
+      }
+      html += '</div>';
+      if (Array.isArray(f.evidence) && f.evidence.length) {
+        html += '<div class="inc-find-evidence">';
+        for (const ev of f.evidence) {
+          const loc = `${ev.source_file || ''}:${ev.line_no || ''}`;
+          html += `<div class="inc-find-ev"><span class="inc-loc">${escapeHtml(loc)}</span> <code>${escapeHtml(ev.raw || '')}</code></div>`;
+        }
+        html += '</div>';
+      }
+      html += '</div></details>';
+    }
     html += '</div>';
     return html;
   }

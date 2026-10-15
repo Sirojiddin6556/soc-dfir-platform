@@ -32,6 +32,82 @@
   color: var(--text-muted);
 }
 
+.incident-space .inc-findings {
+  margin: 10px 0;
+}
+.incident-space .inc-findings-empty {
+  color: var(--text-muted);
+  font-size: 12px;
+  padding: 8px 0;
+}
+.incident-space .inc-findings-head {
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
+  margin-bottom: 6px;
+}
+.incident-space .inc-find {
+  border: 1px solid var(--border-muted);
+  border-left: 3px solid var(--text-muted);
+  border-radius: 6px;
+  margin-bottom: 6px;
+  background: var(--bg-surface);
+}
+.incident-space .inc-find.inc-sev-critical { border-left-color: var(--accent-critical); }
+.incident-space .inc-find.inc-sev-high { border-left-color: var(--accent-warning); }
+.incident-space .inc-find.inc-sev-medium { border-left-color: var(--accent-info); }
+.incident-space .inc-find.inc-sev-low { border-left-color: var(--text-muted); }
+.incident-space .inc-find > summary {
+  cursor: pointer;
+  padding: 8px 10px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.incident-space .inc-sev-badge {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 4px;
+  color: var(--bg-canvas);
+}
+.incident-space .inc-sev-badge.inc-sev-critical { background: var(--accent-critical); }
+.incident-space .inc-sev-badge.inc-sev-high { background: var(--accent-warning); }
+.incident-space .inc-sev-badge.inc-sev-medium { background: var(--accent-info); }
+.incident-space .inc-sev-badge.inc-sev-low { background: var(--text-muted); }
+.incident-space .inc-find-title { font-weight: 600; color: var(--text-primary); }
+.incident-space .inc-mitre {
+  font-size: 10px;
+  font-family: ui-monospace, Menlo, monospace;
+  color: var(--accent-purple);
+  border: 1px solid var(--accent-purple);
+  border-radius: 3px;
+  padding: 0 4px;
+}
+.incident-space .inc-find-body { padding: 0 10px 8px; }
+.incident-space .inc-find-summary { font-size: 13px; color: var(--text-primary); margin-bottom: 4px; }
+.incident-space .inc-find-meta { font-size: 11px; color: var(--text-secondary); margin-bottom: 6px; }
+.incident-space .inc-find-filter {
+  background: none;
+  border: 1px solid var(--border-active);
+  color: var(--border-active);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 10px;
+  padding: 1px 6px;
+}
+.incident-space .inc-find-evidence {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.incident-space .inc-find-ev {
+  font-size: 11px;
+  overflow-x: auto;
+}
+.incident-space .inc-find-ev code { color: var(--text-secondary); white-space: pre; }
+
 .incident-space .inc-hash {
   margin-top: 2px;
   font-size: 10px;
