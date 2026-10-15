@@ -12,6 +12,7 @@ members = [
     "crates/vulnerability-engine",
     "crates/code-analysis",
     "crates/web-scan",
+    "crates/incident-analysis",
     "crates/remote-scan",
     "crates/engine-server", "crates/desktop-app",
 ]

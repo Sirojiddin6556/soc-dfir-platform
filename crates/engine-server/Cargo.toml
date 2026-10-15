@@ -16,6 +16,7 @@ host-snapshot = { path = "../host-snapshot" }
 vulnerability-engine = { path = "../vulnerability-engine" }
 code-analysis = { path = "../code-analysis" }
 web-scan = { path = "../web-scan" }
+incident-analysis = { path = "../incident-analysis" }
 remote-scan = { path = "../remote-scan", features = ["ssh"] }
 
 

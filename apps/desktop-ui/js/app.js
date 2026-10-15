@@ -4,6 +4,7 @@ import { VulnerabilitySpace } from './vulns/vulns.js';
 import { CodeSpace } from './code/code.js';
 import { WebSpace } from './web/web.js';
 import { SshSpace } from './ssh/ssh.js';
+import { IncidentSpace } from './incident/incident.js';
 import { UnifiedReportSpace } from './report/unified.js';
 import { ensureSession, clearSessionToken, logout } from './auth.js';
 
@@ -19,6 +20,7 @@ class SocDfirApplication {
       code: new CodeSpace(this.ipc),
       web: new WebSpace(this.ipc),
       ssh: new SshSpace(this.ipc),
+      incident: new IncidentSpace(this.ipc),
       report: new UnifiedReportSpace(this.ipc),
     };
     this.currentSpace = DEFAULT_SPACE;

@@ -11,6 +11,7 @@ pub mod code_scan;
 pub mod dispatch;
 pub mod host_inspector;
 pub mod http;
+pub mod incident_scan;
 pub mod remote_code_scan;
 pub mod remote_scan;
 pub mod vulndb;
@@ -35,6 +36,7 @@ pub struct EngineApp {
     pub web_scan: Arc<web_scan::WebScanService>,
     pub remote_scan: Arc<remote_scan::RemoteScanService>,
     pub remote_code_scan: Arc<remote_code_scan::RemoteCodeScanService>,
+    pub incident_scan: Arc<incident_scan::IncidentScanService>,
 }
 
 impl EngineApp {
@@ -80,6 +82,7 @@ impl EngineApp {
             remote_code_scan: Arc::new(remote_code_scan::RemoteCodeScanService::new(
                 vulndb.clone(),
             )),
+            incident_scan: Arc::new(incident_scan::IncidentScanService::new()),
             vulndb,
         }
     }

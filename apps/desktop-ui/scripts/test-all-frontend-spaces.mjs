@@ -260,6 +260,7 @@ const { VulnerabilitySpace } = await import(pathToFileURL(path.join(jsRoot, 'vul
 const { CodeSpace } = await import(pathToFileURL(path.join(jsRoot, 'code/code.js')).href);
 const { WebSpace } = await import(pathToFileURL(path.join(jsRoot, 'web/web.js')).href);
 const { SshSpace } = await import(pathToFileURL(path.join(jsRoot, 'ssh/ssh.js')).href);
+const { IncidentSpace } = await import(pathToFileURL(path.join(jsRoot, 'incident/incident.js')).href);
 const { UnifiedReportSpace } = await import(pathToFileURL(path.join(jsRoot, 'report/unified.js')).href);
 
 let passed = 0;
@@ -296,6 +297,7 @@ const smokeSpaces = [
   ['Code Analysis Space (Анализ кода)', CodeSpace],
   ['Web / DAST Space (Запущенный сайт)', WebSpace],
   ['SSH Space (Проверка по SSH)', SshSpace],
+  ['Incident Space (Расследование инцидента)', IncidentSpace],
   ['Unified Report Space (Единый отчёт)', UnifiedReportSpace],
 ];
 let n = 1;

@@ -209,6 +209,7 @@ const { CodeSpace } = await load('code/code.js');
 const { WebSpace } = await load('web/web.js');
 const { RemoteHostPanel } = await load('ssh/os-panel.js');
 const { ProjectCodePanel } = await load('ssh/code-panel.js');
+const { IncidentSpace } = await load('incident/incident.js');
 
 // ---------------------------------------------------------------------------
 // Harness
@@ -598,6 +599,56 @@ await sink('remote-code form prefilled after DB load (host/user/path value attrs
   panel.phase = 'form';
   panel.renderForm();
   return panel.root.innerHTML;
+});
+
+console.log('\n=== Incident investigation (DFIR timeline) ===');
+// Every field on a timeline row comes straight off a log file an attacker can
+// write to: the request path and user-agent, the SSH user and source IP, the
+// syslog program and message, the file name — and the raw line shown as
+// evidence. All must render inert.
+async function incidentSpace(status, setup = () => {}) {
+  const space = new IncidentSpace({ call: async () => status });
+  setup(space);
+  const root = freshEl();
+  await space.render(root);
+  return { space, root };
+}
+const incidentStatus = (v, extra = {}) => ({
+  running: false,
+  path: v,
+  started_at: '2026-01-01T00:00:00Z',
+  finished_at: '2026-01-01T00:00:05Z',
+  error: null,
+  report: {
+    first_event: v,
+    last_event: v,
+    warnings: [v],
+    files: [{ path: v, source: 'web_access', lines: 10, parsed: 9, compressed: true }],
+    summary: { total_events: 1, files: 1, by_source: { web_access: 1, auth: 1 } },
+    events: [{
+      timestamp: v, source: 'web_access', source_file: v, line_no: 7,
+      host: v, actor: v, summary: v, outcome: 'failure',
+      fields: { method: v, path: v, status: v, user_agent: v }, raw: v,
+    }],
+  },
+  ...extra,
+});
+await sink('incident timeline (time, host, actor, summary, raw line, files, warnings)', async (v) => {
+  const { root } = await incidentSpace(incidentStatus(v));
+  return root.querySelector('#incResultPanel').innerHTML;
+});
+await sink('incident text filter value attr (query echoed into input)', async (v) => {
+  const { space, root } = await incidentSpace(incidentStatus(v), (s) => { s.query = v; });
+  space.renderResult();
+  return root.querySelector('#incResultPanel').innerHTML;
+});
+await sink('incident progress (running path, engine error)', async (v) => {
+  const { space, root } = await incidentSpace(incidentStatus(v, { running: true, report: null }));
+  space.stopPolling();
+  const running = root.querySelector('#incProgress').innerHTML;
+  space.status = incidentStatus(v, { error: v, report: null });
+  space.renderProgress();
+  return running + root.querySelector('#incProgress').innerHTML;
 });
 
 console.log(`\nXSS checks: ${passed} passed, ${failed} failed\n`);
