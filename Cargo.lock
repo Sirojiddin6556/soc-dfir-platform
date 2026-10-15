@@ -1684,9 +1684,11 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "flate2",
+ "hex",
  "regex",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror 1.0.69",
 ]
 

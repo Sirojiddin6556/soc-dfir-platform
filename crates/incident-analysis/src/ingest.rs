@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 
 use chrono::{Datelike, Utc};
 use flate2::read::GzDecoder;
+use sha2::{Digest, Sha256};
 
 use crate::Options;
 
@@ -32,6 +33,11 @@ pub struct LogFile {
 pub struct ReadResult {
     pub lines: Vec<String>,
     pub mtime_year: i32,
+    /// SHA-256 of the file exactly as stored on disk (for a `.gz` this is the
+    /// compressed bytes). Chain-of-custody proof the artifact is unaltered.
+    pub sha256: String,
+    /// Size of the file on disk, in bytes.
+    pub bytes: u64,
 }
 
 /// Walk `root` (a folder or a single file) and return the candidate log files.
@@ -106,6 +112,12 @@ pub fn read_lines(file: &LogFile, max_bytes: u64) -> Result<ReadResult, String> 
     let mtime_year = file_year(&meta);
 
     let raw = fs::read(&file.path).map_err(|e| e.to_string())?;
+    let sha256 = {
+        let mut hasher = Sha256::new();
+        hasher.update(&raw);
+        hex::encode(hasher.finalize())
+    };
+    let bytes = raw.len() as u64;
     let text = if file.compressed {
         let mut buf = Vec::new();
         let mut dec = GzDecoder::new(&raw[..]);
@@ -133,7 +145,12 @@ pub fn read_lines(file: &LogFile, max_bytes: u64) -> Result<ReadResult, String> 
     };
 
     let lines = text.lines().map(|l| l.to_string()).collect();
-    Ok(ReadResult { lines, mtime_year })
+    Ok(ReadResult {
+        lines,
+        mtime_year,
+        sha256,
+        bytes,
+    })
 }
 
 /// Path relative to `root`, or the file name when `root` is that file.

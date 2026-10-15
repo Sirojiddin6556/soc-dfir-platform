@@ -623,7 +623,7 @@ const incidentStatus = (v, extra = {}) => ({
     first_event: v,
     last_event: v,
     warnings: [v],
-    files: [{ path: v, source: 'web_access', lines: 10, parsed: 9, compressed: true }],
+    files: [{ path: v, source: 'web_access', lines: 10, parsed: 9, compressed: true, sha256: v, bytes: 4096 }],
     summary: { total_events: 1, files: 1, by_source: { web_access: 1, auth: 1 } },
     events: [{
       timestamp: v, source: 'web_access', source_file: v, line_no: 7,
@@ -649,6 +649,15 @@ await sink('incident progress (running path, engine error)', async (v) => {
   space.status = incidentStatus(v, { error: v, report: null });
   space.renderProgress();
   return running + root.querySelector('#incProgress').innerHTML;
+});
+await sink('incident evidence panel (marked event summary, file:line)', async (v) => {
+  // Marked-evidence fields are copied from log events, so they carry the same
+  // attacker-controlled content and must render inert in the evidence panel.
+  const { space } = await incidentSpace(incidentStatus(v));
+  space.evidence = new Map([[v, {
+    key: v, timestamp: v, source: 'auth', source_file: v, line_no: 7, summary: v,
+  }]]);
+  return space.evidencePanelHtml();
 });
 
 console.log(`\nXSS checks: ${passed} passed, ${failed} failed\n`);

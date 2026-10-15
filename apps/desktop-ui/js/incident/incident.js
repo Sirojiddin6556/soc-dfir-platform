@@ -28,6 +28,14 @@ function sourceLabel(s) {
   return SOURCE[s]?.label || s;
 }
 
+/** Human-readable byte size. */
+function fmtBytes(n) {
+  const b = Number(n) || 0;
+  if (b < 1024) return `${b} Б`;
+  if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} КБ`;
+  return `${(b / (1024 * 1024)).toFixed(1)} МБ`;
+}
+
 /** Most events a single render will draw, so a huge timeline stays responsive. */
 const MAX_ROWS = 2000;
 
@@ -47,6 +55,56 @@ export class IncidentSpace {
     this.sourceFilter = '';
     this.query = '';
     this.pollTimer = null;
+    // Events the analyst marked as evidence, keyed by a stable event key.
+    this.evidence = new Map();
+    // Lookup from event key to the event, rebuilt on each result render.
+    this.eventsByKey = new Map();
+  }
+
+  /** A stable key for an event: its origin plus time. */
+  evKey(e) {
+    return `${e.source_file || ''}|${e.line_no || ''}|${e.timestamp || ''}`;
+  }
+
+  evStoreKey() {
+    return `incident.evidence:${this.path || ''}`;
+  }
+
+  loadEvidence() {
+    this.evidence = new Map();
+    try {
+      const raw = localStorage.getItem(this.evStoreKey());
+      if (raw) for (const item of JSON.parse(raw)) this.evidence.set(item.key, item);
+    } catch {
+      /* ignore: storage may be unavailable or corrupt */
+    }
+  }
+
+  saveEvidence() {
+    try {
+      localStorage.setItem(this.evStoreKey(), JSON.stringify([...this.evidence.values()]));
+    } catch {
+      /* ignore: storage may be unavailable */
+    }
+  }
+
+  toggleEvidence(key) {
+    if (this.evidence.has(key)) {
+      this.evidence.delete(key);
+    } else {
+      const e = this.eventsByKey.get(key);
+      if (!e) return;
+      this.evidence.set(key, {
+        key,
+        timestamp: e.timestamp,
+        source: e.source,
+        source_file: e.source_file,
+        line_no: e.line_no,
+        summary: e.summary,
+      });
+    }
+    this.saveEvidence();
+    this.renderResult();
   }
 
   async render(container) {
@@ -178,6 +236,11 @@ export class IncidentSpace {
     const summary = report.summary || {};
     const bySource = summary.by_source || {};
 
+    // Rebuild the key→event lookup and load any evidence saved for this path.
+    this.eventsByKey = new Map();
+    for (const e of events) this.eventsByKey.set(this.evKey(e), e);
+    this.loadEvidence();
+
     let html = '';
     html += '<div class="vuln-panel-title">ВРЕМЕННАЯ ШКАЛА (UTC)</div>';
 
@@ -190,16 +253,21 @@ export class IncidentSpace {
     }
     html += '</div>';
 
-    // Per-file breakdown.
+    // Per-file breakdown, with the SHA-256 (chain of custody).
     if (Array.isArray(report.files) && report.files.length) {
-      html += '<div class="inc-files">';
+      html += '<details class="inc-files"><summary>Файлы и их SHA-256 (' + report.files.length + ')</summary>';
       for (const f of report.files) {
         html += `<div class="inc-file"><span class="inc-badge ${SOURCE[f.source]?.cls || ''}">${escapeHtml(sourceLabel(f.source))}</span> `;
         html += `<code>${escapeHtml(f.path)}</code>${f.compressed ? ' <span class="inc-gz">gz</span>' : ''} — `;
-        html += `${escapeHtml(String(f.parsed))}/${escapeHtml(String(f.lines))} строк</div>`;
+        html += `${escapeHtml(String(f.parsed))}/${escapeHtml(String(f.lines))} строк, ${escapeHtml(fmtBytes(f.bytes))}`;
+        if (f.sha256) html += `<div class="inc-hash">SHA-256: <code>${escapeHtml(f.sha256)}</code></div>`;
+        html += '</div>';
       }
-      html += '</div>';
+      html += '</details>';
     }
+
+    // Evidence the analyst marked (chain-of-custody working set).
+    html += this.evidencePanelHtml();
 
     // Warnings.
     if (Array.isArray(report.warnings) && report.warnings.length) {
@@ -247,6 +315,13 @@ export class IncidentSpace {
       this.query = ev.target.value;
       this.renderTimelineOnly();
     });
+    // Evidence: mark a row (★) or remove from the evidence panel (✕).
+    panel.addEventListener('click', (ev) => {
+      const btn = ev.target.closest('.inc-star, .inc-ev-del');
+      if (!btn) return;
+      const key = btn.dataset.evkey;
+      if (key) this.toggleEvidence(key);
+    });
   }
 
   /** Re-render only the timeline rows (keeps focus in the text filter). */
@@ -279,9 +354,13 @@ export class IncidentSpace {
     const src = SOURCE[e.source] || {};
     const outcomeCls =
       e.outcome === 'failure' ? 'inc-fail' : e.outcome === 'success' ? 'inc-ok' : '';
-    let html = `<div class="inc-row ${outcomeCls}">`;
+    const key = this.evKey(e);
+    const marked = this.evidence.has(key);
+    let html = `<div class="inc-row ${outcomeCls}${marked ? ' inc-marked' : ''}">`;
     html += `<div class="inc-time">${escapeHtml(e.timestamp || '')}</div>`;
-    html += `<div class="inc-meta"><span class="inc-badge ${src.cls || ''}">${escapeHtml(sourceLabel(e.source))}</span>`;
+    html += '<div class="inc-meta">';
+    html += `<button class="inc-star" data-evkey="${escapeAttr(key)}" title="Отметить как улику" aria-pressed="${marked}">${marked ? '★' : '☆'}</button>`;
+    html += `<span class="inc-badge ${src.cls || ''}">${escapeHtml(sourceLabel(e.source))}</span>`;
     if (e.host) html += ` <span class="inc-host">${escapeHtml(e.host)}</span>`;
     if (e.actor) html += ` <span class="inc-actor">${escapeHtml(e.actor)}</span>`;
     html += '</div>';
@@ -289,6 +368,27 @@ export class IncidentSpace {
     const loc = `${e.source_file || ''}:${e.line_no || ''}`;
     html += `<div class="inc-raw"><span class="inc-loc">${escapeHtml(loc)}</span><code>${escapeHtml(e.raw || '')}</code></div>`;
     html += '</div>';
+    return html;
+  }
+
+  evidencePanelHtml() {
+    const items = [...this.evidence.values()].sort((a, b) =>
+      String(a.timestamp).localeCompare(String(b.timestamp))
+    );
+    if (!items.length) {
+      return '<div class="inc-evidence inc-evidence-empty">Улики не отмечены. Нажмите ☆ у события, чтобы добавить его в улики.</div>';
+    }
+    let html = `<details class="inc-evidence" open><summary>Улики (${items.length})</summary>`;
+    for (const it of items) {
+      html += '<div class="inc-ev-row">';
+      html += `<button class="inc-ev-del" data-evkey="${escapeAttr(it.key)}" title="Убрать из улик">✕</button>`;
+      html += `<span class="inc-time">${escapeHtml(it.timestamp || '')}</span> `;
+      html += `<span class="inc-badge ${SOURCE[it.source]?.cls || ''}">${escapeHtml(sourceLabel(it.source))}</span> `;
+      html += `<span class="inc-summary-text">${escapeHtml(it.summary || '')}</span> `;
+      html += `<span class="inc-loc">${escapeHtml(`${it.source_file || ''}:${it.line_no || ''}`)}</span>`;
+      html += '</div>';
+    }
+    html += '</details>';
     return html;
   }
 }

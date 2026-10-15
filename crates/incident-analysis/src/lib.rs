@@ -105,6 +105,11 @@ pub struct FileSummary {
     pub parsed: usize,
     /// Whether the file was gzip-compressed.
     pub compressed: bool,
+    /// SHA-256 of the file as stored on disk (hex), so the evidence it
+    /// supplies can be shown to be unaltered.
+    pub sha256: String,
+    /// Size of the file on disk, in bytes.
+    pub bytes: u64,
 }
 
 /// The result of an investigation run.
@@ -228,6 +233,8 @@ pub fn analyze_path(root: &Path, opts: &Options) -> Result<Timeline, IngestError
             lines: read.lines.len(),
             parsed,
             compressed: file.compressed,
+            sha256: read.sha256,
+            bytes: read.bytes,
         });
     }
 
@@ -408,6 +415,20 @@ mod tests {
         assert_eq!(t.events.len(), 1);
         assert!(t.files[0].compressed);
         assert_eq!(t.events[0].timestamp, "2026-10-09T01:02:03Z");
+    }
+
+    #[test]
+    fn each_file_is_hashed_for_chain_of_custody() {
+        let d = TempDir::new("hash");
+        // Known content → known SHA-256 of exactly those bytes.
+        d.write("access.log", "hello\n");
+        let t = analyze_path(&d.0, &opts()).unwrap();
+        let f = &t.files[0];
+        assert_eq!(
+            f.sha256,
+            "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03"
+        );
+        assert_eq!(f.bytes, 6);
     }
 
     #[test]
