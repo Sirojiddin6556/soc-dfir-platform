@@ -83,6 +83,7 @@ pub fn detect(events: &[LogEvent]) -> Vec<Finding> {
     out.extend(path_scanning(events));
     out.extend(account_creation(events));
     out.extend(suspicious_commands(events));
+    out.extend(cron_persistence(events));
 
     // Worst severity first, then earliest.
     out.sort_by(|a, b| {
@@ -555,6 +556,77 @@ fn useradd_name(raw: &str) -> Option<String> {
 }
 
 // ---------------------------------------------------------------------------
+// Persistence via cron (a crontab was installed or changed)
+// ---------------------------------------------------------------------------
+
+/// The user whose crontab a `crontab[…]: (user) REPLACE` line changed.
+fn crontab_user(raw: &str) -> Option<String> {
+    let rest = raw.split('(').nth(1)?;
+    let user = rest.split(')').next()?.trim();
+    (!user.is_empty() && !user.contains(' ')).then(|| user.to_string())
+}
+
+/// Installing or editing a crontab (`crontab[PID]: (user) REPLACE …`) is a
+/// common way to keep a foothold. A lead, not a verdict — admins edit crons
+/// too — so Medium; grouped per user.
+fn cron_persistence(events: &[LogEvent]) -> Vec<Finding> {
+    struct Group<'a> {
+        hits: Vec<&'a LogEvent>,
+    }
+    let mut groups: BTreeMap<String, Group> = BTreeMap::new();
+
+    for e in events {
+        if e.source != LogSource::Auth && e.source != LogSource::Syslog {
+            continue;
+        }
+        let hay = e.raw.to_ascii_lowercase();
+        // A crontab edit: the `crontab` tool logging a REPLACE (install/change).
+        if !(hay.contains("crontab[") && hay.contains("replace")) {
+            continue;
+        }
+        let user = crontab_user(&e.raw).unwrap_or_default();
+        groups
+            .entry(user)
+            .or_insert_with(|| Group { hits: Vec::new() })
+            .hits
+            .push(e);
+    }
+
+    let mut findings = Vec::new();
+    for (user, group) in groups {
+        let n = group.hits.len();
+        let first = group.hits.first().unwrap();
+        let last = group.hits.last().unwrap();
+        let evidence: Vec<EvidenceRef> = group
+            .hits
+            .iter()
+            .take(MAX_EVIDENCE)
+            .map(|e| EvidenceRef::of(e))
+            .collect();
+        let who = if user.is_empty() {
+            String::new()
+        } else {
+            format!(" (пользователь {user})")
+        };
+        findings.push(Finding {
+            rule: "cron-modified".into(),
+            title: "Изменение планировщика cron".into(),
+            severity: Severity::Medium,
+            mitre: vec!["T1053.003".into()],
+            summary: format!(
+                "Установлен или изменён crontab{who} ({n} раз). Частый способ закрепления — проверьте задание.",
+            ),
+            actor: (!user.is_empty()).then_some(user),
+            first_time: first.timestamp.clone(),
+            last_time: last.timestamp.clone(),
+            evidence,
+            hosts: Vec::new(),
+        });
+    }
+    findings
+}
+
+// ---------------------------------------------------------------------------
 // Suspicious privileged commands (sudo COMMAND=…)
 // ---------------------------------------------------------------------------
 
@@ -589,6 +661,26 @@ const CMD_SIGS: &[CmdSig] = &[
             "btmp",
             "lastlog",
             "history -c",
+        ],
+    },
+    CmdSig {
+        rule: "cmd-disable-defense",
+        title: "Отключение средств защиты",
+        severity: Severity::High,
+        mitre: &["T1562.001"],
+        needles: &[
+            "systemctl stop auditd",
+            "systemctl disable auditd",
+            "service auditd stop",
+            "auditctl -e 0",
+            "systemctl stop firewalld",
+            "systemctl stop ufw",
+            "ufw disable",
+            "systemctl stop fail2ban",
+            "systemctl stop apparmor",
+            "setenforce 0",
+            "iptables -f",
+            "iptables --flush",
         ],
     },
     CmdSig {
@@ -927,6 +1019,45 @@ mod tests {
         let t = analyze_path(&d.0, &opts()).unwrap();
         let f = find(&t.findings, "cmd-offensive-tool");
         assert_eq!(f.severity, Severity::Medium);
+    }
+
+    #[test]
+    fn sudo_disabling_defenses_is_flagged() {
+        let d = TempDir::new("defoff");
+        d.write(
+            "auth.log",
+            "Oct 10 15:10:00 web01 sudo:   deploy : TTY=pts/0 ; PWD=/root ; USER=root ; COMMAND=/usr/bin/systemctl stop auditd\n",
+        );
+        let t = analyze_path(&d.0, &opts()).unwrap();
+        let f = find(&t.findings, "cmd-disable-defense");
+        assert_eq!(f.severity, Severity::High);
+        assert!(f.mitre.iter().any(|m| m == "T1562.001"));
+    }
+
+    #[test]
+    fn a_crontab_replace_is_flagged_as_persistence() {
+        let d = TempDir::new("cron");
+        d.write(
+            "syslog",
+            "Oct 10 15:20:00 web01 crontab[4120]: (deploy) REPLACE (deploy)\n",
+        );
+        let t = analyze_path(&d.0, &opts()).unwrap();
+        let f = find(&t.findings, "cron-modified");
+        assert_eq!(f.severity, Severity::Medium);
+        assert_eq!(f.actor.as_deref(), Some("deploy"));
+        assert!(f.mitre.iter().any(|m| m == "T1053.003"));
+    }
+
+    #[test]
+    fn a_crontab_list_is_not_persistence() {
+        // Only REPLACE (an edit/install) is a lead; listing a crontab is not.
+        let d = TempDir::new("cronlist");
+        d.write(
+            "syslog",
+            "Oct 10 15:21:00 web01 crontab[4130]: (deploy) LIST (deploy)\n",
+        );
+        let t = analyze_path(&d.0, &opts()).unwrap();
+        assert!(t.findings.iter().all(|f| f.rule != "cron-modified"));
     }
 
     #[test]

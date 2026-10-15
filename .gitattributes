@@ -1,0 +1,5 @@
+# DFIR evidence and test logs must stay byte-for-byte identical on every OS,
+# so the SHA-256 chain-of-custody hashes recorded in GROUND-TRUTH.md keep
+# matching. Without this, git on Windows (core.autocrlf=true) rewrites LF to
+# CRLF on checkout and the recomputed hash no longer matches.
+apps/desktop-ui/testdata/** -text

@@ -106,6 +106,14 @@ def write_auth(path, host, pid_base, persistence=False):
             (14, 9, 31, 2,
              f"{syslog_ts(14,9,31,2)} {host} sudo:    deploy : TTY=pts/0 ; PWD=/home/deploy ; "
              f"USER=root ; COMMAND=/usr/bin/journalctl --vacuum-time=1s"))
+        # Attacker turns off auditing and installs a cron job for persistence.
+        lines.append(
+            (14, 9, 32, 5,
+             f"{syslog_ts(14,9,32,5)} {host} sudo:    deploy : TTY=pts/0 ; PWD=/home/deploy ; "
+             f"USER=root ; COMMAND=/usr/bin/systemctl stop auditd"))
+        lines.append(
+            (14, 9, 33, 8,
+             f"{syslog_ts(14,9,33,8)} {host} crontab[4120]: (deploy) REPLACE (deploy)"))
     lines.sort(key=lambda t: (t[0], t[1], t[2], t[3]))
     with open(path, "w") as f:
         for _, _, _, _, text in lines:

