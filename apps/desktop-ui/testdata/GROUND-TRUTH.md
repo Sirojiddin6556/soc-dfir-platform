@@ -26,6 +26,9 @@ ran on the same host (a lab), so it is an internal source.
   `UNION SELECT`), path traversal (`../../../../etc/passwd`), SSTI (`{{7*7}}`),
   OS command injection (`;cat /etc/passwd`), PHP wrapper LFI (`php://filter`).
 
+Each finding is attributed to the host it occurred on; here that is **web01**
+(the folder the log sits in), so every finding below carries host `web01`.
+
 **Expected findings (6), all actor `127.0.0.1`:**
 
 | severity | rule | MITRE | from |
@@ -66,6 +69,10 @@ cron job; on `web01` the account `svc-update` is created. Separately `185.220.10
 panels, fires web-attack payloads, and uses an uploaded web shell
 (`/uploads/shell.php?cmd=id` → 200). Benign: `ubuntu` logs in by key from
 internal `10.0.3.11`/`192.168.1.50`; normal `GET /index.html` 200s.
+
+Each finding is attributed to the host(s) it occurred on. All of these are on
+**web01** except `ssh-bruteforce-success`, whose source `45.137.21.134` broke in
+on **both web01 and db01**, so that finding carries both hosts.
 
 **Expected findings (13):**
 

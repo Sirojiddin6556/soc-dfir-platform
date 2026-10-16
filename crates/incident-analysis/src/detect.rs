@@ -74,6 +74,23 @@ const SSH_FAIL_THRESHOLD: usize = 5;
 /// Distinct 404 paths from one IP before it counts as path scanning.
 const SCAN_404_THRESHOLD: usize = 15;
 
+/// The distinct hosts a finding's backing events belong to, sorted. Uses the
+/// same per-host attribution as cross-host correlation
+/// ([`crate::correlate::event_host`]): a per-host collection folder
+/// (`web01/auth.log`) or a real syslog hostname. An event that can't be tied to
+/// a host contributes nothing, so a single flat log with no hostname yields an
+/// empty list and the finding stays host-less rather than claiming a host it
+/// does not have.
+fn hosts_of<'a>(events: impl IntoIterator<Item = &'a LogEvent>) -> Vec<String> {
+    let mut set = std::collections::BTreeSet::new();
+    for e in events {
+        if let Some(h) = crate::correlate::event_host(e) {
+            set.insert(h);
+        }
+    }
+    set.into_iter().collect()
+}
+
 /// Run every detector over the timeline and return the leads, worst first.
 pub fn detect(events: &[LogEvent]) -> Vec<Finding> {
     let mut out = Vec::new();
@@ -153,6 +170,7 @@ fn ssh_bruteforce(events: &[LogEvent]) -> Vec<Finding> {
             if success.timestamp >= first_fail.timestamp {
                 evidence.push(EvidenceRef::of(success));
                 let user = success.fields.get("user").cloned().unwrap_or_default();
+                let hosts = hosts_of(per.failures.iter().copied().chain(std::iter::once(success)));
                 findings.push(Finding {
                     rule: "ssh-bruteforce-success".into(),
                     title: "Подбор пароля SSH с последующим успешным входом".into(),
@@ -166,7 +184,7 @@ fn ssh_bruteforce(events: &[LogEvent]) -> Vec<Finding> {
                     first_time: first_fail.timestamp.clone(),
                     last_time: success.timestamp.clone(),
                     evidence,
-                    hosts: Vec::new(),
+                    hosts,
                 });
                 continue;
             }
@@ -180,8 +198,8 @@ fn ssh_bruteforce(events: &[LogEvent]) -> Vec<Finding> {
             actor: Some(ip.clone()),
             first_time: first_fail.timestamp.clone(),
             last_time: last_fail.timestamp.clone(),
+            hosts: hosts_of(per.failures.iter().copied()),
             evidence,
-            hosts: Vec::new(),
         });
     }
     findings
@@ -352,6 +370,7 @@ fn web_attacks(events: &[LogEvent]) -> Vec<Finding> {
             .take(MAX_EVIDENCE)
             .map(|e| EvidenceRef::of(e))
             .collect();
+        let hosts = hosts_of(group.hits.iter().copied());
         findings.push(Finding {
             rule: rule.into(),
             title: sig.title.into(),
@@ -370,7 +389,7 @@ fn web_attacks(events: &[LogEvent]) -> Vec<Finding> {
             first_time: first.timestamp.clone(),
             last_time: last.timestamp.clone(),
             evidence,
-            hosts: Vec::new(),
+            hosts,
         });
     }
     findings
@@ -427,6 +446,7 @@ fn web_webshell(events: &[LogEvent]) -> Vec<Finding> {
             .take(MAX_EVIDENCE)
             .map(|e| EvidenceRef::of(e))
             .collect();
+        let hosts = hosts_of(group.hits.iter().copied());
         findings.push(Finding {
             rule: "web-webshell".into(),
             title: "Обращение к веб-шеллу".into(),
@@ -444,7 +464,7 @@ fn web_webshell(events: &[LogEvent]) -> Vec<Finding> {
             first_time: first.timestamp.clone(),
             last_time: last.timestamp.clone(),
             evidence,
-            hosts: Vec::new(),
+            hosts,
         });
     }
     findings
@@ -496,6 +516,7 @@ fn path_scanning(events: &[LogEvent]) -> Vec<Finding> {
             .take(MAX_EVIDENCE)
             .map(|e| EvidenceRef::of(e))
             .collect();
+        let hosts = hosts_of(per.hits.iter().copied());
         findings.push(Finding {
             rule: "web-path-scan".into(),
             title: "Сканирование/перебор путей".into(),
@@ -506,7 +527,7 @@ fn path_scanning(events: &[LogEvent]) -> Vec<Finding> {
             first_time: first.timestamp.clone(),
             last_time: last.timestamp.clone(),
             evidence,
-            hosts: Vec::new(),
+            hosts,
         });
     }
     findings
@@ -538,7 +559,7 @@ fn account_creation(events: &[LogEvent]) -> Vec<Finding> {
             first_time: e.timestamp.clone(),
             last_time: e.timestamp.clone(),
             evidence: vec![EvidenceRef::of(e)],
-            hosts: Vec::new(),
+            hosts: hosts_of(std::iter::once(e)),
         });
     }
     findings
@@ -603,6 +624,7 @@ fn cron_persistence(events: &[LogEvent]) -> Vec<Finding> {
             .take(MAX_EVIDENCE)
             .map(|e| EvidenceRef::of(e))
             .collect();
+        let hosts = hosts_of(group.hits.iter().copied());
         let who = if user.is_empty() {
             String::new()
         } else {
@@ -620,7 +642,7 @@ fn cron_persistence(events: &[LogEvent]) -> Vec<Finding> {
             first_time: first.timestamp.clone(),
             last_time: last.timestamp.clone(),
             evidence,
-            hosts: Vec::new(),
+            hosts,
         });
     }
     findings
@@ -775,6 +797,7 @@ fn suspicious_commands(events: &[LogEvent]) -> Vec<Finding> {
             .take(MAX_EVIDENCE)
             .map(|e| EvidenceRef::of(e))
             .collect();
+        let hosts = hosts_of(group.hits.iter().copied());
         let who = if user.is_empty() {
             String::new()
         } else {
@@ -793,7 +816,7 @@ fn suspicious_commands(events: &[LogEvent]) -> Vec<Finding> {
             first_time: first.timestamp.clone(),
             last_time: last.timestamp.clone(),
             evidence,
-            hosts: Vec::new(),
+            hosts,
         });
     }
     findings
@@ -1058,6 +1081,25 @@ mod tests {
         );
         let t = analyze_path(&d.0, &opts()).unwrap();
         assert!(t.findings.iter().all(|f| f.rule != "cron-modified"));
+    }
+
+    #[test]
+    fn a_finding_carries_the_host_it_occurred_on() {
+        // Logs collected into a per-host folder → the finding is attributed to
+        // that host, so the UI/report can say "на web01".
+        let d = TempDir::new("fhost");
+        std::fs::create_dir_all(d.0.join("web01")).unwrap();
+        let mut body = String::new();
+        for i in 0..6 {
+            body.push_str(&format!(
+                "Oct 10 13:55:{:02} web01 sshd[2200]: Failed password for root from 198.51.100.7 port 600{} ssh2\n",
+                30 + i, i
+            ));
+        }
+        std::fs::write(d.0.join("web01").join("auth.log"), body).unwrap();
+        let t = analyze_path(&d.0, &opts()).unwrap();
+        let f = find(&t.findings, "ssh-bruteforce");
+        assert_eq!(f.hosts, vec!["web01".to_string()]);
     }
 
     #[test]
