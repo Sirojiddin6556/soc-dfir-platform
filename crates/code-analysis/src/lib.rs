@@ -25,6 +25,10 @@ pub enum Language {
     Java,
     C,
     Cpp,
+    JavaScript,
+    TypeScript,
+    /// TypeScript with JSX (`.tsx`): its own grammar, same model.
+    Tsx,
 }
 
 impl Language {
@@ -35,6 +39,9 @@ impl Language {
             Language::Java => tree_sitter_java::LANGUAGE.into(),
             Language::C => tree_sitter_c::LANGUAGE.into(),
             Language::Cpp => tree_sitter_cpp::LANGUAGE.into(),
+            Language::JavaScript => tree_sitter_javascript::LANGUAGE.into(),
+            Language::TypeScript => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
+            Language::Tsx => tree_sitter_typescript::LANGUAGE_TSX.into(),
         }
     }
 }
@@ -52,6 +59,9 @@ pub fn lower_tree(lang: Language, tree: &tree_sitter::Tree, src: &str) -> Option
         Language::Java => Some(lower::java::lower(tree.root_node(), src)),
         Language::Php => Some(lower::php::lower(tree.root_node(), src)),
         Language::C | Language::Cpp => Some(lower::c::lower(tree.root_node(), src)),
+        Language::JavaScript | Language::TypeScript | Language::Tsx => {
+            Some(lower::js::lower(tree.root_node(), src))
+        }
     }
 }
 
@@ -75,8 +85,19 @@ impl Language {
             Language::Java => "java",
             Language::C => "c",
             Language::Cpp => "cpp",
+            Language::JavaScript => "javascript",
+            Language::TypeScript => "typescript",
+            Language::Tsx => "tsx",
         }
     }
+}
+
+/// A file that a language front end could parse only partially.
+#[derive(Debug, Clone, Serialize)]
+pub struct ParseError {
+    pub path: String,
+    /// Line of the first syntax error, if known.
+    pub line: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -92,7 +113,10 @@ pub struct Report {
     /// Files per language that were analyzed.
     pub languages: Vec<(String, usize)>,
     pub skipped: Vec<(String, String)>,
-    pub parse_errors: Vec<String>,
+    /// Files a language front end could parse only partially, with the line
+    /// of the first syntax error (so the gap is pinpointable, not just
+    /// counted).
+    pub parse_errors: Vec<ParseError>,
     /// Test files: loaded so calls resolve, not analyzed unless asked.
     pub test_files: usize,
     /// Time spent reading and parsing the files, then analyzing them.
@@ -226,7 +250,10 @@ pub fn analyze_with(project: &project::Project, options: Options) -> Report {
             .modules
             .iter()
             .filter(|m| m.parse_errors)
-            .map(|m| m.path.clone())
+            .map(|m| ParseError {
+                path: m.path.clone(),
+                line: m.first_error,
+            })
             .collect(),
         test_files: if options.include_tests {
             0
@@ -281,7 +308,12 @@ fn webapp_findings(project: &project::Project, options: Options) -> Vec<rules::F
 /// Findings of the checks that read files as text: secrets in code of
 /// every language and in the files no front end reads.
 fn text_findings(project: &project::Project, options: Options) -> Vec<rules::Finding> {
-    let mut out = Vec::new();
+    let mut out: Vec<rules::Finding> = Vec::new();
+    // Identical secrets repeated across files collapse into one finding whose
+    // `other_sources` lists the extra locations, keyed by (rule, secret value).
+    // The key is in-memory only; the raw value never reaches the output.
+    let mut groups: std::collections::HashMap<(&'static str, String), usize> =
+        std::collections::HashMap::new();
     let code = project
         .modules
         .iter()
@@ -328,6 +360,19 @@ fn text_findings(project: &project::Project, options: Options) -> Vec<rules::Fin
                 column: h.column,
                 note: format!("сток: {}", h.what),
             };
+            // Same literal secret seen before → attach this spot to that finding
+            // instead of emitting a duplicate (bounded, like any Finding trace).
+            let secret = line.get(h.hide.0..h.hide.1).unwrap_or("").to_string();
+            if !secret.is_empty() {
+                if let Some(&idx) = groups.get(&(h.rule.id, secret.clone())) {
+                    let f = &mut out[idx];
+                    if f.other_sources.len() < 50 {
+                        f.other_sources.push(at);
+                    }
+                    continue;
+                }
+                groups.insert((h.rule.id, secret), out.len());
+            }
             out.push(rules::Finding {
                 rule: h.rule.id.to_string(),
                 cwe: h.rule.cwe,
@@ -359,6 +404,9 @@ mod tests {
             Language::Java,
             Language::C,
             Language::Cpp,
+            Language::JavaScript,
+            Language::TypeScript,
+            Language::Tsx,
         ] {
             let tree = parse_tree(lang, "").expect("grammar loads");
             assert!(!tree.root_node().has_error());

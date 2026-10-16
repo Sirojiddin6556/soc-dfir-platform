@@ -32,7 +32,7 @@ pub enum DepKind {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Dependency {
     /// OSV ecosystem: PyPI, npm, Packagist, Maven, Go, crates.io,
-    /// RubyGems, NuGet.
+    /// RubyGems, NuGet, Hex, Pub, SwiftURL, GitHub Actions.
     pub ecosystem: String,
     pub name: String,
     /// The exact version, when the file fixes one.
@@ -43,6 +43,13 @@ pub struct Dependency {
     pub file: String,
     pub line: u32,
     pub kind: DepKind,
+    /// Only used while building or testing, not shipped to users: a
+    /// `devDependencies`/`optionalDependencies` entry, or a lock-file entry
+    /// marked `dev`. A flaw in one of these is less exposed than in a
+    /// runtime dependency. Known for npm today; `false` where a manifest
+    /// draws no dev/runtime line.
+    #[serde(default)]
+    pub dev: bool,
 }
 
 /// Lock files of big projects run to tens of megabytes.
@@ -73,6 +80,13 @@ struct Collector<'a> {
     root: &'a Path,
     out: Vec<Dependency>,
     seen: HashSet<(String, String, Option<String>, String, u32)>,
+    /// One-shot flag for the next `add`: set it right before a dev-scoped
+    /// `add`, and it clears itself so the following `add` is runtime again.
+    dev: bool,
+    /// npm package names declared by this project's own `package.json` files
+    /// (a monorepo's workspace packages). A dependency on one of these is
+    /// internal, not a registry package, so it is not reported or CVE-checked.
+    local_npm: HashSet<String>,
 }
 
 impl Collector<'_> {
@@ -108,6 +122,7 @@ impl Collector<'_> {
             file.to_string(),
             line,
         );
+        let dev = std::mem::take(&mut self.dev);
         if !self.seen.insert(key) {
             return;
         }
@@ -119,6 +134,7 @@ impl Collector<'_> {
             file: file.to_string(),
             line,
             kind,
+            dev,
         });
     }
 }
@@ -129,6 +145,8 @@ pub fn collect(root: &Path) -> Vec<Dependency> {
         root,
         out: Vec::new(),
         seen: HashSet::new(),
+        dev: false,
+        local_npm: local_npm_names(root),
     };
     walk(&mut c, root, 0);
     let mut out = c.out;
@@ -136,6 +154,50 @@ pub fn collect(root: &Path) -> Vec<Dependency> {
         (a.file.as_str(), a.line, a.name.as_str()).cmp(&(b.file.as_str(), b.line, b.name.as_str()))
     });
     out
+}
+
+/// The `name` of every `package.json` the project itself ships — a monorepo's
+/// workspace packages. Scanned before the main walk so a dependency on one can
+/// be recognised as internal wherever it appears. `node_modules`, skipped and
+/// hidden directories are not the project's own code and are not read.
+fn local_npm_names(root: &Path) -> HashSet<String> {
+    let mut names = HashSet::new();
+    collect_local_npm(root, 0, &mut names);
+    names
+}
+
+fn collect_local_npm(dir: &Path, depth: usize, out: &mut HashSet<String>) {
+    if depth > MAX_DEPTH {
+        return;
+    }
+    let Ok(read) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in read.filter_map(|e| e.ok()) {
+        let Ok(ft) = entry.file_type() else { continue };
+        if ft.is_symlink() {
+            continue;
+        }
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if ft.is_dir() {
+            let hidden = name.starts_with('.') && name.len() > 1;
+            if name == "node_modules" || SKIP_DIRS.contains(&name.as_str()) || hidden {
+                continue;
+            }
+            collect_local_npm(&path, depth + 1, out);
+        } else if ft.is_file() && name.eq_ignore_ascii_case("package.json") {
+            if let Some(text) = read_limited(&path, MAX_MANIFEST_BYTES) {
+                if let Ok(json) = serde_json::from_str::<Value>(&text) {
+                    if let Some(n) = json.get("name").and_then(Value::as_str) {
+                        if !n.is_empty() {
+                            out.insert(n.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn read_limited(path: &Path, max: u64) -> Option<String> {
@@ -200,7 +262,12 @@ fn walk(c: &mut Collector, dir: &Path, depth: usize) {
                 }
                 _ => {}
             }
-            if SKIP_DIRS.contains(&name.as_str()) || (name.starts_with('.') && name.len() > 1) {
+            // Hidden directories are skipped, except `.github`, which holds
+            // the workflow files that pin GitHub Actions.
+            let hidden = name.starts_with('.') && name.len() > 1;
+            if SKIP_DIRS.contains(&name.as_str())
+                || (hidden && !name.eq_ignore_ascii_case(".github"))
+            {
                 continue;
             }
             walk(c, &path, depth + 1);
@@ -228,6 +295,18 @@ fn file(c: &mut Collector, path: &Path, name: &str) {
     let requirements = (lower.contains("requirements") || lower.starts_with("constraints"))
         && matches!(ext, "txt" | "in" | "pip")
         || in_requirements_dir && matches!(ext, "txt" | "in");
+    // A GitHub Actions workflow (`.github/workflows/*.yml`) or a composite
+    // action definition (`action.yml`), both of which pin actions with
+    // `uses: owner/repo@ref`.
+    let in_workflows_dir = path.parent().is_some_and(|p| {
+        p.file_name()
+            .is_some_and(|d| d.eq_ignore_ascii_case("workflows"))
+            && p.parent()
+                .and_then(|g| g.file_name())
+                .is_some_and(|g| g.eq_ignore_ascii_case(".github"))
+    });
+    let github_actions_file = (in_workflows_dir && matches!(ext, "yml" | "yaml"))
+        || matches!(lower.as_str(), "action.yml" | "action.yaml");
     match lower.as_str() {
         _ if requirements => manifest(c, requirements_txt),
         "pipfile" => manifest(c, pipfile),
@@ -246,6 +325,10 @@ fn file(c: &mut Collector, path: &Path, name: &str) {
         "go.mod" => manifest(c, go_mod),
         "cargo.lock" => manifest(c, cargo_lock),
         "gemfile.lock" => manifest(c, gemfile_lock),
+        "mix.lock" => manifest(c, mix_lock),
+        "pubspec.lock" => manifest(c, pubspec_lock),
+        "package.resolved" => manifest(c, swift_package_resolved),
+        _ if github_actions_file => manifest(c, github_actions),
         "packages.config" => manifest(c, packages_config),
         "packages.lock.json" => manifest(c, nuget_lock),
         "directory.packages.props" => manifest(c, msbuild),
@@ -714,10 +797,17 @@ fn package_json(c: &mut Collector, file: &str, text: &str) {
             {
                 continue;
             }
+            // A dependency on one of the project's own workspace packages is
+            // internal, not a registry package (its `*` or `workspace:*` spec
+            // resolves locally), so it is neither reported nor CVE-checked.
+            if c.local_npm.contains(pkg) {
+                continue;
+            }
             let line = text[section_at..]
                 .find(&format!("\"{name}\""))
                 .map(|o| line_at(text, section_at + o))
                 .unwrap_or(1);
+            c.dev = section != "dependencies";
             c.add(
                 "npm",
                 pkg,
@@ -774,6 +864,8 @@ fn package_lock_with(c: &mut Collector, file: &str, text: &str, kind: DepKind) {
                 continue;
             };
             let line = lines.get(key.as_str()).copied().unwrap_or(1);
+            c.dev = info.get("dev").and_then(Value::as_bool) == Some(true)
+                || info.get("devOptional").and_then(Value::as_bool) == Some(true);
             c.add("npm", name, Some(exact), version, file, line, kind);
         }
         return;
@@ -794,6 +886,7 @@ fn package_lock_with(c: &mut Collector, file: &str, text: &str, kind: DepKind) {
             if let Some(version) = info.get("version").and_then(Value::as_str) {
                 if let Some(exact) = exact_semver(version) {
                     let line = lines.get(name.as_str()).copied().unwrap_or(1);
+                    c.dev = info.get("dev").and_then(Value::as_bool) == Some(true);
                     c.add("npm", name, Some(exact), version, file, line, kind);
                 }
             }
@@ -1661,6 +1754,279 @@ fn gemfile_lock(c: &mut Collector, file: &str, text: &str) {
     }
 }
 
+/// Elixir's `mix.lock`: an Elixir map whose values are tuples like
+/// `{:hex, :plug, "1.15.2", "<hash>", [:mix], [...], "hexpm", "<hash>"}`.
+/// Only `:hex`-managed packages resolve to a Hex ecosystem advisory; `:git`
+/// and `:path` entries are skipped. The real package name is the atom after
+/// `:hex,`, not the map key (they can differ for renamed packages).
+fn mix_lock(c: &mut Collector, file: &str, text: &str) {
+    for (i, line) in text.lines().enumerate() {
+        let Some((_, rest)) = line.split_once("{:hex,") else {
+            continue;
+        };
+        let rest = rest.trim_start();
+        let Some(rest) = rest.strip_prefix(':') else {
+            continue;
+        };
+        let name = rest
+            .split([',', ' '])
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        // The version is the first quoted string after the package atom.
+        let version = rest
+            .split_once('"')
+            .and_then(|(_, after)| after.split_once('"'))
+            .map(|(v, _)| v.to_string());
+        if name.is_empty() || version.is_none() {
+            continue;
+        }
+        let version = version.unwrap();
+        c.add(
+            "Hex",
+            &name,
+            Some(version.clone()),
+            &version,
+            file,
+            i as u32 + 1,
+            DepKind::Lockfile,
+        );
+    }
+}
+
+/// Dart's `pubspec.lock` (YAML): each package is a two-space-indented key
+/// under `packages:`, with `source:` and `version:` among its attributes.
+/// Only `source: hosted` packages come from pub.dev and have a Pub
+/// ecosystem; `sdk`, `git` and `path` sources are skipped.
+fn pubspec_lock(c: &mut Collector, file: &str, text: &str) {
+    let mut in_packages = false;
+    let mut cur: Option<(String, u32, Option<String>, Option<String>)> = None;
+    let flush = |c: &mut Collector, cur: Option<(String, u32, Option<String>, Option<String>)>| {
+        if let Some((name, line, Some(source), Some(version))) = cur {
+            if source == "hosted" {
+                c.add(
+                    "Pub",
+                    &name,
+                    Some(version.clone()),
+                    &version,
+                    file,
+                    line,
+                    DepKind::Lockfile,
+                );
+            }
+        }
+    };
+    for (i, line) in text.lines().enumerate() {
+        if !line.starts_with(' ') {
+            // A new top-level key ends the packages section.
+            flush(c, cur.take());
+            in_packages = line.trim_end() == "packages:";
+            continue;
+        }
+        if !in_packages {
+            continue;
+        }
+        let indent = line.len() - line.trim_start().len();
+        let t = line.trim();
+        if indent == 2 {
+            // Next package key, e.g. `  http:`.
+            flush(c, cur.take());
+            if let Some(name) = t.strip_suffix(':') {
+                cur = Some((name.to_string(), i as u32 + 1, None, None));
+            }
+        } else if let Some(cur) = cur.as_mut() {
+            if let Some(v) = t.strip_prefix("source:") {
+                cur.2 = Some(unquote(v.trim()).to_string());
+            } else if let Some(v) = t.strip_prefix("version:") {
+                cur.3 = Some(unquote(v.trim()).to_string());
+            }
+        }
+    }
+    flush(c, cur.take());
+}
+
+/// Swift Package Manager's `Package.resolved` (JSON). v2+ lists pins with a
+/// `location`; v1 nests them under `object.pins` with a `repositoryURL`.
+/// OSV keys Swift packages by their repository URL with the scheme and the
+/// trailing `.git` removed (`github.com/vapor/vapor`), so a pin's URL is
+/// normalized to that form. Only version-pinned remote packages resolve.
+fn swift_package_resolved(c: &mut Collector, file: &str, text: &str) {
+    let Ok(doc) = serde_json::from_str::<Value>(text) else {
+        return;
+    };
+    // v1 wraps the list in `object`; v2+ has it at the top level.
+    let pins = doc
+        .get("pins")
+        .or_else(|| doc.get("object").and_then(|o| o.get("pins")))
+        .and_then(Value::as_array);
+    let Some(pins) = pins else {
+        return;
+    };
+    for pin in pins {
+        let url = pin
+            .get("location")
+            .or_else(|| pin.get("repositoryURL"))
+            .and_then(Value::as_str);
+        let Some(url) = url else {
+            continue;
+        };
+        let Some(name) = normalize_repo_url(url) else {
+            continue;
+        };
+        let version = pin
+            .get("state")
+            .and_then(|s| s.get("version"))
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        if let Some(v) = version {
+            // JSON parsing loses positions, so point at the line naming the URL.
+            let line = text
+                .lines()
+                .position(|l| l.contains(url))
+                .map(|n| n as u32 + 1)
+                .unwrap_or(1);
+            c.add(
+                "SwiftURL",
+                &name,
+                Some(v.clone()),
+                &v,
+                file,
+                line,
+                DepKind::Lockfile,
+            );
+        }
+    }
+}
+
+/// `https://github.com/vapor/vapor.git` -> `github.com/vapor/vapor`, the form
+/// OSV uses to key Git-hosted packages (Swift, Go). Returns `None` for a URL
+/// with no host/path.
+fn normalize_repo_url(url: &str) -> Option<String> {
+    let u = url.trim();
+    // `git@github.com:vapor/vapor.git` -> `github.com/vapor/vapor`.
+    let u = if let Some(rest) = u.strip_prefix("git@") {
+        return normalize_repo_url(&rest.replacen(':', "/", 1));
+    } else {
+        u.strip_prefix("https://")
+            .or_else(|| u.strip_prefix("http://"))
+            .or_else(|| u.strip_prefix("ssh://"))
+            .or_else(|| u.strip_prefix("git://"))
+            .unwrap_or(u)
+    };
+    let u = u.strip_suffix('/').unwrap_or(u);
+    let u = u.strip_suffix(".git").unwrap_or(u);
+    if u.is_empty() || !u.contains('/') {
+        return None;
+    }
+    Some(u.to_string())
+}
+
+/// GitHub Actions workflows and composite actions pin actions with
+/// `uses: owner/repo@ref` (`owner/repo/subpath@ref` for a nested action).
+/// The advisory is keyed by `owner/repo`. A ref that is a full semver tag
+/// (`v4.1.1`) gives a concrete version to check; a partial tag (`v4`), a
+/// branch or a commit SHA leaves the version unknown, so the action is
+/// recorded but not matched. Local (`./`) and Docker (`docker://`) uses have
+/// no OSV ecosystem and are skipped.
+fn github_actions(c: &mut Collector, file: &str, text: &str) {
+    for (i, line) in text.lines().enumerate() {
+        let t = line.trim();
+        let t = t.strip_prefix("- ").unwrap_or(t);
+        let Some(spec) = t.strip_prefix("uses:") else {
+            continue;
+        };
+        // Separate an inline comment, then drop surrounding quotes. The
+        // comment often names the human-readable version of a SHA pin
+        // (`uses: actions/checkout@fbc6f39...  # v4.1.1`).
+        let mut spec = spec.trim();
+        let mut comment = "";
+        if let Some(h) = spec.find(" #") {
+            comment = spec[h + 2..].trim();
+            spec = spec[..h].trim_end();
+        }
+        let spec = spec.trim_matches(|c| c == '"' || c == '\'').trim();
+        if spec.is_empty()
+            || spec.starts_with("./")
+            || spec.starts_with("../")
+            || spec.starts_with("docker://")
+        {
+            continue;
+        }
+        let Some((repo, reff)) = spec.rsplit_once('@') else {
+            continue;
+        };
+        let mut segs = repo.split('/');
+        let (Some(owner), Some(name)) = (segs.next(), segs.next()) else {
+            continue;
+        };
+        if owner.is_empty() || name.is_empty() {
+            continue;
+        }
+        let action = format!("{owner}/{name}");
+        let version = action_version(reff, comment);
+        c.add(
+            "GitHub Actions",
+            &action,
+            version,
+            reff,
+            file,
+            i as u32 + 1,
+            DepKind::Manifest,
+        );
+    }
+}
+
+/// The version of a pinned action, for CVE lookup and for deciding whether it
+/// counts as pinned:
+/// - a full `X.Y.Z` tag → that version;
+/// - a commit SHA (the most exact, recommended pin) → the version named in a
+///   trailing `# vX.Y.Z` comment when there is one (so it can be checked), else
+///   the SHA itself, so the action counts as pinned and is never reported as
+///   having "no exact version"; a SHA never matches a semver range, so this
+///   introduces no false positive;
+/// - a floating tag (`v4`), branch (`main`) or any other ref → `None`, i.e.
+///   genuinely not pinned to an exact version.
+fn action_version(reff: &str, comment: &str) -> Option<String> {
+    if let Some(v) = full_semver(reff) {
+        return Some(v);
+    }
+    if is_commit_sha(reff) {
+        let from_comment = comment.split_whitespace().find_map(full_semver);
+        return Some(from_comment.unwrap_or_else(|| reff.to_string()));
+    }
+    None
+}
+
+/// Whether a ref is a git commit SHA (7 to 40 hex digits), the exact pin form
+/// GitHub recommends for third-party actions.
+fn is_commit_sha(reff: &str) -> bool {
+    (7..=40).contains(&reff.len()) && reff.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// A `ref` that is a full `X.Y.Z` semver tag (an optional leading `v` is
+/// dropped), else `None` for a partial tag, branch or commit SHA that cannot
+/// be compared against a version range.
+fn full_semver(reff: &str) -> Option<String> {
+    let v = reff
+        .strip_prefix('v')
+        .or_else(|| reff.strip_prefix('V'))
+        .unwrap_or(reff);
+    let mut parts = v.split('.');
+    let major = parts.next()?;
+    let minor = parts.next()?;
+    let patch = parts.next()?;
+    let numeric = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    // The patch may carry a prerelease/build suffix (`1-rc1`), so only its
+    // leading digits must be numeric.
+    let patch_num = patch.split(['-', '+']).next().unwrap_or("");
+    if numeric(major) && numeric(minor) && numeric(patch_num) {
+        Some(v.to_string())
+    } else {
+        None
+    }
+}
+
 // -------------------------------------------------------------------- .NET
 
 fn nuget_exact(version: &str) -> Option<String> {
@@ -2239,6 +2605,49 @@ pub fn python_imports(
     found
 }
 
+/// The PyPI distribution a top-level import name belongs to, when it differs
+/// from the import name itself (`cv2` is shipped by `opencv-python`). Used to
+/// name a package for a CVE lookup when the project has no manifest; the
+/// authoritative map is the installed environment's own
+/// `importlib.metadata.packages_distributions()`, and this table only covers
+/// the common cases where that environment cannot be read. Returns `None` when
+/// the import name is (normally) also the distribution name.
+pub fn python_dist_name(module: &str) -> Option<&'static str> {
+    Some(match module {
+        "cv2" => "opencv-python",
+        "PIL" => "pillow",
+        "sklearn" => "scikit-learn",
+        "bs4" => "beautifulsoup4",
+        "yaml" => "pyyaml",
+        "dateutil" => "python-dateutil",
+        "dotenv" => "python-dotenv",
+        "jose" => "python-jose",
+        "attr" => "attrs",
+        "OpenSSL" => "pyopenssl",
+        "Crypto" => "pycryptodome",
+        "Cryptodome" => "pycryptodomex",
+        "serial" => "pyserial",
+        "usb" => "pyusb",
+        "google.protobuf" | "google" => "protobuf",
+        "pkg_resources" | "setuptools" => "setuptools",
+        "jwt" => "pyjwt",
+        "magic" => "python-magic",
+        "docx" => "python-docx",
+        "pptx" => "python-pptx",
+        "fitz" => "pymupdf",
+        "win32api" | "win32con" | "win32com" | "pywintypes" | "pythoncom" => "pywin32",
+        "slugify" => "python-slugify",
+        "lxml" => "lxml",
+        "Xlib" => "python-xlib",
+        "zoneinfo" => return None,
+        "skimage" => "scikit-image",
+        "mpl_toolkits" | "pylab" => "matplotlib",
+        "memcache" => "python-memcached",
+        "ruamel" => "ruamel.yaml",
+        _ => return None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2249,6 +2658,8 @@ mod tests {
             root,
             out: Vec::new(),
             seen: HashSet::new(),
+            dev: false,
+            local_npm: HashSet::new(),
         };
         f(&mut c, "f", text);
         c.out.sort_by_key(|d| d.line);
@@ -2256,6 +2667,42 @@ mod tests {
             .into_iter()
             .map(|d| (d.name, d.version, d.line))
             .collect()
+    }
+
+    fn parse_dev(f: fn(&mut Collector, &str, &str), text: &str) -> Vec<(String, bool)> {
+        let root = Path::new("/");
+        let mut c = Collector {
+            root,
+            out: Vec::new(),
+            seen: HashSet::new(),
+            dev: false,
+            local_npm: HashSet::new(),
+        };
+        f(&mut c, "f", text);
+        c.out.sort_by_key(|d| d.line);
+        c.out.into_iter().map(|d| (d.name, d.dev)).collect()
+    }
+
+    #[test]
+    fn npm_dev_dependencies_are_marked() {
+        // devDependencies and optionalDependencies are dev; dependencies are not.
+        let pkg = "{\n  \"dependencies\": {\n    \"express\": \"4.18.0\"\n  },\n  \"devDependencies\": {\n    \"jest\": \"29.0.0\"\n  },\n  \"optionalDependencies\": {\n    \"fsevents\": \"2.3.2\"\n  }\n}\n";
+        assert_eq!(
+            parse_dev(package_json, pkg),
+            vec![
+                ("express".to_string(), false),
+                ("jest".to_string(), true),
+                ("fsevents".to_string(), true),
+            ]
+        );
+        // Lock-file v3 carries the dev marker per installed package.
+        let lock = "{\n  \"lockfileVersion\": 3,\n  \"packages\": {\n    \"\": {\"name\": \"app\"},\n    \"node_modules/express\": {\"version\": \"4.18.0\"},\n    \"node_modules/jest\": {\"version\": \"29.0.0\", \"dev\": true}\n  }\n}\n";
+        let mut got = parse_dev(package_lock, lock);
+        got.sort();
+        assert_eq!(
+            got,
+            vec![("express".to_string(), false), ("jest".to_string(), true),]
+        );
     }
 
     fn pinned(name: &str, v: &str, line: u32) -> (String, Option<String>, u32) {
@@ -2366,6 +2813,8 @@ mod tests {
             root: Path::new("/"),
             out: Vec::new(),
             seen: HashSet::new(),
+            dev: false,
+            local_npm: HashSet::new(),
         };
         bundled_script(
             &mut c,
@@ -2482,6 +2931,103 @@ mod tests {
         assert_eq!(
             parse(packages_config, config),
             vec![pinned("jQuery", "1.7.1", 2)]
+        );
+    }
+
+    #[test]
+    fn elixir_mix_and_dart_pubspec() {
+        // mix.lock: only :hex tuples count; :git is skipped; the atom after
+        // :hex is the real package name.
+        let mix = "%{\n  \"bunt\": {:hex, :bunt, \"0.2.1\", \"abc\", [:mix], [], \"hexpm\", \"def\"},\n  \"plug\": {:hex, :plug, \"1.15.2\", \"a1\", [:mix], [{:mime, \"~> 2.0\", [hex: :mime, repo: \"hexpm\", optional: false]}], \"hexpm\", \"b2\"},\n  \"local\": {:git, \"https://github.com/x/y.git\", \"deadbeef\", []},\n}\n";
+        assert_eq!(
+            parse(mix_lock, mix),
+            vec![
+                pinned("bunt", "0.2.1", 2),
+                pinned("plug", "1.15.2", 3),
+                // the :git dependency has no Hex version and is dropped
+            ]
+        );
+
+        // pubspec.lock: only `source: hosted` packages have a Pub ecosystem;
+        // sdk/git sources are skipped.
+        let pubspec = "# Generated by pub\npackages:\n  http:\n    dependency: \"direct main\"\n    description:\n      name: http\n      url: \"https://pub.dev\"\n    source: hosted\n    version: \"0.13.5\"\n  flutter:\n    dependency: \"direct main\"\n    source: sdk\n    version: \"0.0.0\"\nsdks:\n  dart: \">=2.17.0 <3.0.0\"\n";
+        assert_eq!(
+            parse(pubspec_lock, pubspec),
+            vec![pinned("http", "0.13.5", 3)]
+        );
+    }
+
+    #[test]
+    fn swift_resolved_and_github_actions() {
+        // Package.resolved v2: URL normalized to the OSV key; a branch-pinned
+        // package (no version) is dropped.
+        let resolved = "{\n  \"pins\" : [\n    {\n      \"identity\" : \"vapor\",\n      \"kind\" : \"remoteSourceControl\",\n      \"location\" : \"https://github.com/vapor/vapor.git\",\n      \"state\" : { \"revision\" : \"abc\", \"version\" : \"4.84.0\" }\n    },\n    {\n      \"identity\" : \"edge\",\n      \"location\" : \"https://github.com/x/edge.git\",\n      \"state\" : { \"branch\" : \"main\", \"revision\" : \"def\" }\n    }\n  ],\n  \"version\" : 2\n}\n";
+        assert_eq!(
+            parse(swift_package_resolved, resolved),
+            vec![(
+                "github.com/vapor/vapor".to_string(),
+                Some("4.84.0".to_string()),
+                6
+            )]
+        );
+
+        // Workflows: a full-semver tag gives a version; a floating tag (`@v4`)
+        // or branch does not. A commit SHA is the most exact pin, so it counts
+        // as pinned: to its `# vX.Y.Z` comment when one names the release, else
+        // to the SHA itself. Local and docker uses are skipped.
+        let wf = "jobs:\n  build:\n    steps:\n      - uses: actions/checkout@v4.1.1\n      - uses: actions/setup-node@v4  # major tag only\n      - uses: step-security/harden-runner@17d0e2bd7d51742c71671bd19fa12bdc9d40b3bb # v2.9.0\n      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02\n      - uses: ./.github/actions/local\n      - uses: docker://alpine:3.19\n      - uses: hashicorp/vault-action@2.5.0  # with comment\n";
+        assert_eq!(
+            parse(github_actions, wf),
+            vec![
+                pinned("actions/checkout", "4.1.1", 4),
+                loose("actions/setup-node", 5),
+                // SHA pin with a version comment: checked against that version.
+                pinned("step-security/harden-runner", "2.9.0", 6),
+                // SHA pin with no comment: pinned to the SHA, never "unpinned".
+                pinned(
+                    "actions/upload-artifact",
+                    "ea165f8d65b6e75b540449e92b4886f43607fa02",
+                    7,
+                ),
+                pinned("hashicorp/vault-action", "2.5.0", 10),
+            ]
+        );
+    }
+
+    #[test]
+    fn workspace_packages_are_not_treated_as_registry_dependencies() {
+        // A monorepo: the root app depends on its own `@shp/*` workspace
+        // packages (version `*`) and on a real registry package. Only the
+        // registry package is collected.
+        let dir = std::env::temp_dir().join(format!("deps-workspace-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        let files = [
+            (
+                "package.json",
+                "{\n  \"name\": \"root\",\n  \"private\": true,\n  \"workspaces\": [\"packages/*\", \"apps/*\"]\n}\n",
+            ),
+            ("packages/contracts/package.json", "{\n  \"name\": \"@shp/contracts\",\n  \"version\": \"0.0.0\"\n}\n"),
+            ("packages/db/package.json", "{\n  \"name\": \"@shp/db\",\n  \"version\": \"0.0.0\"\n}\n"),
+            (
+                "apps/api/package.json",
+                "{\n  \"name\": \"@shp/api\",\n  \"dependencies\": {\n    \"@shp/contracts\": \"*\",\n    \"@shp/db\": \"*\",\n    \"express\": \"4.18.0\"\n  }\n}\n",
+            ),
+        ];
+        for (path, text) in files {
+            let p = dir.join(path);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, text).unwrap();
+        }
+        let names: Vec<String> = collect(&dir)
+            .into_iter()
+            .filter(|d| d.ecosystem == "npm")
+            .map(|d| d.name)
+            .collect();
+        std::fs::remove_dir_all(&dir).ok();
+        assert_eq!(
+            names,
+            vec!["express".to_string()],
+            "internal @shp/* workspace packages must be excluded"
         );
     }
 

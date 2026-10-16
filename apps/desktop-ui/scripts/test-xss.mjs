@@ -205,22 +205,11 @@ const jsRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'js
 const load = (rel) => import(pathToFileURL(path.join(jsRoot, rel)).href);
 
 const { escapeHtml, escapeAttr } = await load('util/html.js');
-const { ContextDiscussion } = await load('collaboration/discussion.js');
-const { TeamPresence } = await load('collaboration/presence.js');
-const { EntityInspector } = await load('investigation/inspector.js');
-const { InvestigationGraph } = await load('investigation/graph.js');
-const { InvestigationTimeline } = await load('investigation/timeline.js');
-const { InvestigationWorkspace } = await load('investigation/workspace.js');
-const { EvidenceSpace } = await load('evidence/evidence.js');
-const { OperationsSpace } = await load('operations/operations.js');
-const { ChallengeMatrix } = await load('ctf/components/challenge_matrix.js');
-const { FlagDrawer } = await load('ctf/components/flag_drawer.js');
-const { WorkspaceView } = await load('ctf/components/workspace_view.js');
-const { WriteupView } = await load('ctf/components/writeup_view.js');
-const { TerminalView } = await load('ctf/components/terminal_view.js');
-const { RecipeBuilder } = await load('ctf/components/recipe_builder.js');
-const { CtfApp } = await load('ctf/ctf_app.js');
 const { CodeSpace } = await load('code/code.js');
+const { WebSpace } = await load('web/web.js');
+const { RemoteHostPanel } = await load('ssh/os-panel.js');
+const { ProjectCodePanel } = await load('ssh/code-panel.js');
+const { IncidentSpace } = await load('incident/incident.js');
 
 // ---------------------------------------------------------------------------
 // Harness
@@ -275,121 +264,6 @@ check(escapeHtml('Сироҷиддин lsass.exe') === 'Сироҷиддин lsa
 check(escapeAttr('" onfocus="x') === '&quot; onfocus=&quot;x', 'escapeAttr neutralises attribute breakout');
 check(injectionProblems(`<div title="${PAYLOAD}">`).length > 0, 'self-check: tokenizer detects an unescaped attribute payload');
 check(injectionProblems(`<textarea>${PAYLOAD}</textarea>`).length > 0, 'self-check: tokenizer detects a </textarea> breakout');
-
-console.log('\n=== Collaboration ===');
-await sink('discussion messages (author, body)', (v) => {
-  const d = new ContextDiscussion({ call: async () => ({}) });
-  d.messages = [{ author_name: v, body: v, created_at: '2026-01-01T10:00:00Z' }];
-  d.render();
-  return getElementById('discussionMessages').innerHTML;
-});
-await sink('team presence (title attr, initial)', (v) => {
-  const p = new TeamPresence({ call: async () => [] });
-  p.presences = [{ user_id: v, status_text: v, is_online: true }];
-  p.render();
-  return getElementById('teamPresence').innerHTML;
-});
-
-console.log('\n=== Investigation ===');
-const entityOf = (type, v) => ({
-  type, id: v, label: v, name: v, hostname: v, os: v, risk: v, ip: v, criticality: v,
-  processes_count: v, sockets_count: v, findings_count: v, evidence_count: v,
-  pid: v, ppid: v, host_id: v, state: v, path: v, executable_path: v, command_line: v,
-  sha256: v, verification: v, title: v, mitre_technique: v, mitre_tactic: v, subtitle: v,
-  severity: v, rule_id: v, entity_key: v
-});
-for (const type of ['host', 'process', 'finding', 'dns']) {
-  await sink(`inspector context tab (${type})`, (v) => {
-    const el = freshEl();
-    new EntityInspector(el, null).render(entityOf(type, v));
-    return el.innerHTML;
-  });
-}
-await sink('inspector evidence tab', (v) => {
-  const el = freshEl();
-  const insp = new EntityInspector(el, null);
-  insp.currentTab = 'evidence';
-  insp.render(entityOf('process', v));
-  return el.innerHTML;
-});
-await sink('inspector relations tab', (v) => {
-  const el = freshEl();
-  const ent = entityOf('process', 'proc-1');
-  const insp = new EntityInspector(el, { graph: { edges: [{ source: 'proc-1', target: v, relation: v }] } });
-  insp.currentTab = 'relations';
-  insp.render(ent);
-  return el.innerHTML;
-});
-await sink('graph node tooltip', (v) => {
-  const g = new InvestigationGraph(null);
-  g.updateTooltip({ id: v, label: v, type: v, subtitle: v, path: v, in_attack_path: true }, 0, 0);
-  return getElementById('graphTooltip').innerHTML;
-});
-await sink('timeline event list (class, data-event-id, text)', (v) => {
-  const el = freshEl();
-  new InvestigationTimeline(el).render([{ id: v, category: v, timestamp: v, title: v, detail: v, severity: 'high' }]);
-  return el.innerHTML;
-});
-await sink('timeline event details panel (incl. JSON dump)', (v) => {
-  const ws = new InvestigationWorkspace({ call: async () => null });
-  ws.loadTimelineEvent({ id: v, title: v, timestamp: v, category: v, detail: v });
-  return getElementById('eventDetails').innerHTML;
-});
-
-console.log('\n=== Evidence ===');
-const evidenceIpc = (v) => ({
-  async call(method) {
-    if (method === 'evidence.list') return [{ id: v, name: v, size: v, hash_blake3: v, method: v, acquired_at: v }];
-    if (method === 'evidence.observations') return [{ event_type: v, timestamp: v, data: { cmd: v } }];
-    if (method === 'facts.list') return [{ entity_type: v, entity_key: v, fact_type: v, confidence: v, severity: v, created_at: v }];
-    if (method === 'evidence.custody') return [{ event_type: v, timestamp: v, actor: v, prev_hash: v }];
-    if (method === 'evidence.ingest') return { events_extracted: v, facts_derived: v };
-    return [];
-  }
-});
-async function evidenceSpace(v) {
-  const space = new EvidenceSpace(evidenceIpc(v));
-  const root = freshEl();
-  space.render(root);
-  await new Promise((r) => setTimeout(r, 0)); // let render()'s unawaited first load settle
-  return { space, root };
-}
-await sink('evidence artifacts table (text + data-* attrs)', async (v) => {
-  const { space, root } = await evidenceSpace(v);
-  await space._loadArtifacts();
-  return root.querySelector('#tabContent').innerHTML;
-});
-await sink('evidence observations panel', async (v) => {
-  const { space, root } = await evidenceSpace(v);
-  await space._showObservations('a1', v);
-  return lastHtml(root.querySelector('#obsPanel'));
-});
-await sink('evidence facts table', async (v) => {
-  const { space, root } = await evidenceSpace(v);
-  await space._loadFacts();
-  return root.querySelector('#tabContent').innerHTML;
-});
-await sink('evidence custody tab (input value attr + chain)', async (v) => {
-  const { space, root } = await evidenceSpace(v);
-  space._renderCustodyTab(v);
-  root.querySelector('#custodyHashInput').value = 'h';
-  await space._loadCustody();
-  return `${root.querySelector('#tabContent').innerHTML}\n${root.querySelector('#custodyChain').innerHTML}`;
-});
-await sink('evidence upload status (file name, ingest result)', async (v) => {
-  const { space, root } = await evidenceSpace(v);
-  space.activeTab = 'facts';
-  await space._uploadFile({ name: v });
-  return lastHtml(root.querySelector('#uploadStatus'));
-});
-
-console.log('\n=== Operations ===');
-await sink('operations case grid (data-case attr, title, status)', async (v) => {
-  const ops = new OperationsSpace({ call: async () => [{ id: v, title: v, status: v, created_at: '2026-01-01T00:00:00Z' }] }, null);
-  const root = freshEl();
-  await ops.render(root);
-  return root.querySelector('#opsCaseGrid').innerHTML;
-});
 
 console.log('\n=== Code analysis ===');
 // File names, code snippets and source notes come from the scanned project,
@@ -480,100 +354,325 @@ await sink('code analysis dependency block (ecosystems, unpinned, imports, error
   return `${root.querySelector('#codeDeps').innerHTML}\n${space.packagesTable(status.report.dependency_check)}`;
 });
 
-console.log('\n=== CTF ===');
-await sink('challenge matrix (competition, cards, title attr, points)', (v) => {
-  const el = freshEl();
-  new ChallengeMatrix({
-    store: store({
-      challenges: { c1: { id: v, title: v, category: 'web', points: v, status: 'Unsolved', tags: [v] } },
-      competitions: [{ id: v, name: v }],
-      activeCompetitionId: v,
-      activeCompetition: { title: v },
-      error: v
-    })
-  }).mount(el);
-  return el.innerHTML;
+console.log('\n=== Running site (DAST) ===');
+// URLs, parameter names, evidence snippets and the reproduction request all
+// come from the scanned site's own responses, which the attacker controls;
+// a reflected-XSS evidence string literally contains injected markup.
+const webStatus = (v, extra = {}) => ({
+  running: false, target: v, started_at: '2026-01-01T00:00:00Z', finished_at: '2026-01-01T00:00:05Z', error: null,
+  report: {
+    target: v, pages_crawled: 3, forms_found: 2, requests_made: 10, authenticated: true,
+    notes: [v], duration_ms: 50,
+    findings: [{
+      rule: v, cwe: v, severity: v, title: v, message: v, url: v, method: v, param: v,
+      evidence: v, request: v, request_detail: { method: v, url: v, body: v }
+    }]
+  },
+  ...extra
 });
-await sink('flag drawer (candidate pills, data-flag attr)', (v) => {
-  const el = freshEl();
-  const flags = [{ id: v, value: v, source: v, status: 'candidate', timestamp: '2026-01-01T00:00:00Z' }];
-  new FlagDrawer({
-    store: store({ filter: 'all', unreviewedCount: 1, candidates: flags, error: v }, { getFilteredCandidates: () => flags, loadFlags: async () => {} })
-  }).mount(el);
-  return el.innerHTML;
-});
-await sink('ctf workspace view (title, category class, artifact tree)', (v) => {
-  const el = freshEl();
-  new WorkspaceView({
-    store: store({
-      activeChallenge: { title: v, category: v, points: v, status: 'Unsolved' },
-      activePanels: { left: true, bottom: true, rightDrawer: true },
-      artifactTree: [{ role: v, items: [{ id: v, filename: v, size_bytes: 10 }] }]
-    })
-  }).mount(el);
-  return el.innerHTML;
-});
-await sink('write-up studio (textarea, placeholder attr, preview)', (v) => {
-  const el = freshEl();
-  new WriteupView({
-    store: store({ draftMarkdown: v, isDirty: true }),
-    workspace: store({ activeChallenge: { title: v } })
-  }).mount(el);
-  return el.innerHTML;
-}, { benign: 'benign `-code-` value' }); // the payload's backticks legitimately form a code span
-await sink('terminal view (log lines, tool options, error)', (v) => {
-  const el = freshEl();
-  new TerminalView({
-    store: store({
-      activeJobId: 'j1',
-      activeJobs: { j1: { id: v, status: 'running' } },
-      terminalBuffers: { j1: { lines: [v], droppedBytes: 0 } },
-      tools: [{ id: v, name: v }],
-      error: v
-    })
-  }).mount(el);
-  return el.innerHTML;
-});
-await sink('recipe builder (key value attr, preview, detected flags)', (v) => {
-  const el = freshEl();
-  new RecipeBuilder({
-    store: store({ operations: [{ operation: 'xor', params: { key: v } }, { operation: v, params: {} }], livePreviewText: v, detectedFlags: [v] })
-  }).mount(el);
-  return el.innerHTML;
-});
-
-const ctfStores = (v, { failSelect = false } = {}) => ({
-  workspaceStore: store({ activeChallenge: { title: v } }, {
-    selectChallenge: async () => { if (failSelect) throw new Error(v); }
-  }),
-  writeupStore: store({ draftMarkdown: '', isDirty: false })
-});
-await sink('ctf write-up route header (challenge id from URL hash)', async (v) => {
-  const app = new CtfApp(ctfStores(v));
-  app.viewportEl = freshEl();
-  await app.mountWriteupRoute(v);
-  return app.viewportEl.innerHTML;
-});
-await sink('ctf challenge route error banner', async (v) => {
-  const app = new CtfApp(ctfStores(v, { failSelect: true }));
-  app.viewportEl = freshEl();
-  await app.mountChallengeRoute(v);
-  return app.viewportEl.innerHTML;
-});
-
-console.log('\n=== Visual parity for benign markdown ===');
-{
-  const el = freshEl();
-  new WriteupView({
-    store: store({ draftMarkdown: "# Title\n\nUse `strings` on **it's** file\n\n```\nxor key\n```", isDirty: false }),
-    workspace: store({ activeChallenge: { title: 'Crypto 101' } })
-  }).mount(el);
-  const html = el.innerHTML;
-  check(/<h1[^>]*>Title<\/h1>/.test(html), 'markdown heading still rendered');
-  check(/<code[^>]*>strings<\/code>/.test(html), 'inline `code` still rendered (backticks are escaped first)');
-  check(/<pre[^>]*><code>\s*xor key\s*<\/code><\/pre>/.test(html), 'fenced ``` block still rendered');
-  check(/<strong>it&#39;s<\/strong>/.test(html), 'bold text with apostrophe rendered');
+async function webSpace(status, setup = () => {}) {
+  const space = new WebSpace({ call: async () => status });
+  setup(space);
+  const root = freshEl();
+  await space.render(root);
+  return { space, root };
 }
+await sink('running-site findings (url, param, evidence, repro request)', async (v) => {
+  const { root } = await webSpace(webStatus(v));
+  return root.querySelector('#webResultPanel').innerHTML;
+});
+await sink('running-site form (remembered url and login fields in value attrs)', async (v) => {
+  const { space, root } = await webSpace({ running: false, report: null }, (s) => { s.url = v; s.useLogin = true; });
+  space.renderResult();
+  return root.innerHTML;
+});
+await sink('running-site progress (running target, engine error)', async (v) => {
+  const { space, root } = await webSpace(webStatus(v, { running: true, report: null }));
+  space.stopPolling();
+  const running = root.querySelector('#webProgress').innerHTML;
+  space.status = webStatus(v, { error: v, report: null });
+  space.renderProgress();
+  return `${running}\n${root.querySelector('#webProgress').innerHTML}`;
+});
+
+console.log('\n=== Remote host (SSH) ===');
+// The OS name, kernel, ecosystem, host-key fingerprint, collection errors and
+// every package finding come from the remote host being scanned, which is
+// untrusted input.
+function remotePanel() {
+  const panel = new RemoteHostPanel({ call: async () => ({}) });
+  panel.mount(freshEl());
+  return panel;
+}
+await sink('remote-host report (os, kernel, findings, host key)', async (v) => {
+  const panel = remotePanel();
+  panel.phase = 'done';
+  panel.report = {
+    host: v,
+    os: v,
+    kernel: v,
+    ecosystem: v,
+    host_key: { algorithm: v, fingerprint: v, sha256: v },
+    collection_errors: [v],
+    package_report: {
+      findings: [
+        {
+          id: v,
+          component: v,
+          installed_version: v,
+          fixed_version: v,
+          status: 'fix_available',
+          severity: v,
+          url: v,
+          kev: { name: v },
+        },
+      ],
+    },
+  };
+  panel.render();
+  return panel.root.innerHTML;
+});
+await sink('remote-host confirm (host, host-key fingerprint)', async (v) => {
+  const panel = remotePanel();
+  panel.phase = 'confirm';
+  panel.pending = { host: v, port: 22, username: v };
+  panel.hostKey = { algorithm: v, fingerprint: v, sha256: v };
+  panel.render();
+  return panel.root.innerHTML;
+});
+await sink('remote-host CIS audit (check title, evidence, remediation, refs, framework)', async (v) => {
+  // The evidence is literally a line copied out of the host's config files,
+  // and the titles/remediation/framework labels are rendered alongside it.
+  const panel = remotePanel();
+  panel.phase = 'done';
+  panel.report = {
+    host: v,
+    os: v,
+    collection_errors: [],
+    cis_report: {
+      checks: [
+        {
+          id: v,
+          title: v,
+          status: 'FAIL',
+          severity: 'HIGH',
+          evidence: v,
+          remediation: v,
+          references: [{ framework: v, control: v }],
+        },
+        {
+          id: v,
+          title: v,
+          status: 'MANUAL',
+          severity: 'LOW',
+          evidence: v,
+          remediation: v,
+          references: [{ framework: v, control: v }],
+        },
+      ],
+      summary: {
+        pass: 1,
+        fail: 1,
+        manual: 1,
+        not_configured: 1,
+        needs_privileges: 1,
+        compliance: [{ framework: v, passed: 1, evaluated: 2, undetermined: 0, percent: 50 }],
+      },
+    },
+  };
+  panel.render();
+  return panel.root.innerHTML;
+});
+
+await sink('remote-host VULNDB_EMPTY (ecosystem in download button + hostline)', async (v) => {
+  const panel = remotePanel();
+  panel.phase = 'done';
+  panel.report = {
+    host: v,
+    os: v,
+    ecosystem: v,
+    status: 'VULNDB_EMPTY',
+    collection_errors: [],
+  };
+  panel.render();
+  return panel.root.innerHTML;
+});
+await sink('remote-host form prefilled after DB load (host/user value attrs, notice)', async (v) => {
+  const panel = remotePanel();
+  panel.lastForm = { host: v, port: 22, username: v, method: 'password' };
+  panel.formNotice = `База для ${v} загружена. Введите пароль и запустите проверку снова.`;
+  panel.phase = 'form';
+  panel.renderForm();
+  return panel.root.innerHTML;
+});
+await sink('remote-host Windows result (caption/build/product, KB rollup, program + OS findings)', async (v) => {
+  // Every Windows value comes off the host over OpenSSH: the OS caption/build,
+  // the KB ids (findings[].sources), the installed-program names/versions and
+  // the CIS evidence. All must render as inert text.
+  const panel = remotePanel();
+  panel.phase = 'done';
+  panel.report = {
+    host: v,
+    platform: 'windows',
+    status: 'VULNERABILITIES_FOUND',
+    os: v,
+    collection_errors: [v],
+    host_key: { algorithm: v, fingerprint: v, sha256: v },
+    windows: {
+      caption: v,
+      build: v,
+      display_version: v,
+      product: v,
+      installed_updates: 3,
+      os_status: 'VULNERABILITIES_FOUND',
+      os_cve: {
+        findings: [{
+          id: v, component: v, installed_version: v, fixed_version: v, status: 'fix_available',
+          severity: 'critical', sources: [v, v], summary: v,
+        }],
+      },
+      app_cve: {
+        findings: [{
+          id: v, component: v, installed_version: v, fixed_version: v, status: 'fix_available',
+          severity: 'high', sources: [v], summary: v,
+        }],
+        checked: [{ product: v, version: v, cve_count: 1 }],
+        unrecognised: 2,
+      },
+    },
+    cis_report: {
+      checks: [{
+        id: v, title: v, status: 'FAIL', severity: 'HIGH', evidence: v, remediation: v,
+        references: [{ framework: v, control: v }],
+      }],
+      summary: { pass: 0, fail: 1, manual: 0, not_configured: 0, needs_privileges: 0,
+        compliance: [{ framework: v, passed: 0, evaluated: 1, undetermined: 0, applicable: 1, percent: 0 }] },
+    },
+  };
+  panel.render();
+  return panel.root.innerHTML;
+});
+
+console.log('\n=== Project code over SSH ===');
+// The project path is resolved by the remote server, and the fetched source
+// (file names, snippets, package names, advisory text) is attacker-controlled;
+// the findings reuse the shared code report view, so the same escaping holds.
+function codePanel() {
+  const panel = new ProjectCodePanel({ call: async () => ({}) });
+  panel.mount(freshEl());
+  return panel;
+}
+await sink('remote-code report (server path, fetch summary, code findings)', async (v) => {
+  const panel = codePanel();
+  panel.phase = 'done';
+  panel.lastForm = { external: true };
+  panel.status = {
+    target: v,
+    path: v,
+    external_sources: true,
+    finished_at: '2026-01-01T00:00:05Z',
+    report: {
+      files: v, lines: v, languages: [[v, v]], load_ms: v, analysis_ms: v,
+      fetch: { files: 3, bytes: 4096, skipped_dirs: [v], skipped_binary: [v], skipped_large: [v], skipped_symlinks: [v], truncated: true, limit_hit: v },
+      findings: [{
+        rule: v, cwe: v, severity: v, title: v, message: v, file: v, line: v, column: v, snippet: v,
+        source: { file: v, line: v, column: v, note: v }, trace: [{ file: v, line: v, column: v, note: v }],
+        other_sources: []
+      }]
+    }
+  };
+  panel.render();
+  return panel.root.innerHTML;
+});
+await sink('remote-code confirm (host, host-key fingerprint)', async (v) => {
+  const panel = codePanel();
+  panel.phase = 'confirm';
+  panel.pending = { host: v, port: 22, username: v, path: v };
+  panel.hostKey = { algorithm: v, fingerprint: v, sha256: v };
+  panel.render();
+  return panel.root.innerHTML;
+});
+await sink('remote-code form prefilled after DB load (host/user/path value attrs, notice)', async (v) => {
+  const panel = codePanel();
+  panel.lastForm = { host: v, port: 22, username: v, path: v, method: 'password', external: true, includeTests: true };
+  panel.formNotice = `База (${v}) загружена. Введите пароль и запустите проверку снова.`;
+  panel.phase = 'form';
+  panel.renderForm();
+  return panel.root.innerHTML;
+});
+
+console.log('\n=== Incident investigation (DFIR timeline) ===');
+// Every field on a timeline row comes straight off a log file an attacker can
+// write to: the request path and user-agent, the SSH user and source IP, the
+// syslog program and message, the file name — and the raw line shown as
+// evidence. All must render inert.
+async function incidentSpace(status, setup = () => {}) {
+  const space = new IncidentSpace({ call: async () => status });
+  setup(space);
+  const root = freshEl();
+  await space.render(root);
+  return { space, root };
+}
+const incidentStatus = (v, extra = {}) => ({
+  running: false,
+  path: v,
+  started_at: '2026-01-01T00:00:00Z',
+  finished_at: '2026-01-01T00:00:05Z',
+  error: null,
+  report: {
+    first_event: v,
+    last_event: v,
+    warnings: [v],
+    files: [{ path: v, source: 'web_access', lines: 10, parsed: 9, compressed: true, sha256: v, bytes: 4096 }],
+    findings: [{
+      rule: v, title: v, severity: 'high', mitre: [v], summary: v, actor: v,
+      first_time: v, last_time: v,
+      evidence: [{ timestamp: v, source_file: v, line_no: 7, summary: v, raw: v }],
+    }],
+    links: [{
+      rule: v, title: v, severity: 'high', mitre: [v], summary: v, actor: v,
+      first_time: v, last_time: v, hosts: [v, v],
+      evidence: [{ timestamp: v, source_file: v, line_no: 7, summary: v, raw: v }],
+    }],
+    summary: { total_events: 1, files: 1, findings: 1, links: 1, by_source: { web_access: 1, auth: 1 } },
+    events: [{
+      timestamp: v, source: 'web_access', source_file: v, line_no: 7,
+      host: v, actor: v, summary: v, outcome: 'failure',
+      fields: { method: v, path: v, status: v, user_agent: v }, raw: v,
+    }],
+  },
+  ...extra,
+});
+await sink('incident timeline (time, host, actor, summary, raw line, files, warnings)', async (v) => {
+  const { root } = await incidentSpace(incidentStatus(v));
+  return root.querySelector('#incResultPanel').innerHTML;
+});
+await sink('incident text filter value attr (query echoed into input)', async (v) => {
+  const { space, root } = await incidentSpace(incidentStatus(v), (s) => { s.query = v; });
+  space.renderResult();
+  return root.querySelector('#incResultPanel').innerHTML;
+});
+await sink('incident progress (running path, engine error)', async (v) => {
+  const { space, root } = await incidentSpace(incidentStatus(v, { running: true, report: null }));
+  space.stopPolling();
+  const running = root.querySelector('#incProgress').innerHTML;
+  space.status = incidentStatus(v, { error: v, report: null });
+  space.renderProgress();
+  return running + root.querySelector('#incProgress').innerHTML;
+});
+await sink('incident cross-host links panel (host chips, actor, mitre, evidence)', async (v) => {
+  const { space } = await incidentSpace(incidentStatus(v));
+  return space.linksPanelHtml(space.status.report);
+});
+await sink('incident evidence panel (marked event summary, file:line)', async (v) => {
+  // Marked-evidence fields are copied from log events, so they carry the same
+  // attacker-controlled content and must render inert in the evidence panel.
+  const { space } = await incidentSpace(incidentStatus(v));
+  space.evidence = new Map([[v, {
+    key: v, timestamp: v, source: 'auth', source_file: v, line_no: 7, summary: v,
+  }]]);
+  return space.evidencePanelHtml();
+});
 
 console.log(`\nXSS checks: ${passed} passed, ${failed} failed\n`);
 process.exit(failed > 0 ? 1 : 0);

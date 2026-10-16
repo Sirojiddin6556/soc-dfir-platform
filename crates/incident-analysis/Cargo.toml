@@ -1,0 +1,16 @@
+[package]
+name = "incident-analysis"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "DFIR incident investigation: parse host and web logs into one UTC timeline, each event backed by its concrete log line"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+regex.workspace = true
+flate2.workspace = true
+sha2.workspace = true
+hex.workspace = true
+thiserror.workspace = true

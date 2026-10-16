@@ -1,0 +1,22 @@
+Oct 13 07:02:11 db01 sshd[3000]: Accepted publickey for ubuntu from 10.0.3.11 port 51002 ssh2: RSA SHA256:abc
+Oct 13 07:17:01 db01 CRON[3001]: pam_unix(cron:session): session opened for user root by (uid=0)
+Oct 14 09:11:00 db01 sshd[3002]: Failed password for root from 45.137.21.134 port 40000 ssh2
+Oct 14 09:11:07 db01 sshd[3003]: Failed password for admin from 45.137.21.134 port 40001 ssh2
+Oct 14 09:11:14 db01 sshd[3004]: Failed password for invalid user oracle from 45.137.21.134 port 40002 ssh2
+Oct 14 09:11:21 db01 sshd[3005]: Failed password for invalid user postgres from 45.137.21.134 port 40003 ssh2
+Oct 14 09:11:28 db01 sshd[3006]: Failed password for invalid user test from 45.137.21.134 port 40004 ssh2
+Oct 14 09:11:35 db01 sshd[3007]: Failed password for deploy from 45.137.21.134 port 40005 ssh2
+Oct 14 09:11:42 db01 sshd[3008]: Failed password for deploy from 45.137.21.134 port 40006 ssh2
+Oct 14 09:11:49 db01 sshd[3009]: Failed password for ubuntu from 45.137.21.134 port 40007 ssh2
+Oct 14 09:11:56 db01 sshd[3010]: Failed password for invalid user git from 45.137.21.134 port 40008 ssh2
+Oct 14 09:12:03 db01 sshd[3011]: Failed password for invalid user jenkins from 45.137.21.134 port 40009 ssh2
+Oct 14 09:12:10 db01 sshd[3012]: Failed password for deploy from 45.137.21.134 port 40010 ssh2
+Oct 14 09:12:17 db01 sshd[3013]: Failed password for www-data from 45.137.21.134 port 40011 ssh2
+Oct 14 09:12:24 db01 sshd[3014]: Failed password for deploy from 45.137.21.134 port 40012 ssh2
+Oct 14 09:12:31 db01 sshd[3015]: Failed password for invalid user backup from 45.137.21.134 port 40013 ssh2
+Oct 14 09:12:38 db01 sshd[3016]: Failed password for deploy from 45.137.21.134 port 40014 ssh2
+Oct 14 09:12:45 db01 sshd[3017]: Failed password for invalid user ftp from 45.137.21.134 port 40015 ssh2
+Oct 14 09:12:52 db01 sshd[3018]: Failed password for deploy from 45.137.21.134 port 40016 ssh2
+Oct 14 09:12:59 db01 sshd[3019]: Failed password for deploy from 45.137.21.134 port 40017 ssh2
+Oct 14 09:18:30 db01 sshd[3020]: Accepted password for deploy from 45.137.21.134 port 40099 ssh2
+Oct 14 09:18:31 db01 sshd[3021]: pam_unix(sshd:session): session opened for user deploy by (uid=0)

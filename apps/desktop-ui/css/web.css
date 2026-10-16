@@ -1,0 +1,63 @@
+/* Running-site space (DAST): scan form, login fields and finding cards.
+   Chips, badges, panels and the spinner come from vulns.css. */
+.web-login {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin: 8px 0;
+}
+.web-login input {
+  height: 30px;
+  background: var(--bg-canvas);
+  border: 1px solid var(--border-muted);
+  border-radius: 4px;
+  padding: 0 10px;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+.web-notes {
+  margin: 8px 0;
+  padding-left: 18px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.web-notes li { margin: 2px 0; }
+.web-findings { margin-top: 12px; display: flex; flex-direction: column; gap: 10px; }
+.web-finding {
+  border: 1px solid var(--border-muted);
+  border-left: 3px solid var(--border-muted);
+  border-radius: 6px;
+  padding: 10px 12px;
+  background: var(--bg-canvas);
+}
+.web-finding-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.web-finding-title { font-weight: 700; font-size: 13px; color: var(--text-primary); }
+.web-finding-cwe { font-size: 11px; color: var(--text-muted); font-family: var(--font-mono); }
+.web-finding-loc { margin: 6px 0; font-size: 12px; color: var(--text-secondary); overflow-wrap: anywhere; }
+.web-finding-loc code { font-family: var(--font-mono); font-size: 11px; color: var(--text-primary); }
+.web-finding-msg { font-size: 12px; color: var(--text-secondary); margin: 4px 0; }
+.web-finding-evidence {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  background: var(--bg-surface);
+  border-radius: 4px;
+  padding: 4px 8px;
+  margin: 6px 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.web-finding-repro summary { cursor: pointer; font-size: 12px; color: var(--text-secondary); }
+.web-finding-repro pre {
+  margin: 6px 0 0;
+  padding: 8px;
+  background: var(--bg-surface);
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.web-sev-filter { text-transform: none; }

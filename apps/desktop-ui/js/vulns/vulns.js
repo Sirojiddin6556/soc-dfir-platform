@@ -317,6 +317,7 @@ export class VulnerabilitySpace {
       </div>
       ${chips}
       ${meta}
+      ${findings.length ? this.renderMissingUpdates() : ''}
       ${findings.length ? `
         <div class="vuln-toolbar">
           ${filterBtn('fix', 'Есть исправление', fixCount)}
@@ -333,6 +334,7 @@ export class VulnerabilitySpace {
         </table>
         ${shown.length > this.limit ? `<button id="vulnMoreBtn" class="ctf-btn ctf-btn-secondary">Показать ещё (${shown.length - this.limit})</button>` : ''}
       ` : ''}
+      ${this.renderSoftware()}
       ${(scan.collection_errors || []).length ? `<div class="vuln-note">Замечания сбора: ${escapeHtml(scan.collection_errors.join('; '))}</div>` : ''}
     `;
 
@@ -360,6 +362,55 @@ export class VulnerabilitySpace {
       const detail = tr.nextElementSibling;
       if (detail?.classList.contains('vuln-detail')) detail.hidden = !detail.hidden;
     }));
+  }
+
+  // Windows only: the CVE findings grouped by the KB update that fixes them,
+  // so the result reads as "install these updates" rather than a flat CVE list.
+  // Every row is derived purely from the findings already shown — a CVE counts
+  // toward a KB only when that KB is listed as its fix, so nothing is invented.
+  renderMissingUpdates() {
+    const scan = this.scan;
+    if (!scan?.windows) return '';
+    const findings = scan.findings || [];
+    const rank = { critical: 4, high: 3, medium: 2, low: 1, unknown: 0 };
+    const map = new Map(); // kb label -> { kb, cves:Set, sev, kev, exploited }
+    for (const f of findings) {
+      // Only findings with an available fix map to an installable update.
+      if (f.status !== 'fix_available') continue;
+      for (const src of f.sources || []) {
+        let e = map.get(src);
+        if (!e) {
+          e = { kb: src, cves: new Set(), sev: 'unknown', kev: false, exploited: false };
+          map.set(src, e);
+        }
+        e.cves.add(f.id);
+        if ((rank[f.severity] ?? 0) > (rank[e.sev] ?? 0)) e.sev = f.severity || 'unknown';
+        if (f.kev) e.kev = true;
+        if (f.exploited) e.exploited = true;
+      }
+    }
+    if (!map.size) return '';
+    const updates = [...map.values()].sort(
+      (a, b) => (rank[b.sev] ?? 0) - (rank[a.sev] ?? 0) || b.cves.size - a.cves.size,
+    );
+    const rows = updates
+      .map(
+        (u) => `
+        <tr>
+          <td class="vuln-mono">${escapeHtml(u.kb)}</td>
+          <td class="vuln-num">${u.cves.size}</td>
+          <td><span class="vuln-badge vuln-sev-${escapeAttr(u.sev)}">${escapeHtml(SEVERITY_LABELS[u.sev] || u.sev)}</span></td>
+          <td>${u.kev ? '<span class="vuln-badge vuln-kev">KEV</span>' : ''}${u.exploited ? ' <span class="vuln-badge vuln-exploited">АТАКУЕТСЯ</span>' : ''}</td>
+        </tr>`,
+      )
+      .join('');
+    return `
+      <div class="vuln-panel-title vuln-missing-title">НЕДОСТАЮЩИЕ ОБНОВЛЕНИЯ WINDOWS</div>
+      <div class="vuln-note">Установите эти обновления, чтобы закрыть известные уязвимости сборки. Один KB может закрывать несколько CVE; уязвимости без исправления показаны в таблице ниже отдельно.</div>
+      <table class="vuln-table vuln-missing-table">
+        <thead><tr><th>Обновление (KB)</th><th class="vuln-num">CVE</th><th>Макс. важность</th><th>Атаки</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>`;
   }
 
   findingRow(f) {
@@ -403,5 +454,78 @@ export class VulnerabilitySpace {
           </div>
         </td>
       </tr>`;
+  }
+
+  /// Installed-application CVE findings (NVD), shown as their own block so
+  /// they are not labelled like the OS/MSRC findings above.
+  renderSoftware() {
+    const sw = this.scan?.software;
+    if (!sw) return '';
+    const findings = sw.findings || [];
+    const sm = sw.summary || {};
+    const statusClass = {
+      VULNERABILITIES_FOUND: 'vuln-status-found',
+      NO_KNOWN_MATCHED_VULNERABILITIES: 'vuln-status-clean'
+    }[sw.status] || 'vuln-status-warn';
+
+    const rows = findings.map(f => {
+      const sev = f.severity || 'unknown';
+      const idCell = f.url && /^https?:\/\//i.test(f.url)
+        ? `<a href="${escapeAttr(f.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(f.id)}</a>`
+        : escapeHtml(f.id);
+      const fixed = f.status === 'fix_available'
+        ? `<span class="vuln-mono">${escapeHtml(f.fixed_version)}</span>`
+        : '<span class="vuln-nofix">нет исправления</span>';
+      const kev = f.kev ? '<span class="vuln-badge vuln-kev" title="CISA KEV">KEV</span>' : '';
+      return `
+        <tr title="${escapeAttr(f.summary || '')}">
+          <td class="vuln-mono">${idCell}</td>
+          <td><strong>${escapeHtml(f.component)}</strong></td>
+          <td class="vuln-mono">${escapeHtml(f.installed_version)}</td>
+          <td>${fixed}</td>
+          <td><span class="vuln-badge vuln-sev-${escapeAttr(sev)}">${escapeHtml(SEVERITY_LABELS[sev] || sev)}</span></td>
+          <td class="vuln-num">${f.cvss_score !== null && f.cvss_score !== undefined ? escapeHtml(f.cvss_score.toFixed(1)) : '—'}</td>
+          <td class="vuln-num">${escapeHtml(formatEpss(f))}</td>
+          <td>${kev}</td>
+        </tr>`;
+    }).join('');
+
+    const checked = sw.checked || [];
+    const skipped = sw.skipped || [];
+    const noteParts = [];
+    if (checked.length) {
+      noteParts.push(`Проверено программ: ${escapeHtml(String(checked.length))} (${escapeHtml(checked.map(c => `${c.product} ${c.version}`).join(', '))})`);
+    }
+    if (skipped.length) {
+      noteParts.push(`Без пригодной версии: ${escapeHtml(skipped.map(s => `${s.product} — ${s.reason}`).join('; '))}`);
+    }
+    if (sw.unrecognized) {
+      noteParts.push(`Не из списка известных программ: ${escapeHtml(String(sw.unrecognized))} (не проверялись)`);
+    }
+
+    const chips = sw.summary && findings.length ? `
+      <div class="vuln-chips">
+        <div class="vuln-chip"><span>${escapeHtml(String(sm.total))}</span>всего</div>
+        <div class="vuln-chip vuln-sev-critical"><span>${escapeHtml(String(sm.critical))}</span>критических</div>
+        <div class="vuln-chip vuln-sev-high"><span>${escapeHtml(String(sm.high))}</span>высоких</div>
+        <div class="vuln-chip vuln-sev-medium"><span>${escapeHtml(String(sm.medium))}</span>средних</div>
+        <div class="vuln-chip vuln-kev-chip"><span>${escapeHtml(String(sm.kev))}</span>в CISA KEV</div>
+        <div class="vuln-chip"><span>${escapeHtml(String(sm.no_fix))}</span>исправления нет</div>
+      </div>` : '';
+
+    return `
+      <div class="vuln-panel-title" style="margin-top:18px">УСТАНОВЛЕННЫЕ ПРОГРАММЫ</div>
+      <div class="vuln-status ${statusClass}">${escapeHtml(sw.status_detail || sw.status)}</div>
+      ${chips}
+      ${findings.length ? `
+        <table class="vuln-table">
+          <thead><tr>
+            <th>CVE</th><th>Программа</th><th>Установлено</th><th>Исправлено в</th>
+            <th>Важность</th><th class="vuln-num">CVSS</th><th class="vuln-num">EPSS</th><th>Атаки</th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>` : ''}
+      ${noteParts.length ? `<div class="vuln-note">${noteParts.join('. ')}.</div>` : ''}
+    `;
   }
 }

