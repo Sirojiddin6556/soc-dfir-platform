@@ -210,6 +210,7 @@ const { WebSpace } = await load('web/web.js');
 const { RemoteHostPanel } = await load('ssh/os-panel.js');
 const { ProjectCodePanel } = await load('ssh/code-panel.js');
 const { IncidentSpace } = await load('incident/incident.js');
+const { IncidentCollectPanel } = await load('incident/collect-panel.js');
 
 // ---------------------------------------------------------------------------
 // Harness
@@ -672,6 +673,30 @@ await sink('incident evidence panel (marked event summary, file:line)', async (v
     key: v, timestamp: v, source: 'auth', source_file: v, line_no: 7, summary: v,
   }]]);
   return space.evidencePanelHtml();
+});
+
+await sink('incident SSH-collection done (hostname, os, remote paths, notes, case)', async (v) => {
+  // The collection manifest is built from the scanned host: its hostname,
+  // OS string, every collected/skipped remote path and the free-text notes are
+  // attacker-influenceable and must render inert in the done view.
+  const panel = new IncidentCollectPanel({ call: async () => ({}) });
+  panel.phase = 'done';
+  panel.status = {
+    running: false,
+    case: { id: v, title: v, dir: v },
+    collection: {
+      host: v, hostname: v, username: v, os_name: v, kernel: v,
+      host_dir: v, journal_mode: v, clock_skew_seconds: 7,
+      files: [{ remote_path: v, local_path: v, kind: 'log', bytes: 1, sha256: v }],
+      skipped: [{ remote_path: v, reason: 'NO_ACCESS' }],
+      notes: [v],
+    },
+    report: { summary: { total_events: 1 }, findings: [{}], links: [{}], events: [{}] },
+    report_error: v,
+  };
+  const root = freshEl();
+  panel.render(root);
+  return root.innerHTML;
 });
 
 console.log(`\nXSS checks: ${passed} passed, ${failed} failed\n`);

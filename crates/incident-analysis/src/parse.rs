@@ -214,6 +214,26 @@ fn apache_err_re() -> &'static Regex {
 
 fn parse_auth(line: &str, year: i32) -> Option<LogEvent> {
     let (ts, host, program, pid, msg) = parse_syslog_frame(line, year)?;
+    Some(auth_event(ts, host, program, pid, msg, line))
+}
+
+/// Whether a syslog program name is one the auth rules understand. A journald
+/// export or `/var/log/syslog` carries sshd and sudo lines too; they are the
+/// same events as in `auth.log` and get the same treatment.
+fn is_auth_program(program: Option<&str>) -> bool {
+    program.is_some_and(|p| p.starts_with("sshd") || p.starts_with("sudo"))
+}
+
+/// An authentication-class event from an already-split syslog frame: sshd
+/// logins and failures, sudo commands, and any other auth line kept as is.
+fn auth_event(
+    ts: DateTime<Utc>,
+    host: Option<String>,
+    program: Option<String>,
+    pid: Option<u32>,
+    msg: &str,
+    line: &str,
+) -> LogEvent {
     let mut ev = event(ts, LogSource::Auth, String::new(), line);
     ev.host = host.or_else(|| program.clone());
     if let Some(p) = &program {
@@ -235,7 +255,7 @@ fn parse_auth(line: &str, year: i32) -> Option<LogEvent> {
             ev.fields.insert("user".into(), user.to_string());
             ev.fields.insert("src_ip".into(), ip.to_string());
             ev.fields.insert("method".into(), method.to_string());
-            return Some(ev);
+            return ev;
         }
         if let Some(c) = ssh_failed_re().captures(msg) {
             ev.outcome = Some(Outcome::Failure);
@@ -253,7 +273,7 @@ fn parse_auth(line: &str, year: i32) -> Option<LogEvent> {
             if invalid {
                 ev.fields.insert("invalid_user".into(), "true".into());
             }
-            return Some(ev);
+            return ev;
         }
     }
 
@@ -265,13 +285,13 @@ fn parse_auth(line: &str, year: i32) -> Option<LogEvent> {
             ev.summary = format!("sudo: {user} выполнил {cmd}");
             ev.fields.insert("user".into(), user.to_string());
             ev.fields.insert("command".into(), cmd.to_string());
-            return Some(ev);
+            return ev;
         }
     }
 
     // Recognized auth line without a specific rule: keep it on the timeline.
     ev.summary = format!("{}: {}", prog.trim_end_matches(':'), summarize(msg, 140));
-    Some(ev)
+    ev
 }
 
 fn ssh_accepted_re() -> &'static Regex {
@@ -300,6 +320,12 @@ fn sudo_re() -> &'static Regex {
 
 fn parse_syslog(line: &str, year: i32) -> Option<LogEvent> {
     let (ts, host, program, pid, msg) = parse_syslog_frame(line, year)?;
+    if is_auth_program(program.as_deref()) {
+        // sshd/sudo lines in a general log (syslog, a journald export) are the
+        // same auth events as in auth.log; classify them so the detectors see
+        // them.
+        return Some(auth_event(ts, host, program, pid, msg, line));
+    }
     let mut ev = event(ts, LogSource::Syslog, String::new(), line);
     ev.host = host;
     let prog = program.clone().unwrap_or_default();
@@ -361,6 +387,13 @@ fn parse_syslog_time(line: &str, year: i32) -> Option<(DateTime<Utc>, &str)> {
         let token = &line[..end];
         if let Ok(dt) = DateTime::parse_from_rfc3339(token) {
             return Some((dt.with_timezone(&Utc), &line[end..]));
+        }
+        // journald `-o short-iso` writes the offset without a colon
+        // (`2026-10-19T06:44:45+0000`), which strict RFC 3339 rejects.
+        for fmt in ["%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%dT%H:%M:%S%.f%z"] {
+            if let Ok(dt) = DateTime::parse_from_str(token, fmt) {
+                return Some((dt.with_timezone(&Utc), &line[end..]));
+            }
         }
         // No offset (naive ISO, e.g. `2026-10-10T13:55:36`): treat as UTC.
         if let Ok(naive) = NaiveDateTime::parse_from_str(token, "%Y-%m-%dT%H:%M:%S") {

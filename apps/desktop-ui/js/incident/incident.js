@@ -1,6 +1,7 @@
 import { escapeAttr, escapeHtml } from '../util/html.js';
 import { downloadReport, reportFilename } from '../report/report.js';
 import { buildIncidentReportHtml } from './incident-report.js';
+import { IncidentCollectPanel } from './collect-panel.js';
 
 const PATH_KEY = 'incident.lastPath';
 
@@ -69,6 +70,37 @@ export class IncidentSpace {
     this.evidence = new Map();
     // Lookup from event key to the event, rebuilt on each result render.
     this.eventsByKey = new Map();
+    // Which sub-tab is shown: analyse a folder on the engine, or collect a
+    // host's artifacts over SSH into a case and analyse those.
+    this.mode = 'folder'; // 'folder' | 'collect'
+    this.collectPanel = new IncidentCollectPanel(this.ipc, {
+      onOpenTimeline: (caseDir) => this.openCollectedTimeline(caseDir),
+    });
+  }
+
+  /** Switch to folder mode and run the timeline over the collected case dir. */
+  openCollectedTimeline(caseDir) {
+    if (!caseDir) return;
+    this.selectMode('folder');
+    this.path = caseDir;
+    const input = this.container?.querySelector('#incPath');
+    if (input) input.value = caseDir;
+    this.startScan();
+  }
+
+  /** Show one sub-tab's mount and hide the other. */
+  selectMode(key) {
+    if (!this.container) return;
+    this.mode = key;
+    this.container.querySelectorAll('.inc-subtab').forEach((btn) => {
+      const on = btn.dataset.mode === key;
+      btn.classList.toggle('ctf-btn-primary', on);
+      btn.classList.toggle('ctf-btn-secondary', !on);
+    });
+    const folder = this.container.querySelector('#incFolderMount');
+    const collect = this.container.querySelector('#incCollectMount');
+    if (folder) folder.hidden = key !== 'folder';
+    if (collect) collect.hidden = key !== 'collect';
   }
 
   /** A stable key for an event: its origin plus time. */
@@ -127,18 +159,25 @@ export class IncidentSpace {
             <div class="vuln-subtitle">Единая временная шкала по журналам хоста и веб-сервера (nginx/apache access и error, auth.log/secure, syslog/journald), включая ротированные <code>.1</code> и сжатые <code>.gz</code>. Все метки времени приводятся к UTC, каждое событие сопровождается точной строкой журнала как доказательством. Данные не изменяются — журналы только читаются.</div>
           </div>
         </div>
-        <div class="vuln-panel">
-          <div class="vuln-panel-title">ЖУРНАЛЫ</div>
-          <div class="code-form">
-            <input id="incPath" type="text" spellcheck="false" placeholder="/var/log или /var/log/auth.log" value="${escapeAttr(this.path)}">
-            <button id="incScanBtn" class="primary-action">Построить шкалу</button>
-          </div>
-          <label class="code-option">Год для строк syslog без года (например, 2026), если дата файла не подходит:
-            <input id="incYear" type="text" spellcheck="false" inputmode="numeric" style="width:6em" value="${escapeAttr(this.year)}"></label>
-          <div class="vuln-note">Папка или файл на машине, где работает движок. В Docker сначала смонтируйте журналы в контейнер.</div>
-          <div id="incProgress"></div>
+        <div class="ssh-subtabs">
+          <button class="inc-subtab ctf-btn ${this.mode === 'folder' ? 'ctf-btn-primary' : 'ctf-btn-secondary'}" data-mode="folder">Из папки на движке</button>
+          <button class="inc-subtab ctf-btn ${this.mode === 'collect' ? 'ctf-btn-primary' : 'ctf-btn-secondary'}" data-mode="collect">Собрать по SSH</button>
         </div>
-        <div id="incResultPanel" class="vuln-panel"></div>
+        <div id="incFolderMount" ${this.mode === 'folder' ? '' : 'hidden'}>
+          <div class="vuln-panel">
+            <div class="vuln-panel-title">ЖУРНАЛЫ</div>
+            <div class="code-form">
+              <input id="incPath" type="text" spellcheck="false" placeholder="/var/log или /var/log/auth.log" value="${escapeAttr(this.path)}">
+              <button id="incScanBtn" class="primary-action">Построить шкалу</button>
+            </div>
+            <label class="code-option">Год для строк syslog без года (например, 2026), если дата файла не подходит:
+              <input id="incYear" type="text" spellcheck="false" inputmode="numeric" style="width:6em" value="${escapeAttr(this.year)}"></label>
+            <div class="vuln-note">Папка или файл на машине, где работает движок. В Docker сначала смонтируйте журналы в контейнер.</div>
+            <div id="incProgress"></div>
+          </div>
+          <div id="incResultPanel" class="vuln-panel"></div>
+        </div>
+        <div id="incCollectMount" class="vuln-panel vuln-remote-panel" ${this.mode === 'collect' ? '' : 'hidden'}></div>
       </div>
     `;
     container.querySelector('#incScanBtn').addEventListener('click', () => this.startScan());
@@ -147,6 +186,15 @@ export class IncidentSpace {
     });
     container.querySelector('#incYear').addEventListener('input', (e) => {
       this.year = e.target.value.replace(/[^0-9]/g, '').slice(0, 4);
+    });
+    container.querySelectorAll('.inc-subtab').forEach((btn) =>
+      btn.addEventListener('click', () => this.selectMode(btn.dataset.mode))
+    );
+
+    // Mount the SSH-collection panel and load the existing cases for its form.
+    this.collectPanel.render(container.querySelector('#incCollectMount'));
+    this.collectPanel.loadCases().then(() => {
+      if (this.collectPanel.phase === 'form') this.collectPanel.render();
     });
 
     await this.refresh();

@@ -158,7 +158,7 @@ impl RemoteCodeScanService {
 
 /// Accepts the confirmed host-key fingerprint, with or without the OpenSSH
 /// `SHA256:` prefix.
-fn expected_fingerprint(params: &Value) -> Result<String, String> {
+pub(crate) fn expected_fingerprint(params: &Value) -> Result<String, String> {
     let raw = params
         .get("expected_fingerprint")
         .and_then(|v| v.as_str())

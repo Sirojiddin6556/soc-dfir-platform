@@ -11,6 +11,7 @@ pub mod code_scan;
 pub mod dispatch;
 pub mod host_inspector;
 pub mod http;
+pub mod incident_collect;
 pub mod incident_scan;
 pub mod remote_code_scan;
 pub mod remote_scan;
@@ -37,6 +38,7 @@ pub struct EngineApp {
     pub remote_scan: Arc<remote_scan::RemoteScanService>,
     pub remote_code_scan: Arc<remote_code_scan::RemoteCodeScanService>,
     pub incident_scan: Arc<incident_scan::IncidentScanService>,
+    pub incident_collect: Arc<incident_collect::IncidentCollectService>,
 }
 
 impl EngineApp {
@@ -72,6 +74,10 @@ impl EngineApp {
             offline_dir,
         ));
 
+        let incident_collect = Arc::new(incident_collect::IncidentCollectService::new(
+            storage.clone(),
+            data_dir.join("cases"),
+        ));
         Self {
             storage,
             correlation: DeterministicCorrelationEngine::new(),
@@ -83,6 +89,7 @@ impl EngineApp {
                 vulndb.clone(),
             )),
             incident_scan: Arc::new(incident_scan::IncidentScanService::new()),
+            incident_collect,
             vulndb,
         }
     }

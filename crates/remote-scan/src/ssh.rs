@@ -51,7 +51,7 @@ struct HandshakeState {
     mismatch: Option<(String, String)>,
 }
 
-struct ClientHandler {
+pub(crate) struct ClientHandler {
     policy: HostKeyPolicy,
     state: Arc<Mutex<HandshakeState>>,
 }
@@ -86,7 +86,7 @@ impl Handler for ClientHandler {
     }
 }
 
-async fn open_session(
+pub(crate) async fn open_session(
     target: &RemoteTarget,
     policy: HostKeyPolicy,
     timeouts: SshTimeouts,
@@ -144,7 +144,7 @@ async fn open_session(
     }
 }
 
-async fn authenticate(
+pub(crate) async fn authenticate(
     handle: &mut Handle<ClientHandler>,
     target: &RemoteTarget,
     credential: &Credential,

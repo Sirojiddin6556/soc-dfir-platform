@@ -53,6 +53,30 @@ pub enum ReadCommand {
     AutoUpgrades,
     /// Whether AppArmor is enabled in the kernel (`/sys`).
     Apparmor,
+
+    // --- Artifact collection (DFIR) ---------------------------------------
+    /// The host's own name (`hostname -f`, falling back to the short name and
+    /// then to `/etc/hostname`), which names its folder in the case.
+    Hostname,
+    /// The host clock in UTC, to measure its skew against the engine clock.
+    DateUtc,
+    /// Login records rendered from the binary `wtmp` (`last`), with full dates
+    /// and numeric addresses.
+    LastLogins,
+    /// Failed-login records rendered from the binary `btmp` (`lastb`); usually
+    /// root-only, so best-effort.
+    BadLogins,
+    /// The process table with parent, owner, start time and command line.
+    Processes,
+    /// Listening TCP/UDP sockets and the processes behind them.
+    ListeningSockets,
+    /// The login account's own crontab (`crontab -l` only lists).
+    UserCrontab,
+    /// Loaded kernel modules (`/proc/modules`).
+    KernelModules,
+    /// The systemd journal for the last 30 days as ISO-timestamped text, in
+    /// UTC. Taken only when the host keeps no text logs.
+    JournalExport,
 }
 
 impl ReadCommand {
@@ -131,6 +155,33 @@ impl ReadCommand {
             }
             ReadCommand::Apparmor => {
                 "cat /sys/module/apparmor/parameters/enabled 2>/dev/null".to_string()
+            }
+            ReadCommand::Hostname => {
+                "hostname -f 2>/dev/null || hostname 2>/dev/null || cat /etc/hostname 2>/dev/null"
+                    .to_string()
+            }
+            // `date` only *prints* here: there is no `-s`/`--set`, so the host
+            // clock cannot be changed (the guard test below pins this).
+            ReadCommand::DateUtc => "date -u +%Y-%m-%dT%H:%M:%SZ".to_string(),
+            ReadCommand::LastLogins => "last -F -w -i 2>/dev/null".to_string(),
+            ReadCommand::BadLogins => "lastb -F -w -i 2>/dev/null".to_string(),
+            ReadCommand::Processes => {
+                "ps -eo pid,ppid,user,lstart,etime,cmd 2>/dev/null".to_string()
+            }
+            // `ss` lists sockets; never `-K` (which kills them).
+            ReadCommand::ListeningSockets => {
+                "ss -tulpn 2>/dev/null || netstat -tulpn 2>/dev/null".to_string()
+            }
+            // `-l` lists; `-r`/`-e` (remove/edit) never appear.
+            ReadCommand::UserCrontab => "crontab -l 2>/dev/null".to_string(),
+            ReadCommand::KernelModules => "cat /proc/modules 2>/dev/null".to_string(),
+            // A pure read of the journal: no `--vacuum-*`, `--rotate`, `--flush`
+            // or `--sync`, which change it. `--utc -o short-iso` gives
+            // `2026-10-19T06:44:45+0000 host prog[pid]: msg`, which the
+            // analyser parses as a syslog frame.
+            ReadCommand::JournalExport => {
+                "journalctl --no-pager -q --utc -o short-iso --since '30 days ago' 2>/dev/null"
+                    .to_string()
             }
         }
     }
@@ -364,7 +415,7 @@ mod tests {
     use super::*;
 
     /// Every command the scanner can issue, for the read-only guards to sweep.
-    const ALL_COMMANDS: [ReadCommand; 17] = [
+    const ALL_COMMANDS: [ReadCommand; 26] = [
         ReadCommand::OsRelease,
         ReadCommand::KernelRelease,
         ReadCommand::Architecture,
@@ -382,7 +433,63 @@ mod tests {
         ReadCommand::Faillock,
         ReadCommand::AutoUpgrades,
         ReadCommand::Apparmor,
+        ReadCommand::Hostname,
+        ReadCommand::DateUtc,
+        ReadCommand::LastLogins,
+        ReadCommand::BadLogins,
+        ReadCommand::Processes,
+        ReadCommand::ListeningSockets,
+        ReadCommand::UserCrontab,
+        ReadCommand::KernelModules,
+        ReadCommand::JournalExport,
     ];
+
+    #[test]
+    fn collection_commands_only_print() {
+        // The collection commands use binaries that *can* mutate with other
+        // flags; pin the exact read-only forms.
+        let date = ReadCommand::DateUtc.remote_command();
+        assert!(date.starts_with("date -u +"));
+        assert!(!date.contains(" -s") && !date.contains("--set"));
+
+        let cron = ReadCommand::UserCrontab.remote_command();
+        assert!(cron.starts_with("crontab -l"));
+        for bad in [" -r", " -e", " -i", " -u"] {
+            assert!(!cron.contains(bad), "crontab form {cron:?} has {bad:?}");
+        }
+
+        let ss = ReadCommand::ListeningSockets.remote_command();
+        assert!(!ss.contains("-K"), "ss -K kills sockets");
+
+        let journal = ReadCommand::JournalExport.remote_command();
+        assert!(journal.starts_with("journalctl --no-pager"));
+        for bad in [
+            "--vacuum",
+            "--rotate",
+            "--flush",
+            "--sync",
+            "--relinquish",
+            "--setup-keys",
+            "--verify",
+        ] {
+            assert!(!journal.contains(bad), "journalctl form has {bad:?}");
+        }
+        assert!(journal.contains("--utc") && journal.contains("-o short-iso"));
+
+        for cmd in [
+            ReadCommand::LastLogins,
+            ReadCommand::BadLogins,
+            ReadCommand::Processes,
+            ReadCommand::Hostname,
+            ReadCommand::KernelModules,
+        ] {
+            let text = cmd.remote_command();
+            assert!(
+                !text.contains('>') || text.contains("2>/dev/null"),
+                "{text:?}"
+            );
+        }
+    }
 
     #[test]
     fn no_command_contains_a_mutating_subcommand() {

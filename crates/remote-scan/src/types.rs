@@ -206,6 +206,10 @@ pub enum RemoteError {
     Ssh(String),
     #[error("ошибка SFTP: {0}")]
     Sftp(String),
+    /// The artifact collection could not proceed (unsupported platform, the
+    /// host already in the case, a local write failure).
+    #[error("сбор артефактов не выполнен: {0}")]
+    Collect(String),
     #[error("ошибка чтения базы уязвимостей: {0}")]
     Database(#[from] rusqlite::Error),
 }

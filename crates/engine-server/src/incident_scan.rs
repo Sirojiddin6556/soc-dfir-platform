@@ -124,7 +124,7 @@ fn run_blocking(root: &Path, opts: &Options) -> Result<Timeline, String> {
     analyze_path(root, opts).map_err(|e| e.to_string())
 }
 
-fn timeline_to_json(t: &Timeline) -> Value {
+pub(crate) fn timeline_to_json(t: &Timeline) -> Value {
     // The timeline derives Serialize; add a small summary the UI shows above
     // the table without recomputing it client-side.
     let mut by_source: std::collections::BTreeMap<&str, u64> = std::collections::BTreeMap::new();

@@ -190,12 +190,35 @@ fn looks_like_log(path: &Path) -> bool {
     // Compressed rotation: foo.log.2.gz, auth.log.gz ...
     let base = name.strip_suffix(".gz").unwrap_or(&name);
 
-    // Common explicit log names.
-    const NAMES: &[&str] = &[
-        "access", "error", "auth", "secure", "syslog", "messages", "journal", "kern", "mail",
-        "daemon", "nginx", "apache", "httpd",
+    // Configuration, code and keys are never logs, whatever they are called
+    // (`daemon.service`, `mail-warning.sh`). A collected case folder holds
+    // such files beside the logs.
+    const NOT_LOG_EXT: &[&str] = &[
+        "service", "timer", "socket", "target", "conf", "cfg", "ini", "sh", "py", "pl", "json",
+        "yaml", "yml", "toml", "xml", "html", "pem", "key", "pub", "crt", "defs",
     ];
-    if NAMES.iter().any(|n| base.contains(n)) {
+    if let Some((_, ext)) = base.rsplit_once('.') {
+        if NOT_LOG_EXT.contains(&ext) {
+            return false;
+        }
+    }
+
+    // Binary login records and journald files are not text logs.
+    let stem = base.split(['.', '-', '_']).next().unwrap_or(base);
+    if matches!(stem, "wtmp" | "btmp" | "lastlog" | "faillog" | "tallylog")
+        || base.ends_with(".journal")
+        || base.ends_with(".journal~")
+    {
+        return false;
+    }
+
+    // Common explicit log names, matched on the name's first word so that
+    // `authorized_keys` is not mistaken for an auth log.
+    const NAMES: &[&str] = &[
+        "access", "error", "auth", "authlog", "secure", "syslog", "messages", "journal", "kern",
+        "mail", "maillog", "daemon", "cron", "dmesg", "nginx", "apache", "httpd",
+    ];
+    if NAMES.contains(&stem) {
         return true;
     }
     // foo.log / foo.log.1 (rotated).

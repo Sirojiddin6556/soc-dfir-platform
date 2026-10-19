@@ -23,6 +23,7 @@
 //! matching path unit-testable with no network.
 
 pub mod cis;
+pub mod collect;
 pub mod command;
 pub mod fetch;
 pub mod inventory;
@@ -33,6 +34,8 @@ pub mod win_inventory;
 
 #[cfg(feature = "ssh")]
 pub mod ssh;
+#[cfg(feature = "ssh")]
+pub mod ssh_collect;
 
 pub use scan::{scan_remote, scan_remote_windows};
 pub use types::{

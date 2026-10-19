@@ -240,6 +240,17 @@ impl EngineApp {
                 let res = Ok::<_, ProblemDetails>(self.incident_scan.status());
                 respond_res(req.request_id, res)
             }
+            "incident.collect" => {
+                let res = self
+                    .incident_collect
+                    .start(&req.params)
+                    .map_err(|e| ProblemDetails::bad_request(&e, vec!["host".to_string()]));
+                respond_res(req.request_id, res)
+            }
+            "incident.collect_status" => {
+                let res = Ok::<_, ProblemDetails>(self.incident_collect.status());
+                respond_res(req.request_id, res)
+            }
             "code.deps" => {
                 let code_scan = self.code_scan.clone();
                 let res = tokio::task::spawn_blocking(move || code_scan.recheck_dependencies())

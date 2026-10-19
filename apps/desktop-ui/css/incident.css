@@ -285,3 +285,29 @@
     grid-template-areas: "time" "meta" "summary" "raw";
   }
 }
+
+/* «Сбор по SSH» — collection result summary. */
+.incident-space .ssh-subtabs { display: flex; gap: 8px; margin: 10px 0 12px; flex-wrap: wrap; }
+.incident-space .inc-subtab { font-size: 13px; }
+.incident-space .inc-collect-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 12px 0;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+.incident-space .inc-collect-stat b { color: var(--text-primary); }
+.incident-space .inc-collect-warn { color: var(--accent-warning); }
+.incident-space .inc-collect-priv,
+.incident-space .inc-collect-notes {
+  margin: 8px 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.incident-space .inc-collect-priv > summary { color: var(--accent-warning); cursor: pointer; }
+.incident-space .inc-collect-notes > summary { color: var(--text-secondary); cursor: pointer; }
+.incident-space .inc-collect-priv ul,
+.incident-space .inc-collect-notes ul { margin: 6px 0 0; padding-left: 18px; }
+.incident-space .inc-collect-priv .vuln-mono,
+.incident-space .vuln-mono { font-family: ui-monospace, Menlo, monospace; }
