@@ -179,6 +179,10 @@ fn agent() -> &'static ureq::Agent {
         ureq::Agent::config_builder()
             .timeout_connect(Some(Duration::from_secs(20)))
             .timeout_recv_response(Some(Duration::from_secs(60)))
+            // Bound the body-read phase too. Without this a stalled feed stream
+            // (seen pulling MSRC on CI Windows runners) blocks with no limit and
+            // can run past the caller's whole update budget.
+            .timeout_recv_body(Some(Duration::from_secs(300)))
             .http_status_as_error(false)
             .user_agent(concat!("soc-dfir-platform/", env!("CARGO_PKG_VERSION")))
             // The OS trust store, so corporate TLS-inspecting proxies work too.
@@ -1097,9 +1101,33 @@ impl VulnDbService {
         Err(format!("{label}: {}", errors.join("; ")))
     }
 
-    /// Streams `url` into `dest`. `Ok(None)` means the server answered
-    /// 304 Not Modified for `etag`.
+    /// Downloads a feed, retrying once on a transient network failure (a reset
+    /// or stalled connection, or a body that overran the receive timeout). A
+    /// 404 and a `304 Not Modified` are answers, not failures, and return as-is.
     fn download(
+        &self,
+        url: &str,
+        dest: &Path,
+        etag: Option<&str>,
+        label: &str,
+        accept: Option<&str>,
+    ) -> Result<Option<FeedSource>, FetchError> {
+        const ATTEMPTS: usize = 2;
+        for attempt in 1..=ATTEMPTS {
+            match self.download_once(url, dest, etag, label, accept) {
+                Err(FetchError::Failed(m)) if attempt < ATTEMPTS => {
+                    self.set_current(format!("{label}: повтор после сбоя сети ({m})"));
+                    std::thread::sleep(Duration::from_secs(3));
+                }
+                other => return other,
+            }
+        }
+        unreachable!("the final attempt always returns")
+    }
+
+    /// Streams `url` into `dest` once. `Ok(None)` means the server answered
+    /// 304 Not Modified for `etag`.
+    fn download_once(
         &self,
         url: &str,
         dest: &Path,

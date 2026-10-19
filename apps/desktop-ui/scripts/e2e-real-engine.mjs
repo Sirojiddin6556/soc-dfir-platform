@@ -247,7 +247,7 @@ async function checkVulnerabilityScan(page, base, shot) {
   await page.waitForFunction(() => {
     const p = document.getElementById('vulnUpdateProgress');
     return document.getElementById('vulnUpdateSteps') && (!p || p.hidden);
-  }, null, { timeout: 600000 });
+  }, null, { timeout: 1200000 });
   const after = (await rpc('vulndb.status')).result;
   const steps = after.update.steps;
   for (const st of steps) console.log(`  ${st.ok ? 'ok  ' : 'FAIL'} ${st.feed}: ${st.message}${st.source ? ` (${st.source})` : ''}`);
