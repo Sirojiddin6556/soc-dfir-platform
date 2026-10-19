@@ -38,6 +38,9 @@ pub struct ReadResult {
     pub sha256: String,
     /// Size of the file on disk, in bytes.
     pub bytes: u64,
+    /// The decompressed content looks binary (a NUL byte near the start), so it
+    /// is not a text log and must not be parsed line by line.
+    pub looks_binary: bool,
 }
 
 /// Walk `root` (a folder or a single file) and return the candidate log files.
@@ -144,12 +147,16 @@ pub fn read_lines(file: &LogFile, max_bytes: u64) -> Result<ReadResult, String> 
         String::from_utf8_lossy(&raw).into_owned()
     };
 
+    // A text log never contains a NUL byte; a binary file (a .evtx read as
+    // lossy UTF-8, an image, an archive) does, near the start.
+    let looks_binary = text.as_bytes().iter().take(8192).any(|&b| b == 0);
     let lines = text.lines().map(|l| l.to_string()).collect();
     Ok(ReadResult {
         lines,
         mtime_year,
         sha256,
         bytes,
+        looks_binary,
     })
 }
 
@@ -196,6 +203,11 @@ fn looks_like_log(path: &Path) -> bool {
     const NOT_LOG_EXT: &[&str] = &[
         "service", "timer", "socket", "target", "conf", "cfg", "ini", "sh", "py", "pl", "json",
         "yaml", "yml", "toml", "xml", "html", "pem", "key", "pub", "crt", "defs",
+        // Binary formats that may sit in a collected case folder: Windows event
+        // logs, packet captures, databases, archives, images, executables.
+        "evtx", "evt", "etl", "pcap", "pcapng", "cap", "db", "sqlite", "sqlite3", "zip", "7z",
+        "rar", "tar", "xz", "bz2", "zst", "png", "jpg", "jpeg", "gif", "bmp", "ico", "pdf", "exe",
+        "dll", "so", "bin",
     ];
     if let Some((_, ext)) = base.rsplit_once('.') {
         if NOT_LOG_EXT.contains(&ext) {

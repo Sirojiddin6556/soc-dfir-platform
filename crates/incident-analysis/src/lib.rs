@@ -190,6 +190,15 @@ pub fn analyze_path(root: &Path, opts: &Options) -> Result<Timeline, IngestError
                 continue;
             }
         };
+        if read.looks_binary {
+            // A binary file (a .evtx, .pcap, an image ...) that was named like
+            // a log or passed explicitly. Parsing it as text yields nothing and
+            // once crashed the whole run; skip it with a note instead.
+            timeline.warnings.push(format!(
+                "Файл {rel} пропущен: двоичный файл, не текстовый журнал"
+            ));
+            continue;
+        }
 
         let source = parse::detect_source(&rel, &read.lines);
         let year = opts.assume_year.unwrap_or(read.mtime_year);
@@ -293,6 +302,10 @@ mod tests {
             let mut enc = flate2::write::GzEncoder::new(f, flate2::Compression::default());
             enc.write_all(body.as_bytes()).unwrap();
             enc.finish().unwrap();
+        }
+        fn write_bytes(&self, name: &str, body: &[u8]) {
+            let mut f = std::fs::File::create(self.0.join(name)).unwrap();
+            f.write_all(body).unwrap();
         }
     }
     impl Drop for TempDir {
@@ -462,5 +475,23 @@ mod tests {
             analyze_path(p, &opts()),
             Err(IngestError::Missing(_))
         ));
+    }
+
+    #[test]
+    fn odd_and_binary_input_never_panics() {
+        let d = TempDir::new("binary");
+        // The exact crash reported on real data: a `.log` line whose 15th byte
+        // falls inside a multibyte character, which the BSD-syslog date slice
+        // used to split and panic on.
+        d.write("auth.log", "Xct 10 13:55:3\u{0444} host sshd[1]: hi\n");
+        // A log-named file that is actually binary (NUL bytes, like a .evtx) is
+        // skipped with a warning, not parsed as text.
+        d.write_bytes("messages", b"ElfFile\0\0\0\0\x01\x02 binary \0 rubbish\n");
+        let t = analyze_path(&d.0, &opts()).unwrap();
+        assert!(
+            t.warnings.iter().any(|w| w.contains("двоичный")),
+            "binary file should be skipped with a warning: {:?}",
+            t.warnings
+        );
     }
 }

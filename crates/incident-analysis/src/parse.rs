@@ -384,31 +384,36 @@ fn parse_syslog_frame(
 fn parse_syslog_time(line: &str, year: i32) -> Option<(DateTime<Utc>, &str)> {
     // ISO 8601 with offset: 2026-10-10T13:55:36+03:00 / ...Z / with fraction.
     if let Some(end) = iso_ts_end(line) {
-        let token = &line[..end];
-        if let Ok(dt) = DateTime::parse_from_rfc3339(token) {
-            return Some((dt.with_timezone(&Utc), &line[end..]));
-        }
-        // journald `-o short-iso` writes the offset without a colon
-        // (`2026-10-19T06:44:45+0000`), which strict RFC 3339 rejects.
-        for fmt in ["%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%dT%H:%M:%S%.f%z"] {
-            if let Ok(dt) = DateTime::parse_from_str(token, fmt) {
-                return Some((dt.with_timezone(&Utc), &line[end..]));
+        // `end` is a byte index that can land inside a multibyte character on
+        // non-timestamp input (binary read as lossy UTF-8); `get` skips the
+        // attempt instead of panicking on a non-char-boundary slice.
+        if let (Some(token), Some(rest)) = (line.get(..end), line.get(end..)) {
+            if let Ok(dt) = DateTime::parse_from_rfc3339(token) {
+                return Some((dt.with_timezone(&Utc), rest));
+            }
+            // journald `-o short-iso` writes the offset without a colon
+            // (`2026-10-19T06:44:45+0000`), which strict RFC 3339 rejects.
+            for fmt in ["%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%dT%H:%M:%S%.f%z"] {
+                if let Ok(dt) = DateTime::parse_from_str(token, fmt) {
+                    return Some((dt.with_timezone(&Utc), rest));
+                }
+            }
+            // No offset (naive ISO, e.g. `2026-10-10T13:55:36`): treat as UTC.
+            if let Ok(naive) = NaiveDateTime::parse_from_str(token, "%Y-%m-%dT%H:%M:%S") {
+                return Some((Utc.from_utc_datetime(&naive), rest));
+            }
+            if let Ok(naive) = NaiveDateTime::parse_from_str(token, "%Y-%m-%d %H:%M:%S") {
+                return Some((Utc.from_utc_datetime(&naive), rest));
             }
         }
-        // No offset (naive ISO, e.g. `2026-10-10T13:55:36`): treat as UTC.
-        if let Ok(naive) = NaiveDateTime::parse_from_str(token, "%Y-%m-%dT%H:%M:%S") {
-            return Some((Utc.from_utc_datetime(&naive), &line[end..]));
-        }
-        if let Ok(naive) = NaiveDateTime::parse_from_str(token, "%Y-%m-%d %H:%M:%S") {
-            return Some((Utc.from_utc_datetime(&naive), &line[end..]));
-        }
     }
-    // BSD syslog: `Oct 10 13:55:36` or `Oct  1 13:55:36` (15 chars).
-    if line.len() >= 15 {
-        let token = &line[..15];
+    // BSD syslog: `Oct 10 13:55:36` or `Oct  1 13:55:36` (15 chars). `get`
+    // guards against byte 15 landing inside a multibyte character — binary
+    // input read as lossy UTF-8 used to panic the fixed `&line[..15]` slice.
+    if let (Some(token), Some(rest)) = (line.get(..15), line.get(15..)) {
         let with_year = format!("{year} {token}");
         if let Ok(naive) = NaiveDateTime::parse_from_str(&with_year, "%Y %b %e %H:%M:%S") {
-            return Some((Utc.from_utc_datetime(&naive), &line[15..]));
+            return Some((Utc.from_utc_datetime(&naive), rest));
         }
     }
     None
