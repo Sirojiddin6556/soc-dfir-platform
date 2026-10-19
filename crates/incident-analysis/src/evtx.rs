@@ -311,6 +311,83 @@ fn security(id: i64, ed: &Value) -> Option<Mapped> {
                 .field("ip", f(ed, "IpAddress"))
                 .field("failure_code", f(ed, "Status"))
         }
+        4688 => {
+            // Process creation (the Security-channel equivalent of Sysmon 1).
+            let proc = f(ed, "NewProcessName");
+            Mapped::new(format!(
+                "Запуск процесса: {}",
+                proc.clone().unwrap_or_else(|| "?".into())
+            ))
+            .actor(f(ed, "SubjectUserName"))
+            .field("new_process", proc)
+            .field("command_line", f(ed, "CommandLine"))
+            .field("parent_process", f(ed, "ParentProcessName"))
+        }
+        4768 => {
+            // Kerberos TGT requested.
+            let user = f(ed, "TargetUserName");
+            Mapped::new(format!(
+                "Kerberos: запрошен TGT: {}",
+                user.clone().unwrap_or_else(|| "?".into())
+            ))
+            .actor(user)
+            .field("ip", f(ed, "IpAddress"))
+            .field("ticket_encryption", f(ed, "TicketEncryptionType"))
+        }
+        4769 => {
+            // Kerberos service ticket requested — the kerberoasting signal when
+            // an RC4 ticket is asked for a user-account SPN.
+            let user = f(ed, "TargetUserName");
+            let svc = f(ed, "ServiceName");
+            Mapped::new(format!(
+                "Kerberos: запрошен билет службы {}: {}",
+                svc.clone().unwrap_or_else(|| "?".into()),
+                user.clone().unwrap_or_else(|| "?".into())
+            ))
+            .actor(user)
+            .field("service", svc)
+            .field("ip", f(ed, "IpAddress"))
+            .field("ticket_encryption", f(ed, "TicketEncryptionType"))
+        }
+        4776 => {
+            // NTLM credential validation; Status 0x0 is success.
+            let user = f(ed, "TargetUserName");
+            let status = f(ed, "Status");
+            let ok = status.as_deref() == Some("0x0");
+            Mapped::new(format!(
+                "Проверка учётных данных NTLM: {}",
+                user.clone().unwrap_or_else(|| "?".into())
+            ))
+            .actor(user)
+            .outcome(if ok {
+                Outcome::Success
+            } else {
+                Outcome::Failure
+            })
+            .field("workstation", f(ed, "Workstation"))
+            .field("status", status)
+        }
+        5140 => {
+            let share = f(ed, "ShareName");
+            Mapped::new(format!(
+                "Доступ к сетевому ресурсу {}",
+                share.clone().unwrap_or_else(|| "?".into())
+            ))
+            .actor(f(ed, "SubjectUserName"))
+            .field("share", share)
+            .field("ip", f(ed, "IpAddress"))
+        }
+        5145 => {
+            let share = f(ed, "ShareName");
+            Mapped::new(format!(
+                "Доступ к объекту в сетевом ресурсе {}",
+                share.clone().unwrap_or_else(|| "?".into())
+            ))
+            .actor(f(ed, "SubjectUserName"))
+            .field("share", share)
+            .field("relative_target", f(ed, "RelativeTargetName"))
+            .field("ip", f(ed, "IpAddress"))
+        }
         _ => return None,
     };
     Some(m)
@@ -466,6 +543,47 @@ fn sysmon(id: i64, ed: &Value) -> Option<Mapped> {
             .field("image", image)
             .field("dest_ip", dip)
             .field("dest_port", dport)
+        }
+        8 => {
+            // CreateRemoteThread — process injection, inherently rare.
+            let src = f(ed, "SourceImage");
+            let tgt = f(ed, "TargetImage");
+            Mapped::new(format!(
+                "Удалённое создание потока: {} → {}",
+                src.clone().unwrap_or_else(|| "?".into()),
+                tgt.clone().unwrap_or_else(|| "?".into())
+            ))
+            .field("source_image", src)
+            .field("target_image", tgt)
+            .field("start_module", f(ed, "StartModule"))
+            .field("start_function", f(ed, "StartFunction"))
+        }
+        10 => {
+            // ProcessAccess is very high-volume; keep only access to LSASS, the
+            // credential-dumping signal, and drop the rest as routine.
+            let tgt = f(ed, "TargetImage")?;
+            if !tgt.to_ascii_lowercase().ends_with("lsass.exe") {
+                return None;
+            }
+            let src = f(ed, "SourceImage");
+            Mapped::new(format!(
+                "Доступ к памяти LSASS из {}",
+                src.clone().unwrap_or_else(|| "?".into())
+            ))
+            .field("source_image", src)
+            .field("target_image", Some(tgt))
+            .field("granted_access", f(ed, "GrantedAccess"))
+            .field("call_trace", f(ed, "CallTrace"))
+        }
+        12 => {
+            let obj = f(ed, "TargetObject");
+            Mapped::new(format!(
+                "Изменение ключа реестра: {}",
+                obj.clone().unwrap_or_else(|| "?".into())
+            ))
+            .field("target_object", obj)
+            .field("event_type", f(ed, "EventType"))
+            .field("image", f(ed, "Image"))
         }
         11 => {
             let file = f(ed, "TargetFilename");
@@ -791,5 +909,69 @@ mod tests {
         .unwrap();
         assert!(e.summary.starts_with("PowerShell"), "{}", e.summary);
         assert!(e.fields.get("script").unwrap().contains("DownloadString"));
+    }
+
+    #[test]
+    fn security_process_creation_4688_is_parsed() {
+        let e = ev(json!({"Event": {
+            "System": {"EventID": 4688, "Channel": "Security", "Computer": "WS1"},
+            "EventData": {"NewProcessName": "C:\\Windows\\System32\\cmd.exe",
+                          "CommandLine": "cmd /c net user", "SubjectUserName": "bob"}
+        }}))
+        .unwrap();
+        assert!(e.summary.starts_with("Запуск процесса"), "{}", e.summary);
+        assert_eq!(e.actor.as_deref(), Some("bob"));
+        assert_eq!(
+            e.fields.get("command_line").map(String::as_str),
+            Some("cmd /c net user")
+        );
+    }
+
+    #[test]
+    fn kerberos_service_ticket_4769_keeps_encryption_type() {
+        let e = ev(json!({"Event": {
+            "System": {"EventID": 4769, "Channel": "Security"},
+            "EventData": {"TargetUserName": "svc_sql", "ServiceName": "MSSQLSvc/db01",
+                          "TicketEncryptionType": "0x17", "IpAddress": "10.0.0.9"}
+        }}))
+        .unwrap();
+        assert!(e.summary.contains("MSSQLSvc/db01"), "{}", e.summary);
+        assert_eq!(
+            e.fields.get("ticket_encryption").map(String::as_str),
+            Some("0x17")
+        );
+    }
+
+    #[test]
+    fn sysmon_lsass_access_is_kept_other_process_access_dropped() {
+        let sysmon = |target: &str| {
+            json!({"Event": {
+                "System": {"EventID": 10,
+                           "Channel": "Microsoft-Windows-Sysmon/Operational",
+                           "Provider": {"#attributes": {"Name": "Microsoft-Windows-Sysmon"}}},
+                "EventData": {"SourceImage": "C:\\temp\\mimikatz.exe",
+                              "TargetImage": target, "GrantedAccess": "0x1410"}
+            }})
+        };
+        let lsass = ev(sysmon("C:\\Windows\\System32\\lsass.exe")).unwrap();
+        assert!(lsass.summary.contains("LSASS"), "{}", lsass.summary);
+        assert_eq!(
+            lsass.fields.get("granted_access").map(String::as_str),
+            Some("0x1410")
+        );
+        // Access to a non-LSASS process is routine and dropped.
+        assert!(ev(sysmon("C:\\Windows\\explorer.exe")).is_none());
+    }
+
+    #[test]
+    fn admin_share_access_5145_is_parsed() {
+        let e = ev(json!({"Event": {
+            "System": {"EventID": 5145, "Channel": "Security"},
+            "EventData": {"ShareName": "\\\\*\\ADMIN$", "SubjectUserName": "attacker",
+                          "RelativeTargetName": "evil.exe", "IpAddress": "203.0.113.9"}
+        }}))
+        .unwrap();
+        assert!(e.summary.contains("ADMIN$"), "{}", e.summary);
+        assert_eq!(e.fields.get("ip").map(String::as_str), Some("203.0.113.9"));
     }
 }

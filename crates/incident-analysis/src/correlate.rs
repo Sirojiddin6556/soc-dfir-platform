@@ -66,7 +66,7 @@ fn is_internal_ip(s: &str) -> bool {
 }
 
 /// A source address on the public internet: it parses and is not internal.
-fn is_external_ip(s: &str) -> bool {
+pub(crate) fn is_external_ip(s: &str) -> bool {
     s.parse::<IpAddr>().is_ok() && !is_internal_ip(s)
 }
 

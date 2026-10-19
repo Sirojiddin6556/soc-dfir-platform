@@ -108,6 +108,12 @@ pub fn detect(events: &[LogEvent]) -> Vec<Finding> {
     out.extend(windows_task_persistence(events));
     out.extend(windows_powershell(events));
     out.extend(windows_defender(events));
+    out.extend(windows_lsass_access(events));
+    out.extend(windows_kerberoasting(events));
+    out.extend(windows_password_spray(events));
+    out.extend(windows_process_injection(events));
+    out.extend(windows_admin_share(events));
+    out.extend(windows_remote_service(events));
 
     // Worst severity first, then earliest.
     out.sort_by(|a, b| {
@@ -1325,6 +1331,333 @@ fn windows_defender(events: &[LogEvent]) -> Vec<Finding> {
     findings
 }
 
+// ---------------------------------------------------------------------------
+// Windows credential access
+// ---------------------------------------------------------------------------
+
+/// Access to LSASS memory (Sysmon 10, which the parser keeps only for an LSASS
+/// target) — the hallmark of credential dumping. Grouped per accessing image.
+fn windows_lsass_access(events: &[LogEvent]) -> Vec<Finding> {
+    let mut by_src: BTreeMap<String, Vec<&LogEvent>> = BTreeMap::new();
+    for e in events {
+        if !is_windows(e) || win_id(e) != Some(10) {
+            continue;
+        }
+        let src = e
+            .fields
+            .get("source_image")
+            .cloned()
+            .unwrap_or_else(|| "?".into());
+        by_src.entry(src).or_default().push(e);
+    }
+    let mut findings = Vec::new();
+    for (src, hits) in by_src {
+        let first = hits.first().unwrap();
+        let last = hits.last().unwrap();
+        let evidence = hits
+            .iter()
+            .take(MAX_EVIDENCE)
+            .map(|e| EvidenceRef::of(e))
+            .collect();
+        findings.push(Finding {
+            rule: "windows-lsass-access".into(),
+            title: "Доступ к памяти LSASS (кража учётных данных)".into(),
+            severity: Severity::Critical,
+            mitre: vec!["T1003.001".into()],
+            summary: format!(
+                "Процесс {src} обращался к памяти LSASS — характерно для дампа учётных данных (например, mimikatz). Проверьте этот процесс."
+            ),
+            actor: Some(src),
+            first_time: first.timestamp.clone(),
+            last_time: last.timestamp.clone(),
+            evidence,
+            hosts: hosts_of(hits.iter().copied()),
+        });
+    }
+    findings
+}
+
+/// Kerberoasting (4769): a service ticket requested with RC4 (0x17) encryption
+/// for a user-account SPN (not a machine account, not krbtgt). Grouped per
+/// requesting account; many distinct SPNs raises the severity.
+fn windows_kerberoasting(events: &[LogEvent]) -> Vec<Finding> {
+    struct Per<'a> {
+        hits: Vec<&'a LogEvent>,
+        services: std::collections::BTreeSet<String>,
+    }
+    let mut by_user: BTreeMap<String, Per> = BTreeMap::new();
+    for e in events {
+        if !is_windows(e) || win_id(e) != Some(4769) {
+            continue;
+        }
+        // RC4 (0x17) is the roastable signal; AES tickets are left alone.
+        if e.fields.get("ticket_encryption").map(String::as_str) != Some("0x17") {
+            continue;
+        }
+        let svc = e.fields.get("service").cloned().unwrap_or_default();
+        let sl = svc.to_ascii_lowercase();
+        // Machine-account SPNs ($) and krbtgt are not kerberoastable service
+        // accounts; skip them to cut false positives.
+        if svc.is_empty() || sl.ends_with('$') || sl.contains("krbtgt") {
+            continue;
+        }
+        let user = e.actor.clone().unwrap_or_else(|| "?".into());
+        let entry = by_user.entry(user).or_insert_with(|| Per {
+            hits: Vec::new(),
+            services: std::collections::BTreeSet::new(),
+        });
+        entry.hits.push(e);
+        entry.services.insert(svc);
+    }
+    let mut findings = Vec::new();
+    for (user, per) in by_user {
+        let first = per.hits.first().unwrap();
+        let last = per.hits.last().unwrap();
+        let evidence = per
+            .hits
+            .iter()
+            .take(MAX_EVIDENCE)
+            .map(|e| EvidenceRef::of(e))
+            .collect();
+        // One roastable ticket is a lead; a sweep of many SPNs is a strong one.
+        let severity = if per.services.len() >= 5 {
+            Severity::High
+        } else {
+            Severity::Medium
+        };
+        findings.push(Finding {
+            rule: "windows-kerberoasting".into(),
+            title: "Возможный Kerberoasting".into(),
+            severity,
+            mitre: vec!["T1558.003".into()],
+            summary: format!(
+                "Учётная запись {user} запросила RC4-билеты Kerberos для {} служебных учёток ({}). Характерно для Kerberoasting — проверьте, легитимен ли запрос.",
+                per.services.len(),
+                per.services.iter().cloned().collect::<Vec<_>>().join(", ")
+            ),
+            actor: Some(user),
+            first_time: first.timestamp.clone(),
+            last_time: last.timestamp.clone(),
+            evidence,
+            hosts: hosts_of(per.hits.iter().copied()),
+        });
+    }
+    findings
+}
+
+/// Password spray (4625/4771): one source failing against many distinct
+/// accounts — a breadth pattern, distinct from brute force against one account.
+fn windows_password_spray(events: &[LogEvent]) -> Vec<Finding> {
+    struct Per<'a> {
+        hits: Vec<&'a LogEvent>,
+        users: std::collections::BTreeSet<String>,
+    }
+    let mut by_src: BTreeMap<String, Per> = BTreeMap::new();
+    for e in events {
+        if !is_windows(e) || !matches!(win_id(e), Some(4625) | Some(4771)) {
+            continue;
+        }
+        let Some(ip) = e
+            .fields
+            .get("ip")
+            .filter(|s| !s.is_empty() && s.as_str() != "-")
+        else {
+            continue;
+        };
+        let user = e.actor.clone().unwrap_or_default();
+        if user.is_empty() {
+            continue;
+        }
+        let entry = by_src.entry(ip.clone()).or_insert_with(|| Per {
+            hits: Vec::new(),
+            users: std::collections::BTreeSet::new(),
+        });
+        entry.hits.push(e);
+        entry.users.insert(user.to_ascii_lowercase());
+    }
+    let mut findings = Vec::new();
+    for (ip, per) in by_src {
+        // Spray = many accounts from one source. Fewer than this is better
+        // described by the brute-force detector (one account, many tries).
+        if per.users.len() < 5 {
+            continue;
+        }
+        let first = per.hits.first().unwrap();
+        let last = per.hits.last().unwrap();
+        let evidence = per
+            .hits
+            .iter()
+            .take(MAX_EVIDENCE)
+            .map(|e| EvidenceRef::of(e))
+            .collect();
+        findings.push(Finding {
+            rule: "windows-password-spray".into(),
+            title: "Распыление пароля (password spray)".into(),
+            severity: Severity::High,
+            mitre: vec!["T1110.003".into()],
+            summary: format!(
+                "С источника {ip} — неудачные входы под {} различными учётными записями. Похоже на распыление пароля по множеству аккаунтов.",
+                per.users.len()
+            ),
+            actor: Some(ip),
+            first_time: first.timestamp.clone(),
+            last_time: last.timestamp.clone(),
+            evidence,
+            hosts: hosts_of(per.hits.iter().copied()),
+        });
+    }
+    findings
+}
+
+/// Process injection via CreateRemoteThread (Sysmon 8) — rare and high-signal.
+fn windows_process_injection(events: &[LogEvent]) -> Vec<Finding> {
+    let mut findings = Vec::new();
+    for e in events {
+        if !is_windows(e) || win_id(e) != Some(8) {
+            continue;
+        }
+        let src = e.fields.get("source_image").cloned().unwrap_or_default();
+        let tgt = e.fields.get("target_image").cloned().unwrap_or_default();
+        findings.push(Finding {
+            rule: "windows-process-injection".into(),
+            title: "Внедрение в процесс (CreateRemoteThread)".into(),
+            severity: Severity::High,
+            mitre: vec!["T1055".into()],
+            summary: format!(
+                "Процесс {} создал поток в чужом процессе {} — характерно для внедрения кода.",
+                if src.is_empty() {
+                    "?".into()
+                } else {
+                    src.clone()
+                },
+                if tgt.is_empty() { "?".into() } else { tgt }
+            ),
+            actor: (!src.is_empty()).then_some(src),
+            first_time: e.timestamp.clone(),
+            last_time: e.timestamp.clone(),
+            evidence: vec![EvidenceRef::of(e)],
+            hosts: hosts_of(std::iter::once(e)),
+        });
+    }
+    findings
+}
+
+// ---------------------------------------------------------------------------
+// Windows lateral movement
+// ---------------------------------------------------------------------------
+
+/// The administrative-share component of a share path (`\\*\ADMIN$` → `admin$`).
+fn share_leaf(share: &str) -> String {
+    share
+        .rsplit(['\\', '/'])
+        .next()
+        .unwrap_or(share)
+        .to_ascii_lowercase()
+}
+
+/// Access to an administrative share — `ADMIN$` or `C$` (5140/5145). Remote
+/// admin tooling and PsExec reach a host this way. `IPC$` is excluded as
+/// everyday traffic. Grouped per (share, source).
+fn windows_admin_share(events: &[LogEvent]) -> Vec<Finding> {
+    struct Per<'a> {
+        hits: Vec<&'a LogEvent>,
+        external: bool,
+    }
+    let mut groups: BTreeMap<(String, String), Per> = BTreeMap::new();
+    for e in events {
+        if !is_windows(e) || !matches!(win_id(e), Some(5140) | Some(5145)) {
+            continue;
+        }
+        let Some(share) = e.fields.get("share") else {
+            continue;
+        };
+        let leaf = share_leaf(share);
+        if leaf != "admin$" && leaf != "c$" {
+            continue;
+        }
+        let ip = e.fields.get("ip").cloned().unwrap_or_default();
+        let entry = groups.entry((leaf, ip.clone())).or_insert_with(|| Per {
+            hits: Vec::new(),
+            external: false,
+        });
+        entry.hits.push(e);
+        if crate::correlate::is_external_ip(&ip) {
+            entry.external = true;
+        }
+    }
+    let mut findings = Vec::new();
+    for ((leaf, ip), per) in groups {
+        let first = per.hits.first().unwrap();
+        let last = per.hits.last().unwrap();
+        let evidence = per
+            .hits
+            .iter()
+            .take(MAX_EVIDENCE)
+            .map(|e| EvidenceRef::of(e))
+            .collect();
+        findings.push(Finding {
+            rule: "windows-admin-share".into(),
+            title: "Доступ к административному ресурсу (перемещение по сети)".into(),
+            severity: if per.external {
+                Severity::High
+            } else {
+                Severity::Medium
+            },
+            mitre: vec!["T1021.002".into()],
+            summary: format!(
+                "Доступ к административному ресурсу {}{}. Так работают удалённое администрирование и PsExec — подтвердите легитимность.",
+                leaf.to_ascii_uppercase(),
+                if ip.is_empty() {
+                    String::new()
+                } else {
+                    format!(" с адреса {ip}")
+                }
+            ),
+            actor: (!ip.is_empty()).then_some(ip),
+            first_time: first.timestamp.clone(),
+            last_time: last.timestamp.clone(),
+            evidence,
+            hosts: hosts_of(per.hits.iter().copied()),
+        });
+    }
+    findings
+}
+
+/// Service names/images left behind by remote-execution tools (PsExec and
+/// friends) installed as a Windows service (7045) — a lateral-movement marker.
+const REMOTE_EXEC_SERVICE: &[&str] = &["psexesvc", "paexec", "csexec", "remcom", "winexesvc"];
+
+fn windows_remote_service(events: &[LogEvent]) -> Vec<Finding> {
+    let mut findings = Vec::new();
+    for e in events {
+        if !is_windows(e) || win_id(e) != Some(7045) {
+            continue;
+        }
+        let name = e.fields.get("service_name").cloned().unwrap_or_default();
+        let image = e.fields.get("image_path").cloned().unwrap_or_default();
+        let hay = format!("{name} {image}").to_ascii_lowercase();
+        if !REMOTE_EXEC_SERVICE.iter().any(|n| hay.contains(n)) {
+            continue;
+        }
+        findings.push(Finding {
+            rule: "windows-remote-service".into(),
+            title: "Удалённое выполнение через службу (PsExec)".into(),
+            severity: Severity::High,
+            mitre: vec!["T1021.002".into(), "T1569.002".into()],
+            summary: format!(
+                "Установлена служба «{}», характерная для удалённого выполнения (PsExec и аналоги) — признак перемещения по сети.",
+                if name.is_empty() { "?".into() } else { name.clone() }
+            ),
+            actor: (!name.is_empty()).then_some(name),
+            first_time: e.timestamp.clone(),
+            last_time: e.timestamp.clone(),
+            evidence: vec![EvidenceRef::of(e)],
+            hosts: hosts_of(std::iter::once(e)),
+        });
+    }
+    findings
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1838,5 +2171,192 @@ mod tests {
             find(&out, "windows-defender-disabled").severity,
             Severity::High
         );
+    }
+
+    #[test]
+    fn lsass_access_is_critical_credential_access() {
+        let events = vec![win(
+            10,
+            1,
+            None,
+            "WS1",
+            None,
+            &[
+                ("source_image", "C:\\temp\\mimikatz.exe"),
+                ("target_image", "C:\\Windows\\System32\\lsass.exe"),
+                ("granted_access", "0x1410"),
+            ],
+        )];
+        let out = detect(&events);
+        let f = find(&out, "windows-lsass-access");
+        assert_eq!(f.severity, Severity::Critical);
+        assert!(f.mitre.iter().any(|m| m == "T1003.001"));
+    }
+
+    #[test]
+    fn kerberoasting_rc4_for_service_account_is_flagged() {
+        // Two RC4 service-ticket requests for user SPNs, one requester.
+        let events = vec![
+            win(
+                4769,
+                1,
+                Some("mallory"),
+                "DC01",
+                None,
+                &[("service", "MSSQLSvc/db01"), ("ticket_encryption", "0x17")],
+            ),
+            win(
+                4769,
+                2,
+                Some("mallory"),
+                "DC01",
+                None,
+                &[("service", "HTTP/web01"), ("ticket_encryption", "0x17")],
+            ),
+        ];
+        let out = detect(&events);
+        let f = find(&out, "windows-kerberoasting");
+        assert!(f.mitre.iter().any(|m| m == "T1558.003"));
+        assert_eq!(f.actor.as_deref(), Some("mallory"));
+    }
+
+    #[test]
+    fn aes_and_machine_and_krbtgt_tickets_are_not_kerberoasting() {
+        let events = vec![
+            // AES ticket — not roastable.
+            win(
+                4769,
+                1,
+                Some("user"),
+                "DC01",
+                None,
+                &[("service", "MSSQLSvc/db01"), ("ticket_encryption", "0x12")],
+            ),
+            // Machine account SPN.
+            win(
+                4769,
+                2,
+                Some("user"),
+                "DC01",
+                None,
+                &[("service", "WIN-DC01$"), ("ticket_encryption", "0x17")],
+            ),
+            // krbtgt.
+            win(
+                4769,
+                3,
+                Some("user"),
+                "DC01",
+                None,
+                &[("service", "krbtgt"), ("ticket_encryption", "0x17")],
+            ),
+        ];
+        assert!(detect(&events)
+            .iter()
+            .all(|f| f.rule != "windows-kerberoasting"));
+    }
+
+    #[test]
+    fn password_spray_across_many_accounts_is_flagged() {
+        let mut events = Vec::new();
+        for (i, u) in ["alice", "bob", "carol", "dave", "erin", "frank"]
+            .iter()
+            .enumerate()
+        {
+            events.push(win(
+                4625,
+                i as i64,
+                Some(u),
+                "DC01",
+                Some(Outcome::Failure),
+                &[("ip", "203.0.113.9")],
+            ));
+        }
+        let out = detect(&events);
+        let f = find(&out, "windows-password-spray");
+        assert_eq!(f.severity, Severity::High);
+        assert_eq!(f.actor.as_deref(), Some("203.0.113.9"));
+    }
+
+    #[test]
+    fn repeated_failures_on_one_account_are_not_spray() {
+        let events: Vec<_> = (0..6)
+            .map(|i| {
+                win(
+                    4625,
+                    i,
+                    Some("administrator"),
+                    "DC01",
+                    Some(Outcome::Failure),
+                    &[("ip", "203.0.113.9")],
+                )
+            })
+            .collect();
+        let out = detect(&events);
+        assert!(out.iter().all(|f| f.rule != "windows-password-spray"));
+        // It is a brute-force lead instead.
+        assert!(out.iter().any(|f| f.rule == "windows-bruteforce"));
+    }
+
+    #[test]
+    fn create_remote_thread_is_injection() {
+        let events = vec![win(
+            8,
+            1,
+            None,
+            "WS1",
+            None,
+            &[
+                ("source_image", "C:\\temp\\evil.exe"),
+                ("target_image", "C:\\Windows\\explorer.exe"),
+            ],
+        )];
+        let out = detect(&events);
+        assert_eq!(
+            find(&out, "windows-process-injection").severity,
+            Severity::High
+        );
+    }
+
+    #[test]
+    fn admin_share_from_external_ip_is_high_ipc_is_ignored() {
+        let external = vec![win(
+            5145,
+            1,
+            Some("attacker"),
+            "SRV",
+            None,
+            &[("share", "\\\\*\\ADMIN$"), ("ip", "203.0.113.9")],
+        )];
+        let out = detect(&external);
+        assert_eq!(find(&out, "windows-admin-share").severity, Severity::High);
+        // IPC$ is everyday traffic, not a lead.
+        let ipc = vec![win(
+            5145,
+            1,
+            Some("x"),
+            "SRV",
+            None,
+            &[("share", "\\\\*\\IPC$"), ("ip", "203.0.113.9")],
+        )];
+        assert!(detect(&ipc).iter().all(|f| f.rule != "windows-admin-share"));
+    }
+
+    #[test]
+    fn psexec_service_is_remote_execution_lateral_movement() {
+        let events = vec![win(
+            7045,
+            1,
+            Some("PSEXESVC"),
+            "SRV",
+            None,
+            &[
+                ("service_name", "PSEXESVC"),
+                ("image_path", "%SystemRoot%\\PSEXESVC.exe"),
+            ],
+        )];
+        let out = detect(&events);
+        let f = find(&out, "windows-remote-service");
+        assert!(f.mitre.iter().any(|m| m == "T1021.002"));
     }
 }
