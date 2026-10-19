@@ -4,8 +4,12 @@
 //! links the *same* indicator seen across more than one host, so a spray
 //! across the fleet or lateral movement with a shared account stands out:
 //!
-//! * a source IP that touched SSH on several hosts, and
+//! * a source IP that attempted logons on several hosts, and
 //! * an account that successfully logged in on several hosts.
+//!
+//! Both span Linux (`auth.log`/`secure` SSH) and Windows (`.evtx` logon events
+//! 4624/4625/4771), so an address or account reused across a Windows server and
+//! a Linux box links the two.
 //!
 //! Like the detections these are leads, not verdicts: every link carries the
 //! concrete log lines it rests on (grouped per host), a UTC range and the
@@ -87,6 +91,41 @@ pub(crate) fn event_host(e: &LogEvent) -> Option<String> {
     }
 }
 
+/// A logon event we correlate across hosts: any Linux auth line, or a Windows
+/// logon record (success 4624, failure 4625, Kerberos pre-auth 4771). Other
+/// Windows events (process creation, service install …) are not logons and do
+/// not participate in these links.
+fn is_logon_event(e: &LogEvent) -> bool {
+    match e.source {
+        LogSource::Auth => true,
+        LogSource::WindowsEvent => matches!(
+            e.fields.get("event_id").and_then(|s| s.parse::<i64>().ok()),
+            Some(4624) | Some(4625) | Some(4771)
+        ),
+        _ => false,
+    }
+}
+
+/// Source IP of a logon event: Linux auth stores it in `src_ip`, the Windows
+/// `.evtx` parser in `ip`.
+fn source_ip(e: &LogEvent) -> Option<&str> {
+    e.fields
+        .get("src_ip")
+        .or_else(|| e.fields.get("ip"))
+        .map(String::as_str)
+        .filter(|s| !s.is_empty())
+}
+
+/// Account of a logon event: Linux auth stores it in `fields["user"]`, the
+/// Windows parser in `actor` (the target account).
+fn logon_user(e: &LogEvent) -> Option<&str> {
+    match e.source {
+        LogSource::WindowsEvent => e.actor.as_deref(),
+        _ => e.fields.get("user").map(String::as_str),
+    }
+    .filter(|s| !s.is_empty())
+}
+
 /// Run every correlation over the timeline and return the links, worst first.
 pub fn correlate(events: &[LogEvent]) -> Vec<Finding> {
     let mut out = Vec::new();
@@ -141,16 +180,16 @@ fn cross_host_ip(events: &[LogEvent]) -> Vec<Finding> {
     let mut by_ip: BTreeMap<String, PerIp> = BTreeMap::new();
 
     for e in events {
-        if e.source != LogSource::Auth {
+        if !is_logon_event(e) {
             continue;
         }
-        let Some(ip) = e.fields.get("src_ip").filter(|s| !s.is_empty()) else {
+        let Some(ip) = source_ip(e) else {
             continue;
         };
         let Some(host) = event_host(e) else {
             continue;
         };
-        let entry = by_ip.entry(ip.clone()).or_insert_with(|| PerIp {
+        let entry = by_ip.entry(ip.to_string()).or_insert_with(|| PerIp {
             by_host: BTreeMap::new(),
             any_success: false,
         });
@@ -181,7 +220,7 @@ fn cross_host_ip(events: &[LogEvent]) -> Vec<Finding> {
             (Severity::Medium, vec!["T1110".into(), "T1021".into()])
         };
         let summary = format!(
-            "Адрес {ip} обращался по SSH к {} хостам ({}).{}",
+            "Адрес {ip} обращался к {} хостам ({}).{}",
             hosts.len(),
             hosts.join(", "),
             if per.any_success {
@@ -218,21 +257,21 @@ fn cross_host_account(events: &[LogEvent]) -> Vec<Finding> {
     let mut by_user: BTreeMap<String, PerUser> = BTreeMap::new();
 
     for e in events {
-        if e.source != LogSource::Auth || e.outcome != Some(Outcome::Success) {
+        if !is_logon_event(e) || e.outcome != Some(Outcome::Success) {
             continue;
         }
-        let Some(user) = e.fields.get("user").filter(|s| !s.is_empty()) else {
+        let Some(user) = logon_user(e) else {
             continue;
         };
         let Some(host) = event_host(e) else {
             continue;
         };
-        let entry = by_user.entry(user.clone()).or_insert_with(|| PerUser {
+        let entry = by_user.entry(user.to_string()).or_insert_with(|| PerUser {
             by_host: BTreeMap::new(),
             any_external: false,
         });
         entry.by_host.entry(host).or_default().push(e);
-        if e.fields.get("src_ip").is_some_and(|ip| is_external_ip(ip)) {
+        if source_ip(e).is_some_and(is_external_ip) {
             entry.any_external = true;
         }
     }
@@ -252,7 +291,7 @@ fn cross_host_account(events: &[LogEvent]) -> Vec<Finding> {
         let hosts: Vec<String> = by_host.keys().cloned().collect();
         let (evidence, first_time, last_time) = evidence_and_range(&by_host);
         let summary = format!(
-            "Учётная запись {user} успешно входила по SSH на {} хостов ({}). Проверьте, легитимен ли такой доступ ко всем этим машинам.",
+            "Учётная запись {user} успешно входила на {} хостов ({}). Проверьте, легитимен ли такой доступ ко всем этим машинам.",
             hosts.len(),
             hosts.join(", ")
         );
@@ -501,5 +540,126 @@ mod tests {
         drop(f);
         let t = analyze_path(dir, &opts()).unwrap();
         assert!(t.links.is_empty(), "{:#?}", t.links);
+    }
+
+    // ---- Cross-host links spanning Windows (.evtx) events ------------------
+
+    /// A Windows logon `LogEvent` as the `.evtx` parser produces it, on a named
+    /// host, with a source IP.
+    fn win_logon(
+        id: i64,
+        secs: i64,
+        user: &str,
+        host: &str,
+        ip: &str,
+        outcome: Outcome,
+    ) -> LogEvent {
+        let mut fields = BTreeMap::new();
+        fields.insert("event_id".to_string(), id.to_string());
+        fields.insert("ip".to_string(), ip.to_string());
+        LogEvent {
+            timestamp: format!("2026-10-10T10:00:{secs:02}Z"),
+            source: LogSource::WindowsEvent,
+            source_file: format!("{host}/Security.evtx"),
+            line_no: secs as usize,
+            host: Some(host.to_string()),
+            actor: Some(user.to_string()),
+            summary: format!("EID {id}"),
+            outcome: Some(outcome),
+            fields,
+            raw: format!("EID {id}"),
+        }
+    }
+
+    /// A Linux sshd `LogEvent` (as the auth parser produces it): account in
+    /// `fields["user"]`, source IP in `fields["src_ip"]`.
+    fn linux_logon(secs: i64, user: &str, host: &str, ip: &str, ok: bool) -> LogEvent {
+        let mut fields = BTreeMap::new();
+        fields.insert("user".to_string(), user.to_string());
+        fields.insert("src_ip".to_string(), ip.to_string());
+        LogEvent {
+            timestamp: format!("2026-10-10T10:00:{secs:02}Z"),
+            source: LogSource::Auth,
+            source_file: format!("{host}/auth.log"),
+            line_no: secs as usize,
+            host: Some(host.to_string()),
+            actor: Some(ip.to_string()),
+            summary: "ssh".into(),
+            outcome: Some(if ok {
+                Outcome::Success
+            } else {
+                Outcome::Failure
+            }),
+            fields,
+            raw: "ssh".into(),
+        }
+    }
+
+    #[test]
+    fn an_external_ip_hitting_a_windows_and_a_linux_host_links_them() {
+        let events = vec![
+            win_logon(
+                4625,
+                1,
+                "administrator",
+                "WIN-DC01",
+                "203.0.113.9",
+                Outcome::Failure,
+            ),
+            linux_logon(2, "root", "web01", "203.0.113.9", false),
+        ];
+        let links = correlate(&events);
+        let link = find(&links, "link-ip-multi-host");
+        assert_eq!(link.actor.as_deref(), Some("203.0.113.9"));
+        assert_eq!(
+            link.hosts,
+            vec!["WIN-DC01".to_string(), "web01".to_string()]
+        );
+    }
+
+    #[test]
+    fn an_account_logging_into_a_windows_and_a_linux_host_from_outside_links() {
+        let events = vec![
+            win_logon(
+                4624,
+                1,
+                "deploy",
+                "WIN-APP",
+                "203.0.113.9",
+                Outcome::Success,
+            ),
+            linux_logon(2, "deploy", "web01", "198.51.100.4", true),
+        ];
+        let links = correlate(&events);
+        let link = find(&links, "link-account-multi-host");
+        assert_eq!(link.severity, Severity::High);
+        assert_eq!(link.actor.as_deref(), Some("deploy"));
+        assert_eq!(link.hosts.len(), 2);
+    }
+
+    #[test]
+    fn two_windows_hosts_from_one_external_ip_link() {
+        let events = vec![
+            win_logon(4625, 1, "admin", "WIN-A", "45.137.21.134", Outcome::Failure),
+            win_logon(4624, 2, "admin", "WIN-B", "45.137.21.134", Outcome::Success),
+        ];
+        let links = correlate(&events);
+        let link = find(&links, "link-ip-multi-host");
+        // A success somewhere raises it to High.
+        assert_eq!(link.severity, Severity::High);
+        assert_eq!(link.hosts, vec!["WIN-A".to_string(), "WIN-B".to_string()]);
+    }
+
+    #[test]
+    fn an_internal_rdp_ip_across_two_windows_hosts_is_not_a_link() {
+        let events = vec![
+            win_logon(4624, 1, "helpdesk", "WIN-A", "10.0.0.5", Outcome::Success),
+            win_logon(4624, 2, "helpdesk", "WIN-B", "10.0.0.5", Outcome::Success),
+        ];
+        let links = correlate(&events);
+        assert!(
+            links.iter().all(|l| l.rule != "link-ip-multi-host"),
+            "{links:#?}"
+        );
     }
 }
