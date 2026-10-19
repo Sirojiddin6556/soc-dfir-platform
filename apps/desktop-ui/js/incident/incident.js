@@ -26,6 +26,7 @@ const SOURCE = {
   web_error: { label: 'Веб-ошибки', cls: 'inc-src-weberr' },
   auth: { label: 'Аутентификация', cls: 'inc-src-auth' },
   syslog: { label: 'Syslog', cls: 'inc-src-syslog' },
+  windows_event: { label: 'Журнал Windows', cls: 'inc-src-win' },
 };
 function sourceLabel(s) {
   return SOURCE[s]?.label || s;
@@ -156,7 +157,7 @@ export class IncidentSpace {
         <div class="vuln-header">
           <div>
             <h2>🔎 РАССЛЕДОВАНИЕ ИНЦИДЕНТА</h2>
-            <div class="vuln-subtitle">Единая временная шкала по журналам хоста и веб-сервера (nginx/apache access и error, auth.log/secure, syslog/journald), включая ротированные <code>.1</code> и сжатые <code>.gz</code>. Все метки времени приводятся к UTC, каждое событие сопровождается точной строкой журнала как доказательством. Данные не изменяются — журналы только читаются.</div>
+            <div class="vuln-subtitle">Единая временная шкала по журналам хоста и веб-сервера (nginx/apache access и error, auth.log/secure, syslog/journald, журналы Windows <code>.evtx</code>), включая ротированные <code>.1</code> и сжатые <code>.gz</code>. Все метки времени приводятся к UTC, каждое событие сопровождается точной строкой журнала как доказательством. Данные не изменяются — журналы только читаются.</div>
           </div>
         </div>
         <div class="ssh-subtabs">

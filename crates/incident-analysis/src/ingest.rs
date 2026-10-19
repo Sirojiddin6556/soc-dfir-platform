@@ -26,6 +26,9 @@ pub enum IngestError {
 pub struct LogFile {
     pub path: PathBuf,
     pub compressed: bool,
+    /// A Windows event log (`.evtx`): binary, parsed by record rather than by
+    /// text line.
+    pub is_evtx: bool,
 }
 
 /// Lines read from a file, plus the file's modification year (used as the
@@ -58,6 +61,7 @@ pub fn discover(root: &Path, opts: &Options) -> Result<Vec<LogFile>, IngestError
         return Ok(vec![LogFile {
             path: root.to_path_buf(),
             compressed: is_gz(root),
+            is_evtx: is_evtx(root),
         }]);
     }
 
@@ -86,6 +90,7 @@ pub fn discover(root: &Path, opts: &Options) -> Result<Vec<LogFile>, IngestError
                 out.push(LogFile {
                     path: path.clone(),
                     compressed: is_gz(&path),
+                    is_evtx: is_evtx(&path),
                 });
                 if out.len() >= opts.max_files {
                     break;
@@ -178,6 +183,11 @@ fn is_gz(path: &Path) -> bool {
         .is_some_and(|e| e.eq_ignore_ascii_case("gz"))
 }
 
+fn is_evtx(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("evtx"))
+}
+
 fn file_year(meta: &fs::Metadata) -> i32 {
     meta.modified()
         .ok()
@@ -197,17 +207,24 @@ fn looks_like_log(path: &Path) -> bool {
     // Compressed rotation: foo.log.2.gz, auth.log.gz ...
     let base = name.strip_suffix(".gz").unwrap_or(&name);
 
+    // Windows event logs are binary but supported: route them to the .evtx
+    // parser rather than rejecting them as not-a-text-log.
+    if base.ends_with(".evtx") {
+        return true;
+    }
+
     // Configuration, code and keys are never logs, whatever they are called
     // (`daemon.service`, `mail-warning.sh`). A collected case folder holds
     // such files beside the logs.
     const NOT_LOG_EXT: &[&str] = &[
         "service", "timer", "socket", "target", "conf", "cfg", "ini", "sh", "py", "pl", "json",
         "yaml", "yml", "toml", "xml", "html", "pem", "key", "pub", "crt", "defs",
-        // Binary formats that may sit in a collected case folder: Windows event
-        // logs, packet captures, databases, archives, images, executables.
-        "evtx", "evt", "etl", "pcap", "pcapng", "cap", "db", "sqlite", "sqlite3", "zip", "7z",
-        "rar", "tar", "xz", "bz2", "zst", "png", "jpg", "jpeg", "gif", "bmp", "ico", "pdf", "exe",
-        "dll", "so", "bin",
+        // Binary formats that may sit in a collected case folder and are not
+        // parsed here: legacy event logs, packet captures, databases, archives,
+        // images, executables. (`.evtx` is handled above.)
+        "evt", "etl", "pcap", "pcapng", "cap", "db", "sqlite", "sqlite3", "zip", "7z", "rar", "tar",
+        "xz", "bz2", "zst", "png", "jpg", "jpeg", "gif", "bmp", "ico", "pdf", "exe", "dll", "so",
+        "bin",
     ];
     if let Some((_, ext)) = base.rsplit_once('.') {
         if NOT_LOG_EXT.contains(&ext) {

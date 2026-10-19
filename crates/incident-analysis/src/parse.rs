@@ -67,6 +67,9 @@ pub fn parse_line(source: LogSource, line: &str, year: i32) -> Option<LogEvent> 
         LogSource::WebError => parse_web_error(line),
         LogSource::Auth => parse_auth(line, year),
         LogSource::Syslog => parse_syslog(line, year),
+        // Windows event logs are binary and parsed by the `evtx` module, not
+        // line by line; this arm is never reached for a real `.evtx` file.
+        LogSource::WindowsEvent => None,
     }
 }
 

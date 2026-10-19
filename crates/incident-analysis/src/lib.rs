@@ -21,6 +21,7 @@
 
 pub mod correlate;
 pub mod detect;
+mod evtx;
 mod ingest;
 mod parse;
 
@@ -44,6 +45,8 @@ pub enum LogSource {
     Auth,
     /// General syslog / messages, or a `journalctl` short/`short-iso` export.
     Syslog,
+    /// A Windows event log (`.evtx`), parsed from its binary records.
+    WindowsEvent,
 }
 
 impl LogSource {
@@ -54,6 +57,7 @@ impl LogSource {
             LogSource::WebError => "web_error",
             LogSource::Auth => "auth",
             LogSource::Syslog => "syslog",
+            LogSource::WindowsEvent => "windows_event",
         }
     }
 }
@@ -183,6 +187,47 @@ pub fn analyze_path(root: &Path, opts: &Options) -> Result<Timeline, IngestError
             break;
         }
         let rel = ingest::relative_name(root, &file.path);
+
+        if file.is_evtx {
+            // Windows event logs are binary: parse their records directly into
+            // timeline events rather than reading the file as text lines.
+            let budget = opts.max_events.saturating_sub(timeline.events.len());
+            match evtx::parse_evtx_file(&file.path, opts.max_file_bytes, budget) {
+                Ok(out) => {
+                    let parsed = out.events.len();
+                    for mut ev in out.events {
+                        ev.source_file = rel.clone();
+                        timeline.events.push(ev);
+                    }
+                    if out.read_errors > 0 {
+                        timeline.warnings.push(format!(
+                            "{rel}: {} повреждённых записей пропущено",
+                            out.read_errors
+                        ));
+                    }
+                    if out.skipped_routine > 0 {
+                        timeline.warnings.push(format!(
+                            "{rel}: {} рутинных событий Windows не показаны на ленте",
+                            out.skipped_routine
+                        ));
+                    }
+                    timeline.files.push(FileSummary {
+                        path: rel,
+                        source: LogSource::WindowsEvent,
+                        lines: out.total_records,
+                        parsed,
+                        compressed: false,
+                        sha256: out.sha256,
+                        bytes: out.bytes,
+                    });
+                }
+                Err(e) => {
+                    timeline.warnings.push(format!("Файл {rel} пропущен: {e}"));
+                }
+            }
+            continue;
+        }
+
         let read = match ingest::read_lines(&file, opts.max_file_bytes) {
             Ok(lines) => lines,
             Err(e) => {

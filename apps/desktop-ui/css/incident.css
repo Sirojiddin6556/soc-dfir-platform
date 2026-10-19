@@ -221,6 +221,7 @@
 .incident-space .inc-src-weberr { color: var(--accent-purple); border-color: var(--accent-purple); }
 .incident-space .inc-src-auth { color: var(--accent-warning); border-color: var(--accent-warning); }
 .incident-space .inc-src-syslog { color: var(--text-muted); }
+.incident-space .inc-src-win { color: var(--accent-info); border-color: var(--accent-info); }
 
 .incident-space .inc-timeline {
   display: flex;
