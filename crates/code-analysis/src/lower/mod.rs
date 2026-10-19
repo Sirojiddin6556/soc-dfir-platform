@@ -3,6 +3,7 @@
 pub mod c;
 pub mod cpre;
 pub mod java;
+pub mod js;
 pub mod php;
 pub mod python;
 

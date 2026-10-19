@@ -6,6 +6,8 @@ data/
 **/*.rs.bk
 *.tmp
 *.log
+# Checked-in DFIR test logs are deliberate fixtures, not stray logs.
+!apps/desktop-ui/testdata/**/*.log
 .env
 .env.*
 .DS_Store

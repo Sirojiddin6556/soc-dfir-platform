@@ -29,6 +29,7 @@
 .vuln-sev-medium { color: var(--accent-warning); border-color: var(--accent-warning); }
 .vuln-sev-low { color: var(--accent-info); border-color: var(--accent-info); }
 .vuln-kev { color: #fff; background: var(--accent-purple); border-color: var(--accent-purple); }
+.vuln-dev { color: var(--text-muted, var(--text-secondary)); border-color: var(--border-muted); text-transform: lowercase; }
 .vuln-exploited { color: #fff; background: var(--accent-critical); border-color: var(--accent-critical); }
 .vuln-chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
 .vuln-chip { border: 1px solid var(--border-muted); border-radius: 6px; padding: 6px 10px; font-size: 11px; color: var(--text-secondary); background: var(--bg-canvas); }
@@ -53,3 +54,67 @@
 .vuln-step.ok { color: var(--accent-success); }
 .vuln-step.fail { color: var(--accent-critical); }
 #vulnMoreBtn { margin-top: 10px; }
+
+/* Remote-host (SSH) scan panel. */
+.vuln-remote-panel { border-style: dashed; }
+.vuln-remote-head h3 { font-size: 14px; font-weight: 700; color: var(--text-primary); margin: 0 0 4px; }
+.vuln-remote-form { margin-top: 12px; display: flex; flex-direction: column; gap: 10px; }
+.vuln-remote-row { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; }
+.vuln-remote-row label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text-secondary); }
+.vuln-remote-row input[type="text"], .vuln-remote-row input[type="password"], .vuln-remote-row input[type="number"], .vuln-remote-row textarea {
+  background: var(--bg-canvas); border: 1px solid var(--border-muted); border-radius: 4px;
+  padding: 6px 10px; color: var(--text-primary); font-size: 13px; min-width: 200px;
+}
+.vuln-remote-row input[type="number"] { min-width: 80px; width: 90px; }
+.vuln-remote-row textarea { min-width: 420px; font-family: var(--font-mono, monospace); resize: vertical; }
+.vuln-remote-row label:has(input[type="radio"]) { flex-direction: row; align-items: center; gap: 6px; }
+.vuln-remote-actions { display: flex; gap: 8px; margin-top: 4px; }
+.vuln-remote-confirm { margin-top: 12px; display: flex; flex-direction: column; gap: 10px; }
+.vuln-remote-fp { font-size: 13px; color: var(--text-primary); background: var(--bg-canvas); border: 1px solid var(--border-muted); border-radius: 6px; padding: 10px 12px; display: flex; flex-direction: column; gap: 4px; }
+.vuln-remote-wait { font-size: 13px; color: var(--accent-info); display: flex; align-items: center; gap: 8px; margin-top: 12px; }
+.vuln-remote-hostline { font-size: 13px; color: var(--text-primary); margin: 8px 0; }
+.vuln-remote-section { font-size: 13px; font-weight: 700; color: var(--text-primary); margin: 18px 0 6px; }
+
+/* CIS configuration-audit result. */
+.vuln-cis-scores { display: flex; flex-wrap: wrap; gap: 10px; margin: 10px 0; }
+.vuln-cis-score { flex: 1 1 120px; min-width: 120px; background: var(--bg-canvas); border: 1px solid var(--border-muted); border-radius: 6px; padding: 10px 12px; }
+.vuln-cis-score-pct { font-size: 20px; font-weight: 700; color: var(--text-primary); font-family: var(--font-mono, monospace); }
+.vuln-cis-score-name { font-size: 12px; color: var(--text-primary); margin-top: 2px; }
+.vuln-cis-score-detail { font-size: 11px; color: var(--text-secondary); margin-top: 2px; }
+.vuln-cis-counts { font-size: 12px; color: var(--text-secondary); margin: 6px 0 10px; }
+.vuln-cis-table td { vertical-align: top; }
+.vuln-cis-title { font-size: 13px; color: var(--text-primary); }
+.vuln-cis-evidence { font-size: 11px; color: var(--text-secondary); margin-top: 3px; word-break: break-word; }
+.vuln-cis-fix { font-size: 11px; color: var(--accent-info); margin-top: 3px; }
+.vuln-cis-refs { font-size: 10px; color: var(--text-muted, var(--text-secondary)); margin-top: 3px; }
+.vuln-cis-fail { color: #1a1205; background: var(--accent-critical); border-color: var(--accent-critical); }
+.vuln-cis-pass { color: var(--accent-success); border-color: var(--accent-success); }
+.vuln-cis-manual { color: var(--accent-warning); border-color: var(--accent-warning); }
+.vuln-cis-na { color: var(--text-secondary); border-color: var(--border-muted); }
+.vuln-cis-fail-row td:first-child { border-left: 2px solid var(--accent-critical); }
+.vuln-remote-ok { font-size: 12px; color: var(--accent-success); border: 1px solid var(--accent-success); border-radius: 6px; padding: 8px 12px; }
+
+/* «Проверка по SSH» space: sub-tab bar and the project-code panel extras. */
+.ssh-subtabs { display: flex; gap: 8px; margin: 14px 0 4px; flex-wrap: wrap; }
+.ssh-subtab { font-size: 13px; }
+.vuln-remote-wide { flex: 1 1 100%; }
+.vuln-remote-wide input[type="text"] { width: 100%; }
+.vuln-remote-warn { color: var(--accent-warning); border: 1px solid var(--accent-warning); border-radius: 6px; padding: 8px 12px; }
+.vuln-remote-report { margin-top: 12px; }
+
+/* Standalone "pre-download target-OS bases" block in the OS-scan panel. */
+.ssh-db-block { margin: 10px 0 14px; border: 1px solid var(--border-muted); border-radius: 6px; padding: 8px 12px; background: var(--bg-canvas); }
+.ssh-db-block > summary { cursor: pointer; font-size: 13px; font-weight: 600; color: var(--text-primary); }
+.ssh-db-grid { display: flex; flex-wrap: wrap; gap: 12px; margin: 10px 0; }
+.ssh-db-group { flex: 1 1 150px; min-width: 150px; }
+.ssh-db-group-name { font-size: 12px; font-weight: 600; color: var(--text-primary); margin-bottom: 4px; }
+.ssh-db-item { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-secondary); padding: 2px 0; }
+.ssh-db-item input { margin: 0; }
+
+/* Windows "missing updates (KB)" rollup in the vulnerability results. */
+.vuln-missing-title { margin-top: 16px; }
+.vuln-missing-table { margin-top: 6px; }
+
+/* «Единый отчёт» space. */
+.ur-toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text-primary); margin: 8px 0; cursor: pointer; }
+.ur-sev-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 12px; }

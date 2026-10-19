@@ -1,7 +1,8 @@
 //! Source code analysis of a project directory on the engine's machine.
 //!
 //! `code.scan` starts `code_analysis` on a directory in the background: it
-//! looks for flaws in Python, Java, PHP, C and C++ where user input reaches
+//! looks for flaws in Python, Java, PHP, C/C++ and JavaScript/TypeScript
+//! where user input reaches
 //! a dangerous call (SQL, command, path, template, LDAP ...). `code.status`
 //! reports whether it is running and, once done, the findings with the path
 //! the data took from its source to the sink.
@@ -39,6 +40,10 @@ fn download_mb(ecosystem: &str) -> u32 {
         "RubyGems" => 5,
         "crates.io" => 4,
         "NuGet" => 3,
+        "Hex" => 1,
+        "Pub" => 1,
+        "SwiftURL" => 1,
+        "GitHub Actions" => 1,
         _ => 10,
     }
 }
@@ -66,6 +71,11 @@ struct ScanJob {
 pub struct CodeScanService {
     job: Mutex<ScanJob>,
     vulndb: Arc<VulnDbService>,
+    /// Read versions of undeclared Python imports from the host's installed
+    /// environment (a read-only `importlib.metadata` query). On by default;
+    /// turned off in hermetic tests so the result does not depend on what
+    /// happens to be installed on the test machine.
+    probe_python_env: bool,
 }
 
 impl CodeScanService {
@@ -73,6 +83,18 @@ impl CodeScanService {
         Self {
             job: Mutex::new(ScanJob::default()),
             vulndb,
+            probe_python_env: true,
+        }
+    }
+
+    /// Like `new`, but without reading the host Python environment — for
+    /// tests that must not depend on the machine's installed packages.
+    #[cfg(test)]
+    fn new_without_env_probe(vulndb: Arc<VulnDbService>) -> Self {
+        Self {
+            job: Mutex::new(ScanJob::default()),
+            vulndb,
+            probe_python_env: false,
         }
     }
 
@@ -127,20 +149,12 @@ impl CodeScanService {
     }
 
     fn run(&self, root: PathBuf, options: code_analysis::Options, generation: u64) {
-        let outcome = code_analysis::analyze_dir_with(&root, options)
-            .map_err(|e| e.to_string())
-            .and_then(|mut report| {
-                let dependencies = std::mem::take(&mut report.dependencies);
-                let imports = std::mem::take(&mut report.imports);
-                let mut base = serde_json::to_value(report).map_err(|e| e.to_string())?;
-                if let Some(map) = base.as_object_mut() {
-                    map.remove("dependencies");
-                    map.remove("imports");
-                }
-                Ok((base, dependencies, imports))
-            });
-        let (base, dependencies, imports) = match outcome {
-            Ok(parts) => parts,
+        let Analyzed {
+            base,
+            dependencies,
+            imports,
+        } = match analyze(&root, options) {
+            Ok(a) => a,
             Err(e) => {
                 tracing::warn!("code analysis of {} failed: {e}", root.display());
                 let mut job = self.job.lock().unwrap_or_else(|p| p.into_inner());
@@ -203,33 +217,22 @@ impl CodeScanService {
         imports: &[ImportedModule],
         include_tests: bool,
     ) -> Value {
-        let (check, mut found) =
-            check_dependencies(&self.vulndb, root, dependencies, imports, include_tests);
-        let mut report = base.clone();
-        if let Some(map) = report.as_object_mut() {
-            let mut findings = match map.remove("findings") {
-                Some(Value::Array(list)) => list,
-                _ => Vec::new(),
-            };
-            findings.append(&mut found);
-            findings.sort_by(|a, b| {
-                severity_rank(&b["severity"])
-                    .cmp(&severity_rank(&a["severity"]))
-                    .then_with(|| a["file"].as_str().cmp(&b["file"].as_str()))
-                    .then_with(|| a["line"].as_u64().cmp(&b["line"].as_u64()))
-                    .then_with(|| a["rule"].as_str().cmp(&b["rule"].as_str()))
-            });
-            map.insert("findings".into(), Value::Array(findings));
-            map.insert("dependency_check".into(), check);
-        }
-        report
+        compose_report(
+            &self.vulndb,
+            self.probe_python_env,
+            root,
+            base,
+            dependencies,
+            imports,
+            include_tests,
+        )
     }
 
     /// The current or last analysis; the report once it finished.
     pub fn status(&self) -> Value {
         let job = self.job.lock().unwrap_or_else(|p| p.into_inner());
         json!({
-            "languages": ["python", "java", "php", "c", "cpp"],
+            "languages": ["python", "java", "php", "c", "cpp", "javascript", "typescript"],
             "running": job.running,
             "path": job.path,
             "external_sources": job.external_sources,
@@ -240,6 +243,81 @@ impl CodeScanService {
             "report": job.report,
         })
     }
+}
+
+/// A project analysed into its base report (without dependency findings) and
+/// the raw dependency/import lists the dependency check consumes. Shared by the
+/// local code scan and the remote (SFTP-fetched) one.
+pub(crate) struct Analyzed {
+    pub base: Value,
+    pub dependencies: Vec<Dependency>,
+    pub imports: Vec<ImportedModule>,
+}
+
+/// Runs `code_analysis` on `root` and splits the dependency/import lists out of
+/// the report, leaving a base report the dependency check folds its findings
+/// into. The analyser produces project-relative file paths, so the result is
+/// identical whether the files sit in a local folder or a temporary SFTP copy.
+pub(crate) fn analyze(root: &Path, options: code_analysis::Options) -> Result<Analyzed, String> {
+    code_analysis::analyze_dir_with(root, options)
+        .map_err(|e| e.to_string())
+        .and_then(|mut report| {
+            let dependencies = std::mem::take(&mut report.dependencies);
+            let imports = std::mem::take(&mut report.imports);
+            let mut base = serde_json::to_value(report).map_err(|e| e.to_string())?;
+            if let Some(map) = base.as_object_mut() {
+                map.remove("dependencies");
+                map.remove("imports");
+            }
+            Ok(Analyzed {
+                base,
+                dependencies,
+                imports,
+            })
+        })
+}
+
+/// Folds the dependency check into the base report: vulnerable packages join
+/// the findings (sorted by severity, then location) and `dependency_check`
+/// records what was checked. `probe_python_env` reads the host's installed
+/// Python versions — left off for a remote project, whose packages must come
+/// only from the fetched source, never from the engine machine's environment.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn compose_report(
+    vulndb: &VulnDbService,
+    probe_python_env: bool,
+    root: &Path,
+    base: &Value,
+    dependencies: &[Dependency],
+    imports: &[ImportedModule],
+    include_tests: bool,
+) -> Value {
+    let (check, mut found) = check_dependencies(
+        vulndb,
+        root,
+        dependencies,
+        imports,
+        include_tests,
+        probe_python_env,
+    );
+    let mut report = base.clone();
+    if let Some(map) = report.as_object_mut() {
+        let mut findings = match map.remove("findings") {
+            Some(Value::Array(list)) => list,
+            _ => Vec::new(),
+        };
+        findings.append(&mut found);
+        findings.sort_by(|a, b| {
+            severity_rank(&b["severity"])
+                .cmp(&severity_rank(&a["severity"]))
+                .then_with(|| a["file"].as_str().cmp(&b["file"].as_str()))
+                .then_with(|| a["line"].as_u64().cmp(&b["line"].as_u64()))
+                .then_with(|| a["rule"].as_str().cmp(&b["rule"].as_str()))
+        });
+        map.insert("findings".into(), Value::Array(findings));
+        map.insert("dependency_check".into(), check);
+    }
+    report
 }
 
 fn severity_rank(v: &Value) -> u8 {
@@ -314,6 +392,134 @@ impl Lines<'_> {
     }
 }
 
+/// The versions of the given top-level Python import names as installed in the
+/// host's environment. It runs the host interpreter on a fixed one-line script
+/// that only reads `importlib.metadata` — the project's own code is never
+/// imported or executed. Returns a map `import name -> (distribution, version)`
+/// and the interpreter that answered, or an empty map when none is found.
+fn resolve_installed_python(
+    modules: &[&str],
+) -> (HashMap<String, (String, String)>, Option<String>) {
+    let mut out = HashMap::new();
+    if modules.is_empty() {
+        return (out, None);
+    }
+    // Reads installed distributions (name -> version) and the authoritative
+    // import -> distribution map, and prints them as JSON. Imports nothing from
+    // the project.
+    const SCRIPT: &str = r#"
+import json, sys
+try:
+    import importlib.metadata as md
+except Exception:
+    try:
+        import importlib_metadata as md
+    except Exception:
+        json.dump({"dists": {}, "top": {}}, sys.stdout); sys.exit(0)
+dists = {}
+for d in md.distributions():
+    try:
+        name = d.metadata["Name"]; ver = d.version
+    except Exception:
+        continue
+    if name and ver:
+        dists[name.strip().lower().replace("_", "-").replace(".", "-")] = ver
+top = {}
+try:
+    for k, v in md.packages_distributions().items():
+        top[k] = list(v)
+except Exception:
+    pass
+json.dump({"dists": dists, "top": top}, sys.stdout)
+"#;
+    // Interpreters to try, in order: an explicit override, then the usual
+    // names and the Windows `py` launcher.
+    let mut candidates: Vec<(String, Vec<&str>)> = Vec::new();
+    if let Ok(p) = std::env::var("SOC_PYTHON") {
+        if !p.trim().is_empty() {
+            candidates.push((p.trim().to_string(), vec![]));
+        }
+    }
+    // On Windows the bare `python3`/`python` names are often the Microsoft
+    // Store app-execution alias, which stalls when run non-interactively, so
+    // try the real `py` launcher first and keep each probe short. On other
+    // systems `python3` is the canonical name.
+    if cfg!(windows) {
+        candidates.push(("py".to_string(), vec!["-3"]));
+        candidates.push(("python".to_string(), vec![]));
+        candidates.push(("python3".to_string(), vec![]));
+    } else {
+        candidates.push(("python3".to_string(), vec![]));
+        candidates.push(("python".to_string(), vec![]));
+        candidates.push(("py".to_string(), vec!["-3"]));
+    }
+
+    let norm = |s: &str| s.trim().to_ascii_lowercase().replace(['_', '.'], "-");
+    for (prog, pre) in &candidates {
+        let Some(stdout) = run_capture(prog, pre, SCRIPT, std::time::Duration::from_secs(8)) else {
+            continue;
+        };
+        let Ok(parsed) = serde_json::from_slice::<Value>(&stdout) else {
+            continue;
+        };
+        let Some(dists) = parsed.get("dists").and_then(Value::as_object) else {
+            continue;
+        };
+        let top = parsed.get("top").and_then(Value::as_object);
+        for &m in modules {
+            // Candidate distributions, best first: the environment's own
+            // import map, then the fallback table, then the import name.
+            let mut cand: Vec<String> = Vec::new();
+            if let Some(list) = top.and_then(|t| t.get(m)).and_then(Value::as_array) {
+                cand.extend(list.iter().filter_map(|v| v.as_str()).map(String::from));
+            }
+            if let Some(dist) = code_analysis::deps::python_dist_name(m) {
+                cand.push(dist.to_string());
+            }
+            cand.push(m.to_string());
+            for c in cand {
+                if let Some(ver) = dists.get(&norm(&c)).and_then(Value::as_str) {
+                    out.insert(m.to_string(), (c, ver.to_string()));
+                    break;
+                }
+            }
+        }
+        return (out, Some(prog.clone()));
+    }
+    (out, None)
+}
+
+/// Runs `prog pre... -c script` with no stdin, capturing stdout, and gives up
+/// after `timeout` so a stuck interpreter cannot stall the scan. `None` on any
+/// failure (program missing, non-zero exit, timeout).
+fn run_capture(
+    prog: &str,
+    pre: &[&str],
+    script: &str,
+    timeout: std::time::Duration,
+) -> Option<Vec<u8>> {
+    let mut cmd = std::process::Command::new(prog);
+    cmd.args(pre)
+        .arg("-c")
+        .arg(script)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null());
+    let (tx, rx) = std::sync::mpsc::channel();
+    // `output()` drains the pipe, so a large listing cannot deadlock; the
+    // thread is detached on timeout and ends when the child exits.
+    std::thread::Builder::new()
+        .name("python-probe".into())
+        .spawn(move || {
+            let _ = tx.send(cmd.output());
+        })
+        .ok()?;
+    match rx.recv_timeout(timeout) {
+        Ok(Ok(output)) if output.status.success() => Some(output.stdout),
+        _ => None,
+    }
+}
+
 /// Checks the pinned packages against the database; returns the summary
 /// for the report and a finding per vulnerable or malicious package.
 fn check_dependencies(
@@ -322,11 +528,73 @@ fn check_dependencies(
     dependencies: &[Dependency],
     imports: &[ImportedModule],
     include_tests: bool,
+    probe_python_env: bool,
 ) -> (Value, Vec<Value>) {
-    let used: Vec<&Dependency> = dependencies
+    let is_used = |file: &str| include_tests || !code_analysis::project::is_test_path(file);
+    // A project that already lists its Python packages (a manifest, a lock
+    // file or a virtualenv) is taken at its word; otherwise its bare imports
+    // are the only clue to its packages.
+    let has_python_list = dependencies
         .iter()
-        .filter(|d| include_tests || !code_analysis::project::is_test_path(&d.file))
+        .any(|d| d.ecosystem == "PyPI" && is_used(&d.file));
+    let py_imports: Vec<&ImportedModule> = imports.iter().filter(|m| is_used(&m.file)).collect();
+    // Read the versions of those imports from the host's installed Python
+    // environment, so a project with no manifest is still CVE-checked.
+    let (resolved, interpreter) = if probe_python_env && !has_python_list && !py_imports.is_empty()
+    {
+        let mods: Vec<&str> = py_imports.iter().map(|m| m.module.as_str()).collect();
+        resolve_installed_python(&mods)
+    } else {
+        (HashMap::new(), None)
+    };
+    check_dependencies_inner(
+        vulndb,
+        root,
+        dependencies,
+        imports,
+        include_tests,
+        &resolved,
+        interpreter,
+    )
+}
+
+/// The pure part of the dependency check: the host environment has already
+/// been read into `resolved` (import name -> distribution, version). Kept
+/// separate so it can be tested without depending on what is installed.
+#[allow(clippy::too_many_arguments)]
+fn check_dependencies_inner(
+    vulndb: &VulnDbService,
+    root: &Path,
+    dependencies: &[Dependency],
+    imports: &[ImportedModule],
+    include_tests: bool,
+    resolved: &HashMap<String, (String, String)>,
+    interpreter: Option<String>,
+) -> (Value, Vec<Value>) {
+    let is_used = |file: &str| include_tests || !code_analysis::project::is_test_path(file);
+    let has_python_list = dependencies
+        .iter()
+        .any(|d| d.ecosystem == "PyPI" && is_used(&d.file));
+    let py_imports: Vec<&ImportedModule> = imports.iter().filter(|m| is_used(&m.file)).collect();
+    // Each resolved import becomes a package pinned at its installed version,
+    // placed where the project first imports it.
+    let synthetic: Vec<Dependency> = py_imports
+        .iter()
+        .filter_map(|m| {
+            resolved.get(&m.module).map(|(dist, ver)| Dependency {
+                ecosystem: "PyPI".to_string(),
+                name: dist.clone(),
+                version: Some(ver.clone()),
+                requirement: String::new(),
+                file: m.file.clone(),
+                line: m.line,
+                kind: DepKind::Installed,
+                dev: false,
+            })
+        })
         .collect();
+    let all_deps: Vec<Dependency> = dependencies.iter().cloned().chain(synthetic).collect();
+    let used: Vec<&Dependency> = all_deps.iter().filter(|d| is_used(&d.file)).collect();
     // One package version, wherever the project names it.
     let mut groups: BTreeMap<PackageQuery, Vec<&Dependency>> = BTreeMap::new();
     for d in &used {
@@ -435,12 +703,57 @@ fn check_dependencies(
         .filter(|e| e["loaded"] == false)
         .filter_map(|e| e["ecosystem"].as_str())
         .collect();
-    // Python code with no list of its packages at all: name what it imports.
-    let has_python_list = used.iter().any(|d| d.ecosystem == "PyPI");
-    let python_imports: Vec<&ImportedModule> = if has_python_list {
+    // Imports the installed environment could not resolve: still unchecked,
+    // shown with the PyPI name and how to make them checkable.
+    let undeclared: Vec<&ImportedModule> = if has_python_list {
         Vec::new()
     } else {
-        imports.iter().collect()
+        py_imports
+            .iter()
+            .copied()
+            .filter(|m| !resolved.contains_key(&m.module))
+            .collect()
+    };
+    let undeclared_json: Vec<Value> = undeclared
+        .iter()
+        .map(|m| {
+            let dist =
+                code_analysis::deps::python_dist_name(&m.module).unwrap_or(m.module.as_str());
+            json!({
+                "module": m.module,
+                "dist": dist,
+                "file": m.file,
+                "line": m.line,
+                "files": m.files,
+            })
+        })
+        .collect();
+    // What was read from the environment, and what the user can do for the rest.
+    let advice = if has_python_list || py_imports.is_empty() {
+        Value::Null
+    } else {
+        let mut parts: Vec<String> = Vec::new();
+        if !resolved.is_empty() {
+            parts.push(format!(
+                "Версии {} пакетов взяты из установленного окружения{} и проверены на уязвимости.",
+                resolved.len(),
+                interpreter
+                    .as_deref()
+                    .map(|i| format!(" ({i})"))
+                    .unwrap_or_default()
+            ));
+        }
+        if !undeclared.is_empty() {
+            parts.push(
+                "Для остальных версия не задана (нет requirements.txt). Выполните в папке проекта `pip freeze > requirements.txt` (или `pipreqs .`) и пересканируйте — тогда они тоже будут проверены."
+                    .to_string(),
+            );
+        }
+        if parts.is_empty() {
+            Value::Null
+        } else {
+            Value::String(parts.join(" "))
+        }
     };
     let summary = json!({
         "total": used.len(),
@@ -459,7 +772,12 @@ fn check_dependencies(
             "line": d.line,
             "kind": d.kind,
         })).collect::<Vec<_>>(),
-        "undeclared_python": python_imports,
+        "undeclared_python": undeclared_json,
+        "python_env": {
+            "interpreter": interpreter,
+            "resolved": resolved.len(),
+        },
+        "python_advice": advice,
         "checked_at": Utc::now().to_rfc3339(),
         "error": error,
     });
@@ -478,6 +796,8 @@ fn dependency_finding(
     let who = format!("{} {} ({})", main.name, query.version, query.ecosystem);
     let malware: Vec<&Advisory> = advisories.iter().filter(|a| a.malicious).collect();
     let flaws: Vec<&Advisory> = advisories.iter().filter(|a| !a.malicious).collect();
+    // Every place this package is listed is a dev/build dependency.
+    let dev_only = places.iter().all(|d| d.dev);
     let upgrade = vdeps::upgrade_target(&query.ecosystem, advisories);
     let (rule, cwe, title, severity, message) = if let Some(m) = malware.first() {
         let mut message = format!(
@@ -508,11 +828,23 @@ fn dependency_finding(
             .map(|a| a.severity)
             .max()
             .unwrap_or(CvssSeverity::Unknown);
-        let severity = match worst {
-            CvssSeverity::Critical => "critical",
-            CvssSeverity::High => "high",
-            CvssSeverity::Medium | CvssSeverity::Unknown => "medium",
-            CvssSeverity::Low | CvssSeverity::None => "low",
+        // A flaw reachable only through dev/build tooling (every place is a
+        // dev dependency) does not ship, so it sits one step below a runtime
+        // flaw of the same rating.
+        let severity = match (worst, dev_only) {
+            (CvssSeverity::Critical, false) => "critical",
+            (CvssSeverity::High, false) | (CvssSeverity::Critical, true) => "high",
+            (CvssSeverity::Medium | CvssSeverity::Unknown, false) | (CvssSeverity::High, true) => {
+                "medium"
+            }
+            (CvssSeverity::Low | CvssSeverity::None, false)
+            | (
+                CvssSeverity::Medium
+                | CvssSeverity::Unknown
+                | CvssSeverity::Low
+                | CvssSeverity::None,
+                true,
+            ) => "low",
         };
         let listed: Vec<String> = flaws
             .iter()
@@ -545,6 +877,11 @@ fn dependency_finding(
             None => message.push_str(
                 " Исправленной версии нет хотя бы для одной из них: замените библиотеку или закройте уязвимость по её описанию.",
             ),
+        }
+        if dev_only {
+            message.push_str(
+                " Только dev-зависимость (не попадает в сборку) — риск ниже; важно для CI и машин разработчиков.",
+            );
         }
         (
             "vulnerable-dependency",
@@ -596,6 +933,7 @@ fn dependency_finding(
             "where": kind_label(main.kind),
             "requirement": main.requirement,
             "fixed_version": upgrade,
+            "dev": dev_only,
         },
         "advisories": advisories,
     })
@@ -652,7 +990,9 @@ mod tests {
                 "from flask import request\nimport os\n\n\ndef run():\n    os.system('ping ' + request.args['host'])\n",
             )],
         );
-        let service = Arc::new(CodeScanService::new(vulndb()));
+        // A SAST finding test, not a dependency test: no host-environment
+        // probe, so it does not depend on (or wait on) the machine's Python.
+        let service = Arc::new(CodeScanService::new_without_env_probe(vulndb()));
         let started = service.start(dir.to_str().unwrap(), false, false).unwrap();
         assert_eq!(started["running"], true);
         let s = wait(&service);
@@ -866,7 +1206,9 @@ mod tests {
                 ("templates/base.html", "<link href=\"https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css\" rel=\"stylesheet\">\n"),
             ],
         );
-        let service = Arc::new(CodeScanService::new(vulndb()));
+        // No host probe here, so the result does not depend on what Python
+        // packages this machine happens to have installed.
+        let service = Arc::new(CodeScanService::new_without_env_probe(vulndb()));
         service.start(dir.to_str().unwrap(), false, false).unwrap();
         let s = wait(&service);
         let check = &s["report"]["dependency_check"];
@@ -881,5 +1223,58 @@ mod tests {
         assert_eq!(check["list"][0]["kind"], "cdn");
         assert_eq!(check["missing"], json!(["npm"]));
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn installed_python_versions_are_resolved_and_the_rest_get_advice() {
+        // A project with no requirements.txt that imports `cv2` and `numpy`.
+        // The host environment resolved only `cv2` (to opencv-python 4.5.0);
+        // `numpy` stays undeclared, named by its PyPI distribution, with a
+        // how-to.
+        let imports = vec![
+            ImportedModule {
+                module: "cv2".into(),
+                file: "app/vision.py".into(),
+                line: 3,
+                files: 1,
+            },
+            ImportedModule {
+                module: "numpy".into(),
+                file: "app/vision.py".into(),
+                line: 4,
+                files: 2,
+            },
+        ];
+        let mut resolved = HashMap::new();
+        resolved.insert(
+            "cv2".to_string(),
+            ("opencv-python".to_string(), "4.5.0".to_string()),
+        );
+        let (check, _findings) = check_dependencies_inner(
+            &vulndb(),
+            Path::new("/tmp/does-not-matter"),
+            &[],
+            &imports,
+            false,
+            &resolved,
+            Some("python3".to_string()),
+        );
+        // The resolved import is a pinned package, placed at its import site.
+        assert_eq!(check["packages"], 1, "{check}");
+        assert_eq!(check["list"][0]["name"], "opencv-python", "{check}");
+        assert_eq!(check["list"][0]["version"], "4.5.0");
+        assert_eq!(check["list"][0]["kind"], "installed");
+        assert_eq!(check["list"][0]["file"], "app/vision.py");
+        assert_eq!(check["python_env"]["resolved"], 1);
+        assert_eq!(check["python_env"]["interpreter"], "python3");
+        // The unresolved one keeps its import name and gains its PyPI name.
+        let undeclared = check["undeclared_python"].as_array().unwrap();
+        assert_eq!(undeclared.len(), 1, "{check}");
+        assert_eq!(undeclared[0]["module"], "numpy");
+        assert_eq!(undeclared[0]["dist"], "numpy");
+        assert!(check["python_advice"]
+            .as_str()
+            .unwrap()
+            .contains("pip freeze"));
     }
 }

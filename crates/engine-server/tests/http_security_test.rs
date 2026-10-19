@@ -103,19 +103,6 @@ async fn rpc_requires_a_session_except_public_methods() {
     let (status, body) = rpc(srv.port, "health", serde_json::json!({})).await;
     assert_eq!(status, 200);
     assert!(body["error"].is_null());
-
-    // The CTF client speaks JSON-RPC 2.0; refusals keep that shape.
-    let body = r#"{"jsonrpc":"2.0","id":"x1","method":"competitions.list","params":{}}"#;
-    let req = format!(
-        "POST /rpc HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: {}\r\n\r\n{body}",
-        body.len()
-    );
-    let (status, text) = raw(srv.port, req).await;
-    assert_eq!(status, 401);
-    let v: serde_json::Value = serde_json::from_str(&text).unwrap();
-    assert_eq!(v["jsonrpc"], "2.0");
-    assert_eq!(v["id"], "x1");
-    assert_eq!(v["error"]["code"], -32001);
 }
 
 #[tokio::test]
@@ -297,34 +284,6 @@ async fn oversized_rpc_body_is_refused_before_reading() {
     )
     .await;
     assert_eq!(status, 411);
-}
-
-#[tokio::test]
-async fn chat_identity_comes_from_the_session() {
-    let srv = start().await;
-    srv.app
-        .storage
-        .complete_initial_setup("chat-test-password")
-        .unwrap();
-    let (_, res) = rpc(
-        srv.port,
-        "auth.login",
-        serde_json::json!({"username": "sirojiddin", "password": "chat-test-password"}),
-    )
-    .await;
-    let token = res["result"]["session"]["token"].as_str().unwrap();
-    let (_, res) = rpc(
-        srv.port,
-        "chat.send",
-        serde_json::json!({
-            "token": token,
-            "body": "hello",
-            "author_name": "Somebody Else",
-            "author_role": "Owner"
-        }),
-    )
-    .await;
-    assert_eq!(res["result"]["author_name"], "Сироҷиддин");
 }
 
 #[tokio::test]

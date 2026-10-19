@@ -154,7 +154,6 @@ struct Request {
     method: String,
     path: String,
     headers: Vec<(String, String)>,
-    raw_headers: String,
     content_length: Option<usize>,
 }
 
@@ -191,7 +190,6 @@ fn parse_head(head: &str) -> Option<Request> {
         method,
         path,
         headers,
-        raw_headers: head.to_string(),
         content_length,
     })
 }
@@ -231,22 +229,6 @@ pub async fn handle_connection_with(
         if !policy.allows_origin(origin) {
             return send_text(&mut stream, 403, "Cross-origin request refused").await;
         }
-    }
-
-    if req.method == "PUT" && req.path.starts_with("/ingest/") && req.path.ends_with("/chunk") {
-        let content_len = req.content_length.unwrap_or(0);
-        let initial_body = buffer[body_start..].to_vec();
-        crate::evidence::handle_binary_upload_chunk(
-            stream,
-            &req.path,
-            &req.raw_headers,
-            &app.session_mgr,
-            &app.storage,
-            &initial_body,
-            content_len,
-        )
-        .await?;
-        return Ok(());
     }
 
     if req.path == "/rpc" {

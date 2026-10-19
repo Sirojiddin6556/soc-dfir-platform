@@ -261,6 +261,37 @@ class H(http.server.BaseHTTPRequestHandler):
 }
 
 #[test]
+fn the_same_secret_in_many_files_is_one_finding() {
+    let secret = "DB_PASSWORD = \"sup3r-s3cr3t-pw-9times\"\n";
+    let other = "API_PASSWORD = \"a-different-s3cret-value\"\n";
+    let project = Project::from_sources(vec![
+        ("a.py".to_string(), secret.to_string()),
+        ("b.py".to_string(), secret.to_string()),
+        ("c.py".to_string(), secret.to_string()),
+        ("d.py".to_string(), other.to_string()),
+    ]);
+    let secrets: Vec<_> = code_analysis::analyze(&project)
+        .findings
+        .into_iter()
+        .filter(|f| f.rule == "hardcoded-secret")
+        .collect();
+    // The repeated value collapses to one finding that lists the other two
+    // places; the distinct value stays its own finding.
+    assert_eq!(secrets.len(), 2, "{secrets:#?}");
+    let repeated = secrets
+        .iter()
+        .find(|f| f.other_sources.len() == 2)
+        .expect("repeated secret groups its other locations");
+    let files: Vec<&str> = std::iter::once(repeated.file.as_str())
+        .chain(repeated.other_sources.iter().map(|l| l.file.as_str()))
+        .collect();
+    assert_eq!(files, vec!["a.py", "b.py", "c.py"]);
+    assert!(secrets
+        .iter()
+        .any(|f| f.file == "d.py" && f.other_sources.is_empty()));
+}
+
+#[test]
 fn patterns_without_data_flow() {
     let src = "import hashlib, random, secrets, yaml, requests
 from flask import Flask, make_response

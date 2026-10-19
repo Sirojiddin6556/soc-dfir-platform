@@ -530,6 +530,10 @@ fn find_endpoints<'a>(module: usize, m: &'a ModuleInfo, text: &ProjectText) -> V
                 });
             }
         }
+        // JavaScript/TypeScript web routes (Express, NestJS) are modeled by
+        // the taint engine via `models::js`; the framework-level webapp
+        // checks here do not cover them yet.
+        Language::JavaScript | Language::TypeScript | Language::Tsx => {}
         Language::C | Language::Cpp => {}
     }
     out
@@ -2332,6 +2336,12 @@ fn catches_all(c: &Catch, lang: Language) -> bool {
             .types
             .iter()
             .any(|t| matches!(t.as_str(), "Exception" | "Throwable" | "Error")),
+        Language::JavaScript | Language::TypeScript | Language::Tsx => {
+            c.types.is_empty()
+                || c.types
+                    .iter()
+                    .any(|t| matches!(t.as_str(), "Error" | "Exception"))
+        }
         Language::C | Language::Cpp => false,
     }
 }
